@@ -92,6 +92,13 @@
       "permission": {
         "src": "owner"
       }
+    },
+    "my_wallpapers": {
+      "doc": "Get combined list of user and system wallpapers with pagination",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      }
     }
   },
   "modules": {
