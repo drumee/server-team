@@ -34,6 +34,13 @@
       "permission": {
         "src": "write"
       }
+    },
+    "log": {
+      "doc": "Get unified activity log (contacts + MFS) with priority sorting",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      }
     }
   },
   "modules": {
