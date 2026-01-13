@@ -1,0 +1,28 @@
+{
+  "services": {
+    "create_token": {
+      "doc": "Create a new MFS export token for sharing data across Drumee instances",
+      "scope": "hub",
+      "permission": {
+        "src": "admin"
+      }
+    },
+    "revoke": {
+      "doc": "Revoke an existing MFS export token",
+      "scope": "hub",
+      "permission": {
+        "src": "write"
+      }
+    },
+    "list": {
+      "doc": "List all MFS export tokens created by current user",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      }
+    }
+  },
+  "modules": {
+    "private": "service/private/mfs_api"
+  }
+}

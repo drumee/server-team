@@ -1,0 +1,42 @@
+{
+  "services": {
+    "get_unread_count": {
+      "doc": "Get count of unread MFS notifications for current user",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      }
+    },
+    "mark_all_read": {
+      "doc": "Mark all MFS notifications as read for current user",
+      "scope": "hub",
+      "permission": {
+        "src": "write"
+      }
+    },
+    "get_feed": {
+      "doc": "Get paginated activity feed with read/unread status",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      }
+    },
+    "get_last_read": {
+      "doc": "Get last read changelog ID for current user",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      }
+    },
+    "acknowledge_file": {
+      "doc": "Mark a specific file/folder as seen",
+      "scope": "hub",
+      "permission": {
+        "src": "write"
+      }
+    }
+  },
+  "modules": {
+    "private": "service/private/activity"
+  }
+}

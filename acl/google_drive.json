@@ -1,0 +1,28 @@
+{
+  "services": {
+    "list_files": {
+      "doc": "List files/folders from Google Drive",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      }
+    },
+    "import_file": {
+      "doc": "Import a single file from Google Drive",
+      "scope": "hub",
+      "permission": {
+        "src": "write"
+      }
+    },
+    "import_directory": {
+      "doc": "Import entire directory recursively from Google Drive",
+      "scope": "hub",
+      "permission": {
+        "src": "write"
+      }
+    }
+  },
+  "modules": {
+    "private": "service/private/google_drive"
+  }
+}

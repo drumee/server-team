@@ -15,7 +15,7 @@
   },
   "dependencies": {
     "@drumee/schemas-utils": "^1.0.0",
-    "@drumee/server-core": "^1.1.38",
+    "@drumee/server-core": "^1.1.42",
     "@drumee/server-dev-tools": "^1.1.28",
     "@drumee/server-essentials": "^1.2.13",
     "@drumee/setup-schemas": "^1.0.26",
