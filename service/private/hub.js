@@ -52,6 +52,7 @@ class __private_hub extends Hub {
     this.get_settings = this.get_settings.bind(this);
     this.show_privilege = this.show_privilege.bind(this);
     this.add_contributors = this.add_contributors.bind(this);
+    this.invite_received_get = this.invite_received_get.bind(this);
     this.invite_with_roles = this.invite_with_roles.bind(this);
     this.delete_contributor = this.delete_contributor.bind(this);
     this.get_space_usage = this.get_space_usage.bind(this);
@@ -370,8 +371,69 @@ class __private_hub extends Hub {
   }
 
   /**
-   * 
-   * @returns 
+   * Workspace invitations addressed to the current user.
+   * Resolves inviter and hub names at read time so older rows render correctly.
+   */
+  async invite_received_get() {
+    const rows = await this.yp.await_query(
+      "SELECT a.id, a.timestamp AS ctime, a.uid AS author_id, " +
+      "       a.target_uid, a.event, a.data, " +
+      "       d.firstname    AS inviter_firstname, " +
+      "       d.lastname     AS inviter_lastname,  " +
+      "       d.email        AS inviter_email,     " +
+      "       e.headline     AS hub_headline,      " +
+      "       e.ident        AS hub_ident          " +
+      "  FROM yp.contact_activity a " +
+      "  LEFT JOIN yp.drumate d ON d.id = a.uid " +
+      "  LEFT JOIN yp.entity  e " +
+      "         ON e.id = JSON_UNQUOTE(JSON_EXTRACT(a.data, '$.hub_id')) " +
+      " WHERE a.target_uid = ? AND a.event = 'hub_invite_received' " +
+      " ORDER BY a.timestamp DESC LIMIT 50",
+      this.uid
+    );
+    const out = (rows || []).map((r) => {
+      let meta = {};
+      if (r.data) {
+        try {
+          meta = typeof r.data === "string" ? JSON.parse(r.data) : r.data;
+        } catch (_) { meta = {}; }
+      }
+      const firstname = meta.from_firstname || r.inviter_firstname || "";
+      const lastname  = meta.from_lastname  || r.inviter_lastname  || "";
+      const fullname =
+        meta.from_fullname ||
+        `${firstname} ${lastname}`.trim() ||
+        r.inviter_email ||
+        null;
+      // Prefer the live hub name from yp.entity over whatever was stored at
+      // invite time (older rows had the hub id pasted in here).
+      const hub_id = meta.hub_id || null;
+      const hub_name =
+        r.hub_headline ||
+        r.hub_ident ||
+        (meta.hub_name && meta.hub_name !== hub_id ? meta.hub_name : null) ||
+        null;
+      return {
+        id: r.id,
+        ctime: r.ctime,
+        author_id: r.author_id,
+        target_uid: r.target_uid,
+        event: r.event,
+        hub_id,
+        hub_name,
+        firstname,
+        lastname,
+        fullname,
+        from_fullname: fullname,
+        message: meta.message || null,
+        privilege: meta.privilege || null
+      };
+    });
+    this.output.list(out);
+  }
+
+  /**
+   * @returns
    */
   async add_contributors() {
     let users = this.input.need(Attr.users);
@@ -492,6 +554,26 @@ class __private_hub extends Hub {
         "no_traversal",
         "chat upload permission"
       );
+      try {
+        await this.yp.await_proc(
+          "contact_log_activity",
+          this.uid,
+          uid,
+          "hub_invite_received",
+          {
+            hub_id: this.hub.get(Attr.id),
+            hub_name: hubname,
+            message: message,
+            from_fullname: username,
+            privilege: privilege
+          }
+        );
+      } catch (err) {
+        this.warn(
+          "[hub] add_contributors: log activity failed for", uid,
+          err && err.message
+        );
+      }
     }
     if (!isEmpty(rows)) {
       for (let recipient of toArray(rows)) {
@@ -505,7 +587,10 @@ class __private_hub extends Hub {
         hub.hub_id = hub.actual_hub_id;
         hub.db_name = hub.actual_db_name;
         let sockets = await this.yp.await_proc("user_sockets", recipient.id);
-        await RedisStore.sendData(this.payload(hub), sockets);
+        await RedisStore.sendData(
+          this.payload(hub, { service: "hub.invite_received" }),
+          sockets
+        );
       }
     }
 

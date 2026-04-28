@@ -130,6 +130,32 @@
         }
       }
     },
+    "invite_received_get": {
+      "doc": "Return workspace invitations addressed to the current user. Reads yp.contact_activity rows logged by add_contributors.",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "params": {},
+      "returns": {
+        "type": "array",
+        "doc": "List of workspace invitations",
+        "items": {
+          "id":            { "type": "integer", "doc": "Activity row id" },
+          "ctime":         { "type": "integer", "doc": "Unix timestamp when invite was logged" },
+          "author_id":     { "type": "string",  "doc": "Inviter uid" },
+          "target_uid":    { "type": "string",  "doc": "Recipient uid (current user)" },
+          "event":         { "type": "string",  "doc": "Always 'hub_invite_received'" },
+          "hub_id":        { "type": "string",  "doc": "Workspace id" },
+          "hub_name":      { "type": "string",  "doc": "Workspace name at the time of the invite" },
+          "from_fullname": { "type": "string",  "doc": "Inviter's full name" },
+          "message":       { "type": "string",  "doc": "Optional invite message" },
+          "privilege":     { "type": "number",  "doc": "Privilege bitmask granted" }
+        }
+      },
+      "errors": []
+    },
+
     "add_contributors": {
       "doc": "Add members to hub with privilege and expiry settings (sends notifications)",
       "scope": "hub",
