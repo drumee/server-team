@@ -15,7 +15,7 @@
  * =============================================================================
  */
 
-const { Attr, uniqueId } = require('@drumee/server-essentials');
+const { Attr } = require('@drumee/server-essentials');
 const { isEmpty } = require('lodash');
 const { Entity } = require('@drumee/server-core');
 
@@ -56,14 +56,12 @@ class __private_task extends Entity {
       status = 'todo';
     }
 
-    const id = uniqueId();
-    const data = await this.db.await_proc(
-      'task_create',
-      id,
-      title,
-      status,
-      due_date,
-      this.uid
+    const id = await this.yp.await_func('uniqueId');
+    // Bypass `await_proc` which coerces JS null to '' before binding —
+    // STRICT_TRANS_TABLES rejects '' for nullable DATE columns.
+    const data = await this.db.await_run(
+      'CALL task_create(?, ?, ?, ?, ?)',
+      [id, title, status, due_date, this.uid]
     );
     this.output.data(data);
   }
@@ -77,7 +75,10 @@ class __private_task extends Entity {
     const title = this.input.use(Attr.title, null);
     const due_date = this.input.use('due_date', null);
 
-    const data = await this.db.await_proc('task_update', id, title, due_date);
+    const data = await this.db.await_run(
+      'CALL task_update(?, ?, ?)',
+      [id, title, due_date]
+    );
     if (isEmpty(data)) {
       return this.exception.user('TASK_NOT_FOUND');
     }

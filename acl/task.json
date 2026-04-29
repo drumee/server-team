@@ -128,7 +128,7 @@
       "doc": "Delete a task permanently. All linked file associations (task_file rows) are removed automatically via CASCADE.",
       "scope": "hub",
       "permission": {
-        "src": "delete"
+        "src": "write"
       },
       "params": {
         "id": {
