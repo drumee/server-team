@@ -5,6 +5,7 @@
  */
 const { Attr, toArray } = require("@drumee/server-essentials");
 const { Entity } = require("@drumee/server-core");
+const { isEmpty } = require("lodash");
 
 class __admin extends Entity {
 
@@ -26,7 +27,9 @@ class __admin extends Entity {
 
   // ADMIN CONSOLE — MEMBER TAB
   async member_stats() {
-    let res = await this.yp.await_proc('member_list_stats', this.user.domain_id());
+    let org = await this.yp.await_proc('organisation_get', this.user.domain_id());
+    if (isEmpty(org)) return this.output.status('NO_ORG');
+    let res = await this.yp.await_proc('member_list_stats', org.id);
     this.output.json(res || {});
   }
 
@@ -73,7 +76,7 @@ class __admin extends Entity {
   async member_device_remove() {
     let uid       = this.input.need(Attr.uid);
     let device_id = this.input.need('device_id');
-    await this.yp.await_proc('member_device_remove', uid, device_id);
+    await this.yp.await_proc('member_device_remove', device_id, uid);
     this.output.status('OK');
   }
 

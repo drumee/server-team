@@ -1138,21 +1138,22 @@ class __private_adminpanel extends Mfs {
     const page = this.input.use(Attr.page) || 1;
     const option = this.input.use(Attr.option) || 'member';
 
-    let res = {};
     let result = [];
 
-    let org = await this.yp.await_proc('organisation_get', this.user.domain_id())
-    let orgid = org.id;
+    let org = await this.yp.await_proc('organisation_get', this.user.domain_id());
     if (isEmpty(org)) return this.output.status('NO_ORG');
-    res = await this.yp.await_proc('member_list', this.uid, role_id, orgid, key, option, page);
-    if (!isArray(res)) {
-      res = [res];
-    }
+    let orgid = org.id;
+
+    let res = await this.yp.await_proc('member_list', this.uid, role_id, orgid, key, option, page);
+    if (isEmpty(res)) return this.output.list([]);
+    if (!isArray(res)) res = [res];
+
     for (let row of res) {
+      if (!row) continue;
       if (!isEmpty(row.address)) {
         row.address = this.parseJSON(row.address);
       }
-      result.push(row)
+      result.push(row);
     }
     this.output.list(result);
   }
