@@ -1,0 +1,101 @@
+{
+  "services": {
+    "list": {
+      "doc": "List all labels in the current hub.",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "params": {},
+      "returns": {
+        "type": "array",
+        "doc": "Array of label objects",
+        "items": {
+          "type": "object",
+          "properties": {
+            "id":         { "type": "string", "doc": "Label ID" },
+            "name":       { "type": "string", "doc": "Label name" },
+            "color":      { "type": "string", "doc": "Hex color including leading #" },
+            "created_by": { "type": "string", "doc": "UID of the creator" },
+            "ctime":      { "type": "number", "doc": "Unix timestamp of creation" },
+            "mtime":      { "type": "number", "doc": "Unix timestamp of last update" }
+          }
+        }
+      }
+    },
+    "create": {
+      "doc": "Create a new label in the current hub.",
+      "scope": "hub",
+      "permission": {
+        "src": "write"
+      },
+      "params": {
+        "name": {
+          "type": "string",
+          "required": true,
+          "doc": "Label name (must be unique within the hub)"
+        },
+        "color": {
+          "type": "string",
+          "required": false,
+          "default": "#AEAEB2",
+          "pattern": "^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$",
+          "doc": "Hex color including leading #. Defaults to #AEAEB2."
+        }
+      },
+      "returns": {
+        "type": "object",
+        "doc": "Newly created label object"
+      },
+      "errors": [
+        { "code": "INVALID_COLOR", "message": "color must be a valid hex string starting with #", "http_status": 400 }
+      ]
+    },
+    "update": {
+      "doc": "Update a label's name and/or color. Omit a field to keep its existing value.",
+      "scope": "hub",
+      "permission": {
+        "src": "write"
+      },
+      "params": {
+        "id":    { "type": "string", "required": true, "doc": "Label ID" },
+        "name":  { "type": "string", "required": false, "doc": "New label name" },
+        "color": {
+          "type": "string",
+          "required": false,
+          "pattern": "^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$",
+          "doc": "New hex color including leading #"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "doc": "Updated label object"
+      },
+      "errors": [
+        { "code": "LABEL_NOT_FOUND", "message": "No label found with the given ID", "http_status": 404 },
+        { "code": "INVALID_COLOR",   "message": "color must be a valid hex string starting with #", "http_status": 400 }
+      ]
+    },
+    "delete": {
+      "doc": "Delete a label permanently. All task_label associations are removed.",
+      "scope": "hub",
+      "permission": {
+        "src": "write"
+      },
+      "params": {
+        "id": { "type": "string", "required": true, "doc": "Label ID" }
+      },
+      "returns": {
+        "type": "object",
+        "doc": "Deleted label ID and affected row count",
+        "properties": {
+          "id":       { "type": "string" },
+          "affected": { "type": "number" }
+        }
+      }
+    }
+  },
+  "modules": {
+    "private": "service/private/label"
+  }
+}

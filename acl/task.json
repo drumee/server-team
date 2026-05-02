@@ -15,12 +15,16 @@
           "properties": {
             "id": { "type": "string", "doc": "Task ID" },
             "title": { "type": "string", "doc": "Task title" },
+            "description": { "type": "string", "doc": "Task description (long text), null if not set" },
             "status": { "type": "string", "doc": "Kanban column: todo | in_progress | to_review | complete" },
+            "priority": { "type": "string", "doc": "Priority: low | medium | high | urgent" },
             "due_date": { "type": "string", "doc": "Due date (YYYY-MM-DD), null if not set" },
             "created_by": { "type": "string", "doc": "UID of the user who created the task" },
+            "assignee_uid": { "type": "string", "doc": "UID of the assignee, null if unassigned" },
             "rank": { "type": "number", "doc": "Position within the status column" },
             "ctime": { "type": "number", "doc": "Unix timestamp of creation" },
-            "mtime": { "type": "number", "doc": "Unix timestamp of last update" }
+            "mtime": { "type": "number", "doc": "Unix timestamp of last update" },
+            "label_ids": { "type": "string", "doc": "Comma-separated list of label IDs attached to the task, null if none" }
           }
         }
       }
@@ -37,6 +41,11 @@
           "required": true,
           "doc": "Task title"
         },
+        "description": {
+          "type": "string",
+          "required": false,
+          "doc": "Long-form task description. Optional."
+        },
         "status": {
           "type": "string",
           "required": false,
@@ -44,29 +53,34 @@
           "enum": ["todo", "in_progress", "to_review", "complete"],
           "doc": "Initial Kanban column. Defaults to todo."
         },
+        "priority": {
+          "type": "string",
+          "required": false,
+          "default": "medium",
+          "enum": ["low", "medium", "high", "urgent"],
+          "doc": "Task priority. Defaults to medium."
+        },
         "due_date": {
           "type": "string",
           "required": false,
           "doc": "Due date in YYYY-MM-DD format. Optional."
+        },
+        "assignee_uid": {
+          "type": "string",
+          "required": false,
+          "doc": "UID of the user to assign the task to. Optional."
         }
       },
       "returns": {
         "type": "object",
-        "doc": "Newly created task object",
-        "properties": {
-          "id": { "type": "string", "doc": "Task ID" },
-          "title": { "type": "string", "doc": "Task title" },
-          "status": { "type": "string", "doc": "Kanban column" },
-          "due_date": { "type": "string", "doc": "Due date or null" },
-          "created_by": { "type": "string", "doc": "UID of creator" },
-          "rank": { "type": "number", "doc": "Position within column" },
-          "ctime": { "type": "number", "doc": "Unix timestamp of creation" },
-          "mtime": { "type": "number", "doc": "Unix timestamp of last update" }
-        }
-      }
+        "doc": "Newly created task object"
+      },
+      "errors": [
+        { "code": "INVALID_ASSIGNEE", "message": "assignee_uid does not reference a valid user", "http_status": 400 }
+      ]
     },
     "update": {
-      "doc": "Update a task's title and/or due date. Provide only the fields to change; omitted fields are left unchanged.",
+      "doc": "Update a task's title, description, priority and/or due date. Title / description / priority: omit to keep existing value. due_date is always written through (pass null to clear).",
       "scope": "hub",
       "permission": {
         "src": "write"
@@ -82,6 +96,17 @@
           "required": false,
           "doc": "New task title. Omit to keep existing value."
         },
+        "description": {
+          "type": "string",
+          "required": false,
+          "doc": "New task description. Omit to keep existing value; pass empty string to clear."
+        },
+        "priority": {
+          "type": "string",
+          "required": false,
+          "enum": ["low", "medium", "high", "urgent"],
+          "doc": "New priority. Omit to keep existing value."
+        },
         "due_date": {
           "type": "string",
           "required": false,
@@ -93,7 +118,8 @@
         "doc": "Updated task object"
       },
       "errors": [
-        { "code": "TASK_NOT_FOUND", "message": "No task found with the given ID", "http_status": 404 }
+        { "code": "TASK_NOT_FOUND", "message": "No task found with the given ID", "http_status": 404 },
+        { "code": "INVALID_PRIORITY", "message": "priority must be one of: low, medium, high, urgent", "http_status": 400 }
       ]
     },
     "update_status": {
@@ -124,8 +150,35 @@
         { "code": "INVALID_STATUS", "message": "status must be one of: todo, in_progress, to_review, complete", "http_status": 400 }
       ]
     },
+    "update_assignee": {
+      "doc": "Assign or unassign a task. Pass assignee_uid=null to clear the assignment.",
+      "scope": "hub",
+      "permission": {
+        "src": "write"
+      },
+      "params": {
+        "id": {
+          "type": "string",
+          "required": true,
+          "doc": "Task ID"
+        },
+        "assignee_uid": {
+          "type": "string",
+          "required": false,
+          "doc": "UID of the user to assign the task to. Null to unassign."
+        }
+      },
+      "returns": {
+        "type": "object",
+        "doc": "Updated task object"
+      },
+      "errors": [
+        { "code": "TASK_NOT_FOUND", "message": "No task found with the given ID", "http_status": 404 },
+        { "code": "INVALID_ASSIGNEE", "message": "assignee_uid does not reference a valid user", "http_status": 400 }
+      ]
+    },
     "delete": {
-      "doc": "Delete a task permanently. All linked file associations (task_file rows) are removed automatically via CASCADE.",
+      "doc": "Delete a task permanently. All linked file and label associations are removed.",
       "scope": "hub",
       "permission": {
         "src": "write"
@@ -225,18 +278,92 @@
       },
       "returns": {
         "type": "array",
-        "doc": "List of linked file objects with media metadata",
+        "doc": "List of linked file objects with media metadata"
+      }
+    },
+    "link_label": {
+      "doc": "Attach a label to a task. Idempotent — linking the same label twice has no effect. Returns the updated list of labels on the task.",
+      "scope": "hub",
+      "permission": {
+        "src": "write"
+      },
+      "params": {
+        "task_id":  { "type": "string", "required": true, "doc": "Task ID" },
+        "label_id": { "type": "string", "required": true, "doc": "Label ID" }
+      },
+      "returns": {
+        "type": "array",
+        "doc": "Updated list of labels attached to the task",
         "items": {
           "type": "object",
           "properties": {
-            "task_id": { "type": "string", "doc": "Task ID" },
-            "file_nid": { "type": "string", "doc": "File media node ID" },
-            "linked_by": { "type": "string", "doc": "UID of the user who linked the file" },
-            "ctime": { "type": "number", "doc": "Unix timestamp of when the file was linked" },
-            "filename": { "type": "string", "doc": "File display name" },
+            "task_id":  { "type": "string", "doc": "Task ID" },
+            "label_id": { "type": "string", "doc": "Label ID" },
+            "ctime":    { "type": "number", "doc": "Unix timestamp of when the label was linked" },
+            "name":     { "type": "string", "doc": "Label name" },
+            "color":    { "type": "string", "doc": "Label color (hex with leading #)" }
+          }
+        }
+      }
+    },
+    "unlink_label": {
+      "doc": "Remove a label from a task. The label itself is not deleted from the hub.",
+      "scope": "hub",
+      "permission": {
+        "src": "write"
+      },
+      "params": {
+        "task_id":  { "type": "string", "required": true, "doc": "Task ID" },
+        "label_id": { "type": "string", "required": true, "doc": "Label ID" }
+      },
+      "returns": {
+        "type": "object",
+        "doc": "Confirmation of the unlinked pair",
+        "properties": {
+          "task_id":  { "type": "string" },
+          "label_id": { "type": "string" },
+          "affected": { "type": "number" }
+        }
+      }
+    },
+    "get_labels": {
+      "doc": "Get all labels attached to a task.",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "params": {
+        "task_id": { "type": "string", "required": true, "doc": "Task ID" }
+      },
+      "returns": {
+        "type": "array",
+        "doc": "List of labels attached to the task"
+      }
+    },
+    "search_files": {
+      "doc": "Search media files in the current hub that can be linked to a task. Results are filtered by the caller's read-permission. If task_id is provided, files already linked to that task are excluded.",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "params": {
+        "pattern": { "type": "string", "required": true, "minLength": 1, "doc": "Filename substring" },
+        "task_id": { "type": "string", "required": false, "doc": "Exclude files already linked to this task" },
+        "page":    { "type": "number", "required": false, "default": 1, "min": 1, "doc": "Page number for pagination" }
+      },
+      "returns": {
+        "type": "array",
+        "doc": "Array of media items matching the search pattern",
+        "items": {
+          "type": "object",
+          "properties": {
+            "nid":      { "type": "string", "doc": "Media node ID" },
+            "filename": { "type": "string", "doc": "Display filename" },
+            "ext":      { "type": "string", "doc": "File extension" },
             "category": { "type": "string", "doc": "File category" },
-            "extension": { "type": "string", "doc": "File extension" },
-            "filesize": { "type": "number", "doc": "File size in bytes" }
+            "filesize": { "type": "number", "doc": "File size in bytes" },
+            "mtime":    { "type": "number", "doc": "Unix timestamp of last upload" },
+            "score":    { "type": "number", "doc": "Match score (higher = better)" }
           }
         }
       }
