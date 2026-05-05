@@ -123,6 +123,7 @@ class __admin extends Entity {
     ));
 
     let allLogs = [];
+    let total   = 0;
     for (const hub of hubs) {
       const rows = toArray(await this.yp.await_proc(
         `${hub.db_name}.hub_get_audit_logs_filtered`,
@@ -130,13 +131,26 @@ class __admin extends Entity {
       ));
       rows.forEach(r => { r.hub_id = hub.id; });
       allLogs = allLogs.concat(rows);
+
+      // Sum the real total per hub so the paginator can render an honest
+      // count instead of guessing from `rows < PAGE_SIZE`.
+      const countRow = toArray(await this.yp.await_proc(
+        `${hub.db_name}.hub_get_audit_logs_count`,
+        username, from_time, to_time
+      ))[0];
+      if (countRow) total += parseInt(countRow.total, 10) || 0;
     }
 
     allLogs.sort((a, b) => b.ctime - a.ctime);
 
     const PAGE_SIZE = 20;
     const offset    = (page - 1) * PAGE_SIZE;
-    this.output.list(allLogs.slice(offset, offset + PAGE_SIZE));
+    this.output.json({
+      data: allLogs.slice(offset, offset + PAGE_SIZE),
+      total,
+      page,
+      page_size: PAGE_SIZE,
+    });
   }
 
   async export_audit_logs() {
@@ -183,13 +197,35 @@ class __admin extends Entity {
   async get_audit_stats() {
     let from_time = this.input.use('from_time', 0);
     let to_time   = this.input.use('to_time', 0);
-    let res = await this.yp.await_proc(
+
+    // yp SP gives us security_score (placeholder), high_risk_count
+    // (placeholder), and storage_used_bytes (real).
+    let stats = await this.yp.await_proc(
       'get_audit_stats',
       this.user.domain_id(),
       from_time,
       to_time
-    );
-    this.output.json(res || {});
+    ) || {};
+
+    // Replace high_risk_count with a real aggregate by summing
+    // hub_count_high_risk_actions across every hub in the domain. action_log
+    // lives per-hub so we can't compute this from yp alone.
+    const hubs = toArray(await this.yp.await_proc(
+      'member_list_hubs_by_domain',
+      this.user.domain_id()
+    ));
+    let highRisk = 0;
+    for (const hub of hubs) {
+      const row = toArray(await this.yp.await_proc(
+        `${hub.db_name}.hub_count_high_risk_actions`,
+        from_time,
+        to_time
+      ))[0];
+      if (row) highRisk += parseInt(row.total, 10) || 0;
+    }
+    stats.high_risk_count = highRisk;
+
+    this.output.json(stats);
   }
 
   // ADMIN CONSOLE — STORAGE TAB (org-level)
@@ -201,13 +237,30 @@ class __admin extends Entity {
   async get_org_user_storage() {
     let sort_by = this.input.use('sort_by', 'usage_high');
     let page    = this.input.use(Attr.page, 1);
-    let res = await this.yp.await_proc(
+    const PAGE_SIZE = 20; // matches yp.utils.pageToLimits default
+
+    let rows = toArray(await this.yp.await_proc(
       'get_org_user_storage',
       this.user.domain_id(),
       sort_by,
       page
-    );
-    this.output.list(res);
+    ));
+
+    // Paired count SP so the FE can render "Showing X-Y of N" without
+    // guessing. The data SP runs LIMIT-bound; the count SP shares the
+    // same WHERE clause minus pagination.
+    const countRow = toArray(await this.yp.await_proc(
+      'get_org_user_storage_count',
+      this.user.domain_id()
+    ))[0];
+    const total = countRow ? (parseInt(countRow.total, 10) || 0) : 0;
+
+    this.output.json({
+      data: rows,
+      total,
+      page,
+      page_size: PAGE_SIZE,
+    });
   }
 
   // WORKSPACE ADMIN — MEMBER TAB
@@ -250,16 +303,26 @@ class __admin extends Entity {
     this.output.json(res || {});
   }
 
-  // WORKSPACE ADMIN — PERMISSION TAB
+  // WORKSPACE ADMIN — PERMISSION TAB / MEMBER TAB OVERVIEW
   async get_workspace_overview() {
     let hub_id = this.input.need(Attr.hub_id);
-    // hub_id required for scope:hub check; method returns domain-wide overview
-    let res = await this.yp.await_proc(
-      'get_workspace_overview',
-      this.user.domain_id(),
-      this.uid
-    );
-    this.output.list(res);
+    // Collaborative workspaces the caller participates in. The data
+    // model has two areas that are visually "restricted" workspaces in
+    // this product:
+    //   - 'private'    — most common in practice (the user's data uses
+    //                    this for invitable team-restricted hubs)
+    //   - 'restricted' — the literal enum value
+    // Plus 'share' for shared workspaces. Excluded: 'personal' (each
+    // user's own space), 'system' / 'pool*' / 'template' / 'dummy'
+    // / 'dmz*' (infra and one-shot share buckets — not workspaces).
+    let rows = toArray(await this.yp.await_proc(
+      'member_list_workspaces',
+      this.uid,
+      this.user.domain_id()
+    ));
+    const WORKSPACE_AREAS = new Set(['private', 'restricted', 'share']);
+    rows = rows.filter(r => WORKSPACE_AREAS.has(r.area));
+    this.output.list(rows);
   }
 
   async get_hub_folders() {
@@ -268,12 +331,14 @@ class __admin extends Entity {
     let page    = this.input.use(Attr.page, 1);
     let hub_db  = await this.yp.await_func('get_db_name', hub_id);
     if (!hub_db) return this.output.status('HUB_NOT_FOUND');
-    let params = { type: 'node', page };
+    // Use the dedicated single-result-set SP. mfs_show_node_by works for
+    // the desk surface but its internal UPDATE/ALTER traffic on temp
+    // tables makes the mariadb wrapper here pick the wrong chunk, returning
+    // an empty array even when folders exist.
     let res = await this.yp.await_proc(
-      `${hub_db}.mfs_show_node_by`,
+      `${hub_db}.hub_list_folders`,
       node_id,
-      this.uid,
-      JSON.stringify(params)
+      page
     );
     this.output.list(res);
   }
@@ -283,8 +348,33 @@ class __admin extends Entity {
     let nid    = this.input.need(Attr.nid);
     let hub_db = await this.yp.await_func('get_db_name', hub_id);
     if (!hub_db) return this.output.status('HUB_NOT_FOUND');
-    let res = await this.yp.await_proc(`${hub_db}.folder_get_permissions`, nid);
-    this.output.json(res || {});
+    // SP returns two SELECTs: first is the config row, second is the
+    // member list. The mariadb wrapper picks one chunk and discards the
+    // rest — same behaviour we hit on get_hub_folders. Pull both via
+    // separate calls so the FE gets a complete payload.
+    let cfgRows = toArray(await this.yp.await_proc(
+      `${hub_db}.folder_get_permissions`,
+      nid
+    ));
+    let cfg = cfgRows[0] || {};
+    let members = toArray(await this.yp.await_proc(
+      `${hub_db}.folder_get_member_list`,
+      nid
+    ));
+    this.output.json({
+      mode: cfg.mode,
+      access: {
+        view: !!cfg.access_view,
+        edit: !!cfg.access_edit,
+        chat: !!cfg.access_chat,
+      },
+      auto_revoke: !!cfg.auto_revoke,
+      auto_revoke_minutes: cfg.auto_revoke_minutes || 30,
+      one_time: !!cfg.one_time,
+      one_time_url: cfg.one_time_url || '',
+      members,
+      devices: [],
+    });
   }
 
   async save_folder_permissions() {

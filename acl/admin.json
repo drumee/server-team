@@ -202,7 +202,7 @@
       ]
     },
     "get_audit_logs": {
-      "doc": "Return paginated audit log entries across all hubs in the domain. Iterates over every hub DB in the domain, calls hub_get_audit_logs_filtered per hub, merges and sorts all results by ctime descending, then returns one page of 20 entries. Known limitation: only fetches page 1 from each hub before merging, so entries beyond page 1 of any single hub may be omitted.",
+      "doc": "Return paginated audit log entries across all hubs in the domain plus a real total count. Iterates over every hub DB in the domain, calls hub_get_audit_logs_filtered per hub for the page slice, sums hub_get_audit_logs_count for the total, merges and sorts results by ctime descending, then returns one page of 20 entries inside a {data, total, page, page_size} envelope. Known limitation: only fetches page 1 from each hub before merging, so entries beyond page 1 of any single hub may be omitted from the merged page (count is still accurate).",
       "scope": "domain",
       "permission": { "src": "admin" },
       "params": {
@@ -228,21 +228,29 @@
         }
       },
       "returns": {
-        "type": "array",
-        "description": "Paginated list of audit log entries sorted by ctime descending",
-        "items": {
-          "uid": { "type": "string", "description": "Actor user ID" },
-          "action": { "type": "string", "description": "Action enum value" },
-          "category": { "type": "string", "description": "Category enum value" },
-          "notify_to": { "type": "string", "description": "Notification target" },
-          "entity_id": { "type": "string", "description": "Affected entity ID" },
-          "log": { "type": "string", "description": "Log message" },
-          "ctime": { "type": "integer", "description": "Entry timestamp (UNIX)" },
-          "actor_name": { "type": "string", "description": "Actor full name from yp.drumate" },
-          "firstname": { "type": "string", "description": "Actor first name" },
-          "lastname": { "type": "string", "description": "Actor last name" },
-          "email": { "type": "string", "description": "Actor email" },
-          "hub_id": { "type": "string", "description": "Source hub ID (appended by service layer)" }
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "array",
+            "description": "Paginated list of audit log entries sorted by ctime descending",
+            "items": {
+              "uid": { "type": "string", "description": "Actor user ID" },
+              "action": { "type": "string", "description": "Action enum value" },
+              "category": { "type": "string", "description": "Category enum value" },
+              "notify_to": { "type": "string", "description": "Notification target" },
+              "entity_id": { "type": "string", "description": "Affected entity ID" },
+              "log": { "type": "string", "description": "Log message" },
+              "ctime": { "type": "integer", "description": "Entry timestamp (UNIX)" },
+              "actor_name": { "type": "string", "description": "Actor full name from yp.drumate" },
+              "firstname": { "type": "string", "description": "Actor first name" },
+              "lastname": { "type": "string", "description": "Actor last name" },
+              "email": { "type": "string", "description": "Actor email" },
+              "hub_id": { "type": "string", "description": "Source hub ID (appended by service layer)" }
+            }
+          },
+          "total": { "type": "integer", "description": "Total entries across all hubs matching the filters" },
+          "page": { "type": "integer", "description": "Echo of the page param" },
+          "page_size": { "type": "integer", "description": "Server page size (currently 20)" }
         }
       },
       "errors": []
@@ -308,26 +316,26 @@
       ]
     },
     "get_audit_stats": {
-      "doc": "Return summary statistics for the Audit Logs tab header cards. security_score and high_risk_count are placeholders (hardcoded 94 and 0 respectively) for Round 1. storage_used_bytes is real data: sum of yp.entity.space for all active hubs in the domain.",
+      "doc": "Return summary statistics for the Audit Logs tab header cards. security_score is still a placeholder (hardcoded 94) pending a real scoring model. high_risk_count is now real: sum of action_log entries in the time range whose category is 'admin'/'permission' or whose action is grant_access/change_policy/share_link/removed, aggregated across every hub in the domain via hub_count_high_risk_actions. storage_used_bytes is real: sum of yp.entity.space for all active hubs.",
       "scope": "domain",
       "permission": { "src": "admin" },
       "params": {
         "from_time": {
           "type": "integer",
           "required": false,
-          "description": "Range start (UNIX timestamp). Currently unused in SP computation. 0 disables."
+          "description": "Range start (UNIX timestamp) — applied to high_risk_count aggregation. 0 disables."
         },
         "to_time": {
           "type": "integer",
           "required": false,
-          "description": "Range end (UNIX timestamp). Currently unused in SP computation. 0 disables."
+          "description": "Range end (UNIX timestamp) — applied to high_risk_count aggregation. 0 disables."
         }
       },
       "returns": {
         "type": "object",
         "properties": {
-          "security_score": { "type": "integer", "description": "Placeholder value: 94" },
-          "high_risk_count": { "type": "integer", "description": "Placeholder value: 0" },
+          "security_score": { "type": "integer", "description": "Placeholder value: 94 (real scoring model TBD)" },
+          "high_risk_count": { "type": "integer", "description": "Real count of risk-relevant action_log entries across hubs in the time range" },
           "storage_used_bytes": { "type": "number", "description": "Sum of yp.entity.space for all active hubs in domain (float)" }
         }
       },
@@ -352,7 +360,7 @@
       "errors": []
     },
     "get_org_user_storage": {
-      "doc": "Return a paginated, sortable list of members in the domain with their individual storage usage. Joins yp.drumate, yp.privilege, and yp.entity (type=drumate) to compute per-user used bytes.",
+      "doc": "Return a paginated, sortable list of members in the domain with their individual storage usage, plus a real total count. Joins yp.drumate, yp.privilege, and yp.entity (type=drumate) to compute per-user used bytes. Returns an envelope {data, total, page, page_size} so the FE can render an honest paginator. Total is sourced from get_org_user_storage_count.",
       "scope": "domain",
       "permission": { "src": "admin" },
       "params": {
@@ -368,17 +376,25 @@
         }
       },
       "returns": {
-        "type": "array",
-        "description": "Paginated list of domain members with storage usage",
-        "items": {
-          "uid": { "type": "string", "description": "Member user ID" },
-          "firstname": { "type": "string", "description": "Member first name" },
-          "lastname": { "type": "string", "description": "Member last name" },
-          "fullname": { "type": "string", "description": "Member full name" },
-          "email": { "type": "string", "description": "Member email" },
-          "domain_privilege": { "type": "integer", "description": "Member domain-level privilege" },
-          "used_bytes": { "type": "number", "description": "Storage used in bytes" },
-          "used_mb": { "type": "number", "description": "Storage used in megabytes, rounded to 2 decimal places" }
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "array",
+            "description": "Paginated list of domain members with storage usage",
+            "items": {
+              "uid": { "type": "string", "description": "Member user ID" },
+              "firstname": { "type": "string", "description": "Member first name" },
+              "lastname": { "type": "string", "description": "Member last name" },
+              "fullname": { "type": "string", "description": "Member full name" },
+              "email": { "type": "string", "description": "Member email" },
+              "domain_privilege": { "type": "integer", "description": "Member domain-level privilege" },
+              "used_bytes": { "type": "number", "description": "Storage used in bytes" },
+              "used_mb": { "type": "number", "description": "Storage used in megabytes, rounded to 2 decimal places" }
+            }
+          },
+          "total": { "type": "integer", "description": "Total domain members (matches WHERE clause without pagination)" },
+          "page": { "type": "integer", "description": "Echo of the page param" },
+          "page_size": { "type": "integer", "description": "Server page size (currently 20)" }
         }
       },
       "errors": []
