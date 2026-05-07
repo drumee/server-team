@@ -113,7 +113,7 @@
       ]
     },
     "change_email": {
-      "doc": "Change user email address (must be unique and valid format)",
+      "doc": "Change user email address. Verifier branches on profile.password_set: password OR (secret+code).",
       "scope": "hub",
       "permission": {
         "src": "owner"
@@ -124,6 +124,23 @@
           "required": true,
           "pattern": "^[^@]+@[^@]+\\.[^@]+$",
           "doc": "New email address"
+        },
+        "password": {
+          "type": "string",
+          "required": false,
+          "doc": "Required when password_set=1"
+        },
+        "secret": {
+          "type": "string",
+          "required": false,
+          "doc": "OTP secret (required when password_set=0)"
+        },
+        "code": {
+          "type": "string",
+          "required": false,
+          "minLength": 6,
+          "maxLength": 6,
+          "doc": "OTP code (required when password_set=0)"
         }
       },
       "returns": {
@@ -487,24 +504,29 @@
       }
     },
     "delete_account": {
-      "doc": "Initiate account deletion process (requires OTP verification, returns deletion token)",
+      "doc": "Initiate account deletion. Verifier branches on profile.password_set: password OR (secret+code).",
       "scope": "hub",
       "permission": {
         "src": "owner"
       },
       "log": true,
       "params": {
+        "password": {
+          "type": "string",
+          "required": false,
+          "doc": "Required when password_set=1"
+        },
         "secret": {
           "type": "string",
-          "required": true,
-          "doc": "OTP secret from get_otp"
+          "required": false,
+          "doc": "OTP secret (required when password_set=0)"
         },
         "code": {
           "type": "string",
-          "required": true,
+          "required": false,
           "minLength": 6,
           "maxLength": 6,
-          "doc": "OTP verification code"
+          "doc": "OTP code (required when password_set=0)"
         }
       },
       "returns": {
@@ -520,6 +542,66 @@
           "http_status": 401
         }
       ]
+    },
+    "list_oauth_links": {
+      "doc": "List OAuth providers linked to this account.",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      }
+    },
+    "unlink_oauth": {
+      "doc": "Disconnect an OAuth provider. Refuses if it would leave the account with no auth method.",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "log": true,
+      "params": {
+        "provider": {
+          "type": "string",
+          "required": true,
+          "doc": "OAuth provider key (google|apple|...)"
+        },
+        "password": {
+          "type": "string",
+          "required": false
+        },
+        "secret": {
+          "type": "string",
+          "required": false
+        },
+        "code": {
+          "type": "string",
+          "required": false,
+          "minLength": 6,
+          "maxLength": 6
+        }
+      }
+    },
+    "set_initial_password": {
+      "doc": "Set first password for an OAuth-only account. OTP-gated. Refuses if a password already exists.",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "log": true,
+      "params": {
+        "password": {
+          "type": "string",
+          "required": true
+        },
+        "secret": {
+          "type": "string",
+          "required": true
+        },
+        "code": {
+          "type": "string",
+          "required": true,
+          "minLength": 6,
+          "maxLength": 6
+        }
+      }
     },
     "confirm_delete_account": {
       "doc": "Confirm and execute account deletion (freezes account, removes from hubs, sends reactivation link)",

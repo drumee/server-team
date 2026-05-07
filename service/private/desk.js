@@ -528,13 +528,24 @@ class __private_desk extends Media {
     const secret = this.input.need(Attr.secret);
     const code = this.input.need(Attr.code);
     const mfa = this.input.get("mfa");
-    let otp = await this.yp.await_proc("secret_check", this.uid, secret, code);
-    if (otp && otp.code == code) {
-      let profile = { otp: mfa, mfa };
-      await this.yp.call_proc("drumate_update_profile", this.uid, profile);
-      await this.yp.await_proc("secret_clear", this.uid, 'all');
+    const otp = await this.yp.await_proc("secret_check", this.uid, secret, code);
+    if (!otp || otp.code != code) {
+      return this.output.data({ error: "INVALID_CODE" });
     }
-    let user = await this.yp.await_proc('get_user', this.uid)
+
+    // profile.otp is the OTP delivery method consumed by
+    // session.selectOtpMethod (server-core), which expects a name
+    // ("email"/"sms"/"passkey"), not the on/off bit. Storing the bit
+    // here triggers INVALID_OTP_METHOD on next sign-in. Email is the
+    // only fully-wired method today, so default to that when MFA is on.
+    const profile = {
+      mfa,
+      otp: parseInt(mfa) ? Attr.email : 0,
+    };
+    await this.yp.call_proc("drumate_update_profile", this.uid, profile);
+    await this.yp.await_proc("secret_clear", this.uid, "all");
+
+    const user = await this.yp.await_proc("get_user", this.uid);
     this.output.data(user);
   }
 

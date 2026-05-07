@@ -1848,7 +1848,13 @@ class __private_adminpanel extends Mfs {
     if (mfa == 0) {
       message = lex._mfa_disabled_message
     }
-    let profile = { otp: mfa, mfa };
+    // profile.otp is a method name ("email"/"sms"/"passkey") consumed
+    // by session.selectOtpMethod, not the on/off bit — storing the bit
+    // here triggers INVALID_OTP_METHOD on the user's next sign-in.
+    let profile = {
+      mfa,
+      otp: parseInt(mfa) ? Attr.email : 0,
+    };
     await this.yp.call_proc("drumate_update_profile", user_id, profile);
     let user = await this.yp.await_proc(`get_user`, user_id);
     if (!user) {

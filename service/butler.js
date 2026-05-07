@@ -242,6 +242,9 @@ class __butler extends Mfs {
       return this.output.data({ status: "DRUMATE_NOT_EXISTS" });
     }
     drumate = await this.yp.await_proc("set_password", id, pw);
+    // Forgot-password flow is a real password set — flag the account
+    // as password-backed even if it was previously OAuth-only.
+    await this.yp.call_proc("drumate_update_profile", id, { password_set: 1 });
     let connection = "offline";
     if ([1, "1", "sms"].includes(drumate.otp)) {
       metadata.step = "otpverify";
@@ -531,6 +534,9 @@ class __butler extends Mfs {
     }
 
     await this.yp.await_proc("set_password", user.id, pw);
+    // Token-based password set is a real password — flag the account
+    // as password-backed for downstream step-up auth.
+    await this.yp.call_proc("drumate_update_profile", user.id, { password_set: 1 });
     await this.yp.await_proc("token_delete", secret);
     this.output.data(user);
   }
@@ -564,7 +570,11 @@ class __butler extends Mfs {
       lang: this.user.language() || this.input.app_language(),
       firstname,
       lastname,
-      email
+      email,
+      // Local signup — real password supplied by user. Step-up flows
+      // (delete_account, change_email) will gate on password instead of OTP.
+      auth_method: "local",
+      password_set: 1,
     }
 
     let user = await this.yp.await_proc("drumate_create", password, profile);
