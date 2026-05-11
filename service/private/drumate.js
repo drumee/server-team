@@ -92,8 +92,8 @@ class __private_drumate extends Entity {
   }
 
   /**
-   * 
-   * @returns 
+   *
+   * @returns
    */
   async challenge_pw() {
     const password = this.input.use(Attr.password) || this.input.use(Attr.old_password);
@@ -102,6 +102,31 @@ class __private_drumate extends Entity {
       this.trigger(_e.denied);
       return
     }
+  }
+
+  /**
+   * Decide whether step-up auth (delete_account, change_email,
+   * unlink_oauth, set_initial_password) should require a password or
+   * an email-OTP code, for the current user.
+   *
+   * Reads profile.password_set when present. Falls back to oauth_accounts
+   * membership for legacy users (signed up before the flag was tracked):
+   *   - has OAuth row(s) AND no explicit flag → OTP mode
+   *   - no OAuth row(s) AND no explicit flag → password mode (legacy local)
+   */
+  async _shouldUsePassword() {
+    let profile = this.user.get(Attr.profile);
+    if (typeof profile === 'string') profile = this.parseJSON(profile);
+    profile = profile || {};
+    if (profile.password_set !== undefined) {
+      return parseInt(profile.password_set) === 1;
+    }
+    const row = await this.yp.await_query(
+      'SELECT COUNT(*) AS n FROM oauth_accounts WHERE user_id = ?',
+      this.uid
+    );
+    const oauthCount = (row && row.n) || 0;
+    return oauthCount === 0;
   }
 
   /**
@@ -124,9 +149,7 @@ class __private_drumate extends Entity {
       return;
     }
 
-    const profile = this.user.profile() || this.parseJSON(this.user.get(Attr.profile)) || {};
-    const passwordSet = profile.password_set;
-    const usePassword = passwordSet === undefined || parseInt(passwordSet) === 1;
+    const usePassword = await this._shouldUsePassword();
 
     if (usePassword) {
       const password = this.input.need(Attr.password);
@@ -681,9 +704,7 @@ class __private_drumate extends Entity {
    * backward compatibility with legacy users.
    */
   async delete_account() {
-    const profile = this.user.profile() || this.parseJSON(this.user.get(Attr.profile)) || {};
-    const passwordSet = profile.password_set;
-    const usePassword = passwordSet === undefined || parseInt(passwordSet) === 1;
+    const usePassword = await this._shouldUsePassword();
 
     if (usePassword) {
       const password = this.input.use(Attr.password);
@@ -704,6 +725,27 @@ class __private_drumate extends Entity {
     }
 
     await this.yp.await_proc(`drumate_freeze`, this.uid);
+
+    // Soft-freeze any OAuth links the same way drumate_freeze handles
+    // vhost.fqdn and drumate.email — prefix the unique-keyed columns
+    // with '--frozen--' instead of deleting. This:
+    //   1. Frees the UNIQUE(provider, provider_user_id) constraint so
+    //      a re-signin with the same Google/Apple identity creates a
+    //      brand-new account (matches local-user re-signup semantics).
+    //   2. Preserves the original row + access_token / refresh_token
+    //      so admin recovery (strip the prefix on un-freeze) is still
+    //      possible during grace.
+    // Without this, the frozen entity's oauth_accounts row resolves
+    // first in session_login_with_oauth and signs the user back in to
+    // a privilege-zero account → 403 on every subsequent request.
+    await this.yp.await_query(
+      "UPDATE oauth_accounts SET " +
+      "provider_user_id = CONCAT('--frozen--', provider_user_id), " +
+      "email = CONCAT('--frozen--', email) " +
+      "WHERE user_id = ? AND provider_user_id NOT LIKE '--frozen--%'",
+      this.uid
+    );
+
     this.session.logout({ redirect: "#/welcome" });
   }
 
@@ -733,9 +775,7 @@ class __private_drumate extends Entity {
   async unlink_oauth() {
     const provider = this.input.need('provider');
 
-    const profile = this.user.profile() || this.parseJSON(this.user.get(Attr.profile)) || {};
-    const passwordSet = profile.password_set;
-    const usePassword = passwordSet === undefined || parseInt(passwordSet) === 1;
+    const usePassword = await this._shouldUsePassword();
 
     if (usePassword) {
       const password = this.input.need(Attr.password);
@@ -782,8 +822,11 @@ class __private_drumate extends Entity {
    * way. Refuses if password_set=1 already (use change_password instead).
    */
   async set_initial_password() {
-    const profile = this.user.profile() || this.parseJSON(this.user.get(Attr.profile)) || {};
-    if (parseInt(profile.password_set) === 1) {
+    // Reuse the same inference: if the user already has a real
+    // password (explicit flag OR legacy local user), refuse — they
+    // should use change_password instead.
+    const usePassword = await this._shouldUsePassword();
+    if (usePassword) {
       this.output.data({ error: "ALREADY_HAS_PASSWORD" });
       return;
     }
