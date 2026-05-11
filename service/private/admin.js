@@ -112,28 +112,34 @@ class __admin extends Entity {
 
   // ADMIN CONSOLE — AUDIT LOGS TAB
   async get_audit_logs() {
+    const PAGE_SIZE = 20;
     let username  = this.input.use('username', '');
     let from_time = this.input.use('from_time', 0);
     let to_time   = this.input.use('to_time', 0);
-    let page      = this.input.use(Attr.page, 1);
+    let page      = parseInt(this.input.use(Attr.page, 1), 10);
+    if (!page || page < 1) page = 1;
 
-    const hubs    = toArray(await this.yp.await_proc(
+    const hubs = toArray(await this.yp.await_proc(
       'member_list_hubs_by_domain',
       this.user.domain_id()
     ));
+
+    // To page correctly across N hubs we need the top (page * PAGE_SIZE) rows
+    // globally — and any hub's contribution to that global window is at most
+    // page * PAGE_SIZE rows from its own ctime-desc head. So we ask each hub
+    // for that many, merge, sort, then slice the requested page.
+    const window = page * PAGE_SIZE;
 
     let allLogs = [];
     let total   = 0;
     for (const hub of hubs) {
       const rows = toArray(await this.yp.await_proc(
-        `${hub.db_name}.hub_get_audit_logs_filtered`,
-        username, from_time, to_time, 1   // fetch page 1 per hub then aggregate
+        `${hub.db_name}.hub_get_audit_logs_window`,
+        username, from_time, to_time, window
       ));
       rows.forEach(r => { r.hub_id = hub.id; });
       allLogs = allLogs.concat(rows);
 
-      // Sum the real total per hub so the paginator can render an honest
-      // count instead of guessing from `rows < PAGE_SIZE`.
       const countRow = toArray(await this.yp.await_proc(
         `${hub.db_name}.hub_get_audit_logs_count`,
         username, from_time, to_time
@@ -143,8 +149,7 @@ class __admin extends Entity {
 
     allLogs.sort((a, b) => b.ctime - a.ctime);
 
-    const PAGE_SIZE = 20;
-    const offset    = (page - 1) * PAGE_SIZE;
+    const offset = (page - 1) * PAGE_SIZE;
     this.output.json({
       data: allLogs.slice(offset, offset + PAGE_SIZE),
       total,
@@ -154,6 +159,10 @@ class __admin extends Entity {
   }
 
   async export_audit_logs() {
+    // Per-hub cap for the export. Each hub's action_log is bounded by retention
+    // policy in practice, so this comfortably covers normal exports without
+    // letting a runaway hub OOM the aggregator.
+    const EXPORT_CAP = 50000;
     let username  = this.input.use('username', '');
     let from_time = this.input.use('from_time', 0);
     let to_time   = this.input.use('to_time', 0);
@@ -166,8 +175,8 @@ class __admin extends Entity {
     let allLogs = [];
     for (const hub of hubs) {
       const rows = toArray(await this.yp.await_proc(
-        `${hub.db_name}.hub_get_audit_logs_filtered`,
-        username, from_time, to_time, 1
+        `${hub.db_name}.hub_get_audit_logs_window`,
+        username, from_time, to_time, EXPORT_CAP
       ));
       rows.forEach(r => { r.hub_id = hub.id; });
       allLogs = allLogs.concat(rows);
@@ -195,35 +204,86 @@ class __admin extends Entity {
   }
 
   async get_audit_stats() {
+    const ACTIVE_WINDOW_SEC = 90 * 86400;
     let from_time = this.input.use('from_time', 0);
     let to_time   = this.input.use('to_time', 0);
 
-    // yp SP gives us security_score (placeholder), high_risk_count
-    // (placeholder), and storage_used_bytes (real).
-    let stats = await this.yp.await_proc(
+    let stats = (await this.yp.await_proc(
       'get_audit_stats',
       this.user.domain_id(),
       from_time,
       to_time
-    ) || {};
+    )) || {};
+    if (Array.isArray(stats)) stats = stats[0] || {};
 
-    // Replace high_risk_count with a real aggregate by summing
-    // hub_count_high_risk_actions across every hub in the domain. action_log
-    // lives per-hub so we can't compute this from yp alone.
+    let signals = (await this.yp.await_proc(
+      'get_security_signals',
+      this.user.domain_id(),
+      ACTIVE_WINDOW_SEC
+    )) || {};
+    if (Array.isArray(signals)) signals = signals[0] || {};
+
+    const totalMembers  = parseInt(signals.total_members, 10)  || 0;
+    const mfaMembers    = parseInt(signals.mfa_members, 10)    || 0;
+    const activeMembers = parseInt(signals.active_members, 10) || 0;
+    const totalHubs     = parseInt(signals.total_hubs, 10)     || 0;
+    const activeShares  = parseInt(signals.active_shares, 10)  || 0;
+
     const hubs = toArray(await this.yp.await_proc(
       'member_list_hubs_by_domain',
       this.user.domain_id()
     ));
     let highRisk = 0;
+    let multiAdminHubs = 0;
     for (const hub of hubs) {
-      const row = toArray(await this.yp.await_proc(
+      const riskRow = toArray(await this.yp.await_proc(
         `${hub.db_name}.hub_count_high_risk_actions`,
         from_time,
         to_time
       ))[0];
-      if (row) highRisk += parseInt(row.total, 10) || 0;
+      if (riskRow) highRisk += parseInt(riskRow.total, 10) || 0;
+
+      const adminRow = toArray(await this.yp.await_proc(
+        `${hub.db_name}.hub_count_admins`
+      ))[0];
+      if (adminRow && (parseInt(adminRow.total, 10) || 0) > 1) {
+        multiAdminHubs += 1;
+      }
     }
+
+    const clamp01 = (x) => Math.max(0, Math.min(1, x));
+    const denom    = Math.max(1, totalMembers);
+    const hubDenom = Math.max(1, totalHubs);
+    const riskNorm = Math.max(10, denom * 2);
+
+    const mfaScore   = 40 * (mfaMembers   / denom);
+    const liveScore  = 15 * (activeMembers / denom);
+    const shareScore = 20 * clamp01(1 - activeShares / denom);
+    const riskScore  = 15 * clamp01(1 - highRisk / riskNorm);
+    const adminScore = 10 * (multiAdminHubs / hubDenom);
+
+    const round1 = (x) => Math.round(x * 10) / 10;
+
     stats.high_risk_count = highRisk;
+    stats.security_score  = Math.round(
+      mfaScore + liveScore + shareScore + riskScore + adminScore
+    );
+    stats.score_components = {
+      mfa: round1(mfaScore),
+      liveness: round1(liveScore),
+      exposure: round1(shareScore),
+      risk: round1(riskScore),
+      bus_factor: round1(adminScore),
+    };
+    stats.signals = {
+      total_members: totalMembers,
+      mfa_members: mfaMembers,
+      active_members: activeMembers,
+      total_hubs: totalHubs,
+      multi_admin_hubs: multiAdminHubs,
+      active_shares: activeShares,
+      high_risk_count: highRisk,
+    };
 
     this.output.json(stats);
   }
