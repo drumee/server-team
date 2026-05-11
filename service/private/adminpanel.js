@@ -28,7 +28,6 @@ const Crypto = require("crypto");
 const Csv = require('csv-parser');
 const Uniqid = require('uniqid');
 const { Mfs, MfsTools } = require('@drumee/server-core');
-const { Mfs: Drumate } = require('@drumee/setup-schemas');
 const { createReadStream } = require('fs');
 const { remove_dir } = MfsTools;
 const { uniqueNamesGenerator, colors, animals, adjectives } = require('unique-names-generator');
@@ -1236,6 +1235,7 @@ class __private_adminpanel extends Mfs {
       profile_type: "standard",
     };
 
+    const { Mfs: Drumate } = require('@drumee/setup-schemas');
     let drumate = new Drumate({ yp: this.yp });
     let user = await drumate.create(profile);
     this.set({ email });
