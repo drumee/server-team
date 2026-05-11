@@ -322,7 +322,35 @@ class __admin extends Entity {
     ));
     const WORKSPACE_AREAS = new Set(['private', 'restricted', 'share']);
     rows = rows.filter(r => WORKSPACE_AREAS.has(r.area));
-    this.output.list(rows);
+    // Augment each workspace with its member count + last activity time.
+    // hub_member_stats lives in the hub's own schema (it needs to read
+    // <hub_db>.permission and <hub_db>.media), so resolve db_name per row.
+    const dom_id = this.user.domain_id();
+    const out = [];
+    for (const r of rows) {
+      let member_count = null;
+      let last_activity = null;
+      const hub_db = await this.yp.await_func('get_db_name', r.hub_id);
+      if (hub_db) {
+        try {
+          const stats = await this.yp.await_proc(
+            `${hub_db}.hub_member_stats`,
+            dom_id
+          );
+          const s = Array.isArray(stats) ? stats[0] : stats;
+          if (s) {
+            if (s.total_members != null) member_count = s.total_members;
+            if (s.last_activity) last_activity = s.last_activity;
+          }
+        } catch (e) {
+          // Fall through with nulls — UI hides the corresponding row.
+        }
+      }
+      // Prefer hub-content activity; fall back to entity-level mtime.
+      const mtime = last_activity || r.mtime || null;
+      out.push({ ...r, mtime, member_count });
+    }
+    this.output.list(out);
   }
 
   async get_hub_folders() {
