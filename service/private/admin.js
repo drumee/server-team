@@ -266,7 +266,9 @@ class __admin extends Entity {
   // WORKSPACE ADMIN — MEMBER TAB
   async hub_member_list() {
     let hub_id = this.input.need(Attr.hub_id);
-    let role = this.input.use('role', 'all');
+    let role = this.input.use('role_id', this.input.use('role', 'all'));
+    if (!role || role === 0 || role === '0') role = 'all';
+    let key = this.input.use('key', '');
     let page = this.input.use(Attr.page, 1);
     let hub_db = await this.yp.await_func('get_db_name', hub_id);
     if (!hub_db) return this.output.status('HUB_NOT_FOUND');
@@ -274,6 +276,7 @@ class __admin extends Entity {
       `${hub_db}.hub_member_list`,
       this.user.domain_id(),
       role,
+      key,
       page
     );
     this.output.list(res);
