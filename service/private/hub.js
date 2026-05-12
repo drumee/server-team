@@ -375,24 +375,13 @@ class __private_hub extends Hub {
    * Resolves inviter and hub names at read time so older rows render correctly.
    */
   async invite_received_get() {
-    const rows = await this.yp.await_query(
-      "SELECT a.id, a.timestamp AS ctime, a.uid AS author_id, " +
-      "       a.target_uid, a.event, a.data, " +
-      "       d.firstname    AS inviter_firstname, " +
-      "       d.lastname     AS inviter_lastname,  " +
-      "       d.email        AS inviter_email,     " +
-      "       e.headline     AS hub_headline,      " +
-      "       e.ident        AS hub_ident          " +
-      "  FROM yp.contact_activity a " +
-      "  LEFT JOIN yp.drumate d ON d.id = a.uid " +
-      "  LEFT JOIN yp.entity  e " +
-      "         ON e.id = JSON_UNQUOTE(JSON_EXTRACT(a.data, '$.hub_id')) " +
-      " WHERE a.target_uid = ? AND a.event = 'hub_invite_received' " +
-      "   AND a.dismissed_at IS NULL " +
-      " ORDER BY a.timestamp DESC LIMIT 50",
-      this.uid
-    );
-    const out = (rows || []).map((r) => {
+    // Delegated to drumate.notification_hub_invites so both this endpoint and
+    // activity.list (also a caller of the same proc) return identical data,
+    // including the per-(inviter, hub_id) dedupe.
+    const db_name = this.user.get(Attr.db_name);
+    const result = await this.yp.await_proc(`${db_name}.notification_hub_invites`);
+    const rows = toArray(result);
+    const out = rows.map((r) => {
       let meta = {};
       if (r.data) {
         try {
@@ -418,8 +407,8 @@ class __private_hub extends Hub {
         id: r.id,
         ctime: r.ctime,
         author_id: r.author_id,
-        target_uid: r.target_uid,
-        event: r.event,
+        target_uid: this.uid,
+        event: "hub_invite_received",
         hub_id,
         hub_name,
         firstname,
