@@ -764,6 +764,40 @@ class __private_channel extends Entity {
       }
     }
  
+    // Include P2P mentions from yp.contact_activity for mention/all tabs
+    if (type === 'mention' || type === 'all') {
+      try {
+        const p2pMentions = toArray(
+          await this.yp.await_query(
+            `SELECT ca.id, ca.timestamp AS ctime, ca.uid AS author_id,
+              JSON_UNQUOTE(JSON_EXTRACT(ca.data, '$.message_id')) AS message_id,
+              JSON_UNQUOTE(JSON_EXTRACT(ca.data, '$.peer_id')) AS drumate_id,
+              JSON_UNQUOTE(JSON_EXTRACT(ca.data, '$.message')) AS message,
+              CONCAT('["', ca.target_uid, '"]') AS mention_ids,
+              COALESCE(CONCAT(d.firstname, ' ', d.lastname), d.email, '') AS fullname,
+              COALESCE(d.firstname, '') AS firstname,
+              COALESCE(d.lastname, '') AS lastname,
+              0 AS is_read
+            FROM yp.contact_activity ca
+            LEFT JOIN yp.drumate d ON d.id = ca.uid
+            WHERE ca.target_uid = ? AND ca.event = 'p2p_mention' AND ca.dismissed_at IS NULL
+            ORDER BY ca.timestamp DESC LIMIT 45`,
+            this.uid
+          )
+        );
+        for (const row of p2pMentions) {
+          if (unread_only && row.is_read) continue;
+          // Use contact_invite category so the UI dismisses via contact_activity_dismiss
+          // (sets dismissed_at). The mention_ids field makes the skeleton render it as
+          // a mention ("X mentioned you") despite the contact_invite category.
+          row.category = 'contact_invite';
+          all_notifications.push(row);
+        }
+      } catch (e) {
+        this.warn('[channel.list_notifications] p2p mention query failed:', e && e.message);
+      }
+    }
+
     // Sort merged results by ctime DESC then apply pagination
     all_notifications.sort((a, b) => b.ctime - a.ctime);
  

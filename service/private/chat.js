@@ -48,11 +48,22 @@ class privateChat extends Entity {
    */
   async attachment() {
     let message_id = this.input.use(Attr.message_id);
+    let peer_id = this.input.use(Attr.peer_id);
     let page = this.input.use(Attr.page) || 1;
     let attach = {};
     let data = await this.db.await_proc("channel_get", message_id);
 
-    if (!isEmpty(data.attachment)) {
+    if (isEmpty(data)) {
+      // Fallback: P2P message stored in sender's p2p_channel
+      data = await this.db.await_proc("p2p_get_message", message_id);
+    }
+
+    // Cross-DB fallback for receiver: message is in the sender's (peer's) DB
+    if (isEmpty(data) && peer_id) {
+      data = await this.yp.await_proc("forward_proc", peer_id, "p2p_get_message", `'${message_id}'`);
+    }
+
+    if (!isEmpty(data) && !isEmpty(data.attachment)) {
       data.attachment = this.parseJSON(data.attachment);
       attach = data.attachment.slice((page - 1) * 5, page * 5);
       if (!isEmpty(attach)) {
@@ -69,6 +80,16 @@ class privateChat extends Entity {
     const peer_id = this.input.get(Attr.peer_id) || this.input.need(Attr.entity_id);
     const ref_ctime = this.input.use("ref_ctime");
     await this.db.await_proc("p2p_acknowledge", { peer_id, ref_ctime });
+    // Dismiss any P2P mention notifications from this peer
+    try {
+      await this.yp.await_query(
+        "UPDATE yp.contact_activity SET dismissed_at = UNIX_TIMESTAMP() WHERE event = 'p2p_mention' AND target_uid = ? AND uid = ? AND dismissed_at IS NULL",
+        this.uid,
+        peer_id
+      );
+    } catch (e) {
+      this.warn("[chat.acknowledge] p2p_mention dismiss failed:", e && e.message);
+    }
     this.output.data({ peer_id });
   }
 
@@ -144,13 +165,27 @@ class privateChat extends Entity {
       src.push({ nid: media, hub_id: this.uid });
     }
 
-    let data = await this.db.call_proc(
+    let data = await this.db.await_proc(
       "mfs_move_all",
       src,
       this.uid,
       desdir.id,
       sbox.hub_id
     );
+
+    this.debug("chat.move_attachemnt mfs_move_all result", data);
+    if (!data) return [];
+    // mfs_move_all returns multi-result: [statusRow, [opRows...]] — flatten to op rows only
+    let rows = [];
+    if (Array.isArray(data)) {
+      for (const item of data) {
+        if (Array.isArray(item)) rows.push(...item);
+        else if (item && item.action) rows.push(item);
+      }
+    } else if (data && data.action) {
+      rows = [data];
+    }
+    data = rows;
 
     attachment = [];
     for (let node of data) {
@@ -196,7 +231,7 @@ class privateChat extends Entity {
   /**
    *
    */
-  async threadInfo(thread_id, uid) {
+  async threadInfo(thread_id, uid, peer_id) {
     let thread = {};
     let data = await this.yp.await_proc(
       "forward_proc",
@@ -206,8 +241,28 @@ class privateChat extends Entity {
     );
 
     if (isEmpty(data)) {
+      // Fallback: may be a P2P message I sent (in my drumate DB)
+      data = await this.yp.await_proc(
+        "forward_proc",
+        uid,
+        "p2p_get_message",
+        `'${thread_id}'`
+      );
+    }
+
+    if (isEmpty(data) && !isEmpty(peer_id)) {
+      // Fallback: may be a P2P message the peer sent (in peer's drumate DB)
+      data = await this.yp.await_proc(
+        "forward_proc",
+        peer_id,
+        "p2p_get_message",
+        `'${thread_id}'`
+      );
+    }
+
+    if (isEmpty(data)) {
       thread.message = "DELETED";
-      thread.message_id = data.message_id;
+      thread.message_id = thread_id;
       return thread;
     }
 
@@ -295,6 +350,19 @@ class privateChat extends Entity {
     if (!isEmpty(thread_id)) {
       let data_thread = await this.db.await_proc("channel_get", thread_id);
       if (isEmpty(data_thread)) {
+        // Fallback: may be a P2P message I sent (in my drumate DB)
+        data_thread = await this.db.await_proc("p2p_get_message", thread_id);
+      }
+      if (isEmpty(data_thread)) {
+        // Fallback: may be a P2P message the peer sent (in peer's drumate DB)
+        data_thread = await this.yp.await_proc(
+          "forward_proc",
+          entity_id,
+          "p2p_get_message",
+          `'${thread_id}'`
+        );
+      }
+      if (isEmpty(data_thread)) {
         res.status = "INVALID_THREAD";
         return res;
       }
@@ -340,7 +408,7 @@ class privateChat extends Entity {
 
         mydata.entity = await this.entityInfo(this.uid, entity_id);
         if (!isEmpty(thread_id)) {
-          mydata.thread = await this.threadInfo(thread_id, this.uid);
+          mydata.thread = await this.threadInfo(thread_id, this.uid, entity_id);
         }
         let mycount = await this.yp.await_proc(
           "forward_proc",
@@ -381,6 +449,26 @@ class privateChat extends Entity {
         // the peer is the sender, not themselves)
         await RedisStore.sendData(this.payload({ ...hisdata, peer_id: this.uid }), hisDest);
         temp_result.push(hisdata);
+
+        // Log P2P mention to YP so the Mentions tab can surface it
+        if (!isEmpty(input.mention_ids)) {
+          const mentionedIds = isArray(input.mention_ids) ? input.mention_ids : this.parseJSON(input.mention_ids) || [];
+          const msgPreview = typeof message === 'string' ? message.substring(0, 200) : '';
+          for (const mentioned_uid of mentionedIds) {
+            if (mentioned_uid === this.uid) continue;
+            try {
+              await this.yp.await_proc(
+                "contact_log_activity",
+                this.uid,
+                mentioned_uid,
+                "p2p_mention",
+                { message_id: mydata.message_id, peer_id: this.uid, message: msgPreview }
+              );
+            } catch (e) {
+              this.warn("[chat._distributeMessage] p2p_mention log failed:", e && e.message);
+            }
+          }
+        }
       } else {
         let data = await this.yp.await_proc(
           "forward_proc",
@@ -428,23 +516,45 @@ class privateChat extends Entity {
     let input = {};
     let message_id = await this.yp.await_func("uniqueId");
     let sbox = await this.db.call_proc("mfs_wicket_home", this.uid);
-    if (sbox[5]) { /** Created by desk_create_hub */
+    if (sbox && sbox[5]) { /** Created by desk_create_hub */
       sbox = { ...sbox[5] }
     }
 
     if (!isEmpty(attachment)) {
-      let desdir = await this.yp.await_proc(
-        "forward_proc",
-        sbox.hub_id,
-        "mfs_make_dir",
-        `'${sbox.chat_id}','${stringify([message_id])}',1`
-      );
-      attachment = await this.move_attachemnt(
-        sbox,
-        desdir,
-        attachment,
-        message_id
-      );
+      if (!sbox || !sbox.hub_id || !sbox.chat_id) {
+        this.error("chat.post: mfs_wicket_home returned invalid sbox", sbox);
+        return this.output.data({ status: "SBOX_ERROR", sbox: stringify(sbox) });
+      }
+      let desdir;
+      try {
+        desdir = await this.yp.await_proc(
+          "forward_proc",
+          sbox.hub_id,
+          "mfs_make_dir",
+          `'${sbox.chat_id}','${stringify([message_id])}',1`
+        );
+        this.debug("chat.post desdir", desdir, "sbox", sbox);
+        if (!desdir || desdir.failed || !desdir.id) {
+          this.error("chat.post: mfs_make_dir failed", desdir);
+          return this.output.data({ status: "MKDIR_ERROR", desdir: stringify(desdir) });
+        }
+        attachment = await this.move_attachemnt(
+          sbox,
+          desdir,
+          attachment,
+          message_id
+        );
+        this.debug("chat.post attachment after move", attachment);
+      } catch (e) {
+        this.error("chat.post attachment error", e);
+        return this.output.data({
+          status: "ATTACHMENT_ERROR",
+          message: e && e.message ? e.message : String(e),
+          desdir: stringify(desdir),
+          sbox_hub_id: sbox && sbox.hub_id,
+          sbox_chat_id: sbox && sbox.chat_id,
+        });
+      }
     }
     input.author_id = this.uid;
     input.uid = this.uid;
@@ -614,7 +724,7 @@ class privateChat extends Entity {
         recipients.push(message.author_id);
       }
       if (!isEmpty(message.thread_id)) {
-        message.thread = await this.threadInfo(message.thread_id, this.uid);
+        message.thread = await this.threadInfo(message.thread_id, this.uid, peer_id);
       }
       messages.push(message);
     }
@@ -705,7 +815,20 @@ class privateChat extends Entity {
         } else {
           result = await this.db.await_proc("p2p_delete_me", { message_id });
         }
-        temp_result.push(result);
+        // p2p_delete_* procs return { result: JSON_string } — unwrap it
+        const parsed = result && typeof result.result === "string"
+          ? this.parseJSON(result.result)
+          : (result || {});
+        this.debug("chat.delete p2p", { option, message_id, peer_id, result, parsed });
+        if (!parsed.SUCCESS) continue;
+        temp_result.push({ message_id });
+        // Notify peer so their UI removes the message too
+        if (option === "all") {
+          const hisDest = await this.yp.await_proc("user_sockets", peer_id);
+          if (!isEmpty(hisDest)) {
+            await RedisStore.sendData(this.payload({ message_id }), hisDest);
+          }
+        }
       }
       return this.output.list(temp_result);
     }
