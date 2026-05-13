@@ -437,7 +437,7 @@ class privateChat extends Entity {
         "forward_proc",
         sbox.hub_id,
         "mfs_make_dir",
-        `'${sbox.chat_id}','${stringify(message_id)}',1`
+        `'${sbox.chat_id}','${stringify([message_id])}',1`
       );
       attachment = await this.move_attachemnt(
         sbox,

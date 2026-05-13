@@ -429,7 +429,7 @@ class __private_channel extends Entity {
       let message_id = await this.yp.await_func("uniqueId");
       let sbox = await this._get_wicket(this.uid);
       if (!isEmpty(attachment)) {
-        let desdir = await this.yp.await_proc('forward_proc', sbox.hub_id, 'mfs_make_dir', `'${sbox.ticket_id}','${stringify(message_id)}',1`)
+        let desdir = await this.yp.await_proc('forward_proc', sbox.hub_id, 'mfs_make_dir', `'${sbox.ticket_id}','${stringify([message_id])}',1`)
         attachment = await this.move_attachemnt(sbox, desdir, attachment, message_id)
       }
       metadata.status = 'new'
@@ -511,7 +511,7 @@ class __private_channel extends Entity {
       let sbox = await this._get_wicket(ticket.uid);
 
       if (!isEmpty(attachment)) {
-        let desdir = await this.yp.await_proc('forward_proc', sbox.hub_id, 'mfs_make_dir', `'${sbox.ticket_id}','${stringify(message_id)}',1`)
+        let desdir = await this.yp.await_proc('forward_proc', sbox.hub_id, 'mfs_make_dir', `'${sbox.ticket_id}','${stringify([message_id])}',1`)
         attachment = await this.move_attachemnt(sbox, desdir, attachment, message_id)
       }
 
@@ -584,7 +584,7 @@ class __private_channel extends Entity {
       sbox = await this.db.call_proc('mfs_home')
     }
     if (!isEmpty(attachment)) {
-      let desdir = await this.yp.await_proc('forward_proc', sbox.hub_id, 'mfs_make_dir', `'${sbox.chat_id}','${stringify(message_id)}',1`)
+      let desdir = await this.yp.await_proc('forward_proc', sbox.hub_id, 'mfs_make_dir', `'${sbox.chat_id}','${stringify([message_id])}',1`)
       attachment = await this.move_attachemnt(sbox, desdir, attachment, message_id)
     }
     input.author_id = this.uid
@@ -644,7 +644,7 @@ class __private_channel extends Entity {
 
     let sbox = await this.db.call_proc('mfs_home');
     if (!isEmpty(attachment)) {
-      let desdir = await this.yp.await_proc('forward_proc', sbox.hub_id, 'mfs_make_dir', `'${sbox.chat_id}','${stringify(message_id)}',1`);
+      let desdir = await this.yp.await_proc('forward_proc', sbox.hub_id, 'mfs_make_dir', `'${sbox.chat_id}','${stringify([message_id])}',1`);
       attachment = await this.move_attachemnt(sbox, desdir, attachment, message_id);
     }
 
@@ -728,8 +728,9 @@ class __private_channel extends Entity {
     try {
       hubs = toArray(
         await this.yp.await_query(
-          `SELECT id, db_name FROM entity
-          WHERE owner_id = ? AND type = 'hub' AND status = 'active'`,
+          `SELECT e.id, e.db_name, h.name FROM entity e
+          INNER JOIN hub h ON h.id = e.id
+          WHERE e.owner_id = ? AND e.type = 'hub' AND e.status = 'active'`,
           this.uid
         )
       );
@@ -751,9 +752,11 @@ class __private_channel extends Entity {
             1
           )
         );
-        // Tag each row with its hub_id
+        // Tag each row with hub context for renderer
         for (const row of rows) {
           row.hub_id = hub.id;
+          row.category = 'teamchat';
+          row.hub_name = hub.name || '';
           all_notifications.push(row);
         }
       } catch (e) {
