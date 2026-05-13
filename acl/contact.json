@@ -235,6 +235,30 @@
       "errors": []
     },
 
+    "email_in_use": {
+      "doc": "Check whether an email is already referenced by any of the caller's contacts — as the contact's entity (default identifier) or in their contact_email rows. Pass contact_id when editing to exclude that contact from the check.",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "params": {
+        "email": { "type": "string", "required": true, "doc": "Email address to check" },
+        "contact_id": { "type": "string", "required": false, "doc": "Contact ID to exclude (the one being edited)" }
+      },
+      "returns": {
+        "type": "object",
+        "doc": "Empty object when the email is free; otherwise a contact descriptor.",
+        "properties": {
+          "id": { "type": "string", "doc": "Conflicting contact ID" },
+          "firstname": { "type": "string", "doc": "Conflicting contact first name" },
+          "lastname": { "type": "string", "doc": "Conflicting contact last name" },
+          "entity": { "type": "string", "doc": "Conflicting contact entity identifier" },
+          "email": { "type": "string", "doc": "The matching email address that triggered the conflict" }
+        }
+      },
+      "errors": []
+    },
+
     "get_contact": {
       "doc": "Retrieve full details of a specific contact including all associated email addresses, phone numbers, postal addresses, and tags.",
       "scope": "hub",

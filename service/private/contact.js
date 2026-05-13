@@ -46,6 +46,7 @@ class __private_contact extends Contact {
     this.delete_contact_email = this.delete_contact_email.bind(this);
     this.delete_contact_phone = this.delete_contact_phone.bind(this);
     this.get_contact = this.get_contact.bind(this);
+    this.email_in_use = this.email_in_use.bind(this);
 
     this.invite_refuse = this.invite_refuse.bind(this);
     this.invite_accept = this.invite_accept.bind(this);
@@ -622,6 +623,21 @@ class __private_contact extends Contact {
     const contact_id = this.input.need(Attr.contact_id);
     let r = await this._show(contact_id);
     this.output.data(r);
+  }
+
+  /**
+   * Reports whether `email` is already referenced by one of the caller's
+   * contacts — either as that contact's `entity` (default identifier) or
+   * as any row in `contact_email`. `contact_id`, when provided, is excluded
+   * so editing a contact does not flag its own existing emails as collisions.
+   * Returns `{}` when the email is free, or a minimal contact descriptor
+   * `{ id, firstname, lastname, entity, email }` when it is in use.
+   */
+  async email_in_use() {
+    const email = this.input.need(Attr.email);
+    const contact_id = this.input.use(Attr.contact_id) || '';
+    const data = await this.db.await_proc('my_contact_email_in_use', email, contact_id);
+    this.output.data(isEmpty(data) ? {} : data);
   }
 
   /**
