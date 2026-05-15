@@ -723,15 +723,18 @@ class __private_channel extends Entity {
     const unread_only = this.input.use('unread_only', 0) ? 1 : 0;
     const page = this.input.use(Attr.page, 1);
  
-    // Get all active hubs owned by the current user
+    // Get all active hubs for the current user via their drumate media table.
+    // yp.entity does not have an owner_id column; the user's drumate DB (this.db)
+    // tracks all hubs they own/belong to via the media table (category='hub').
     let hubs = [];
     try {
       hubs = toArray(
-        await this.yp.await_query(
-          `SELECT e.id, e.db_name, h.name FROM entity e
-          INNER JOIN hub h ON h.id = e.id
-          WHERE e.owner_id = ? AND e.type = 'hub' AND e.status = 'active'`,
-          this.uid
+        await this.db.await_query(
+          `SELECT m.id AS id, e.db_name, IFNULL(h.name, m.user_filename) AS name
+           FROM media m
+           INNER JOIN yp.entity e ON e.id = m.id
+           LEFT JOIN yp.hub h ON h.id = m.id
+           WHERE m.category = 'hub' AND m.status = 'active'`
         )
       );
     } catch (e) {
