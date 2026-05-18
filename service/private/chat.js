@@ -561,7 +561,7 @@ class privateChat extends Entity {
               "forward_proc",
               sbox.hub_id,
               "add_member",
-              `'${entity_id}', 2, 0`
+              `'${entity_id}', 3, 0`
             );
             // Allow anonymous (src:anonymous) media endpoints to serve sbox files.
             // Files are protected by unguessable UUID nids — same security model as
@@ -865,7 +865,7 @@ class privateChat extends Entity {
     let res = {};
     let data = {};
     let temp_result = [];
-    this.debug("chat.delete called", { option, messages, peer_id: this.input.use(Attr.peer_id) });
+    this.info("chat.delete called", { option, messages, peer_id: this.input.use(Attr.peer_id) });
     if (option != "me" && option != "all") {
       res.status = "INVALID_OPTION";
       return this.output.data(res);
@@ -886,7 +886,7 @@ class privateChat extends Entity {
         const parsed = result && typeof result.result === "string"
           ? this.parseJSON(result.result)
           : (result || {});
-        this.debug("chat.delete p2p", { option, message_id, peer_id, result, parsed });
+        this.info("chat.delete p2p result", { option, message_id, peer_id, success: parsed && parsed.SUCCESS });
         if (!parsed.SUCCESS) continue;
         temp_result.push({ message_id });
         // For "delete for all": notify peer so their UI removes the message.

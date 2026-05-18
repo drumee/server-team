@@ -46,6 +46,7 @@ const {
 const { MfsTools, Generator, Document } = require("@drumee/server-core");
 const { check_base, remove_node, move_node, copy_node, mkdir, rmdir, cleanSeen } = MfsTools;
 const Media = require("../media");
+const { writeAudit } = require("./_audit");
 const { stringify } = JSON;
 const { isEmpty, isString, values } = require("lodash");
 const { join, resolve, basename, extname } = require("path");
@@ -929,6 +930,20 @@ class __private_media extends Media {
       sockets
     );
 
+    const hub_db = await this.yp.await_func('get_db_name', restored.hub_id);
+    if (hub_db) {
+      const ftype = restored.filetype || restored.category;
+      const fname = restored.filename || restored.user_filename || nid;
+      await writeAudit(this, {
+        db: hub_db,
+        uid: this.uid,
+        action: 'added',
+        category: 'media',
+        entity_id: nid,
+        log: `${ftype === 'folder' ? 'Folder' : 'File'} '${fname}' restored from trash`,
+      });
+    }
+
     this.output.data({ ...restored, args: { changelog } });
   }
 
@@ -1294,6 +1309,23 @@ class __private_media extends Media {
         }
       }
     }
+    // Snapshot filename/filetype before mfs_pre_trash_next moves rows
+    // to trash_media — needed for human-readable audit log lines.
+    const auditTargets = [];
+    for (const g of granted) {
+      try {
+        const hub_db = await this.yp.await_func('get_db_name', g.hub_id);
+        if (!hub_db) continue;
+        const attr = await this.yp.await_proc(`${hub_db}.mfs_node_attr`, g.nid);
+        if (!attr) continue;
+        auditTargets.push({
+          hub_db,
+          nid: g.nid,
+          filename: attr.user_filename || attr.filename || g.nid,
+          filetype: attr.category || attr.filetype,
+        });
+      } catch (e) { /* best-effort */ }
+    }
     let data = await this.db.await_proc(
       "mfs_pre_trash_next",
       granted,
@@ -1330,6 +1362,18 @@ class __private_media extends Media {
       recipients
     );
     this.output.add_data({ changelog });
+
+    for (const t of auditTargets) {
+      await writeAudit(this, {
+        db: t.hub_db,
+        uid: this.uid,
+        action: 'deleted',
+        category: 'media',
+        entity_id: t.nid,
+        log: `${t.filetype === 'hub' ? 'Workspace' : t.filetype === 'folder' ? 'Folder' : 'File'} '${t.filename}' moved to trash`,
+      });
+    }
+
     this.output.list(data);
   }
 
@@ -1537,6 +1581,17 @@ class __private_media extends Media {
       src: oldItems[this.uid],
       changelog: this.__changelog
     }
+
+    const old_name = (oldItems[this.uid] && oldItems[this.uid].filename) || node.filename || nid;
+    await writeAudit(this, {
+      db: this.hub.get(Attr.db_name),
+      uid: this.uid,
+      action: 'changed',
+      category: 'title',
+      entity_id: nid,
+      log: `${node[FILETYPE] === Attr.hub ? 'Workspace' : 'Item'} renamed from '${old_name}' to '${filename}'`,
+    });
+
     this.output.data(model);
   }
 

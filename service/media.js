@@ -20,6 +20,7 @@ const {
   RedisStore, Cache, sleep, Constants, sysEnv, getFileinfo
 } = require("@drumee/server-essentials");
 const indexQueue = require("../offline/queues/indexQueue");
+const { writeAudit } = require("./private/_audit");
 const { DENIED } = Events;
 const {
   BATCH_FILE,
@@ -182,6 +183,22 @@ class __media extends Mfs {
         changelog: this.__changelog
       }
     })
+
+    if (uid && parent.hub_id && node && node.nid) {
+      const hub_db = await this.yp.await_func('get_db_name', parent.hub_id);
+      if (hub_db) {
+        const fname = (node.filename || node.user_filename || node.nid);
+        await writeAudit(this, {
+          db: hub_db,
+          uid,
+          action: 'added',
+          category: 'media',
+          entity_id: node.nid,
+          log: `Folder '${fname}' created`,
+        });
+      }
+    }
+
     this.output.data(node);
   }
 

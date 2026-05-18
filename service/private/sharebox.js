@@ -419,7 +419,7 @@ class __private_sharebox extends __public {
       },
       handler: this.exception.email
     });
-    msg.send();
+    await msg.send();
   }
 
   /**
@@ -459,7 +459,7 @@ class __private_sharebox extends __public {
         },
         handler: this.exception.email
       });
-      msg.send();
+      await msg.send();
     }
     this.output.data(node);
   }
@@ -771,7 +771,7 @@ class __private_sharebox extends __public {
           },
           handler: this.exception.email
         });
-        msg.send();
+         await msg.send();
       }
     }
     return 1;

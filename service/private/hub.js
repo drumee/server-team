@@ -18,7 +18,7 @@ const {
   isEmpty, filter, isArray, difference, map
 } = require("lodash");
 const {
-  utils, RedisStore, Cache, Constants, Attr, Privilege, sysEnv, server_location
+  utils, RedisStore, Cache, Constants, Attr, Privilege, sysEnv, server_location, Messenger
 } = require("@drumee/server-essentials");
 const {
   INTERNAL_ERROR,
@@ -32,6 +32,7 @@ const { MfsTools } = require("@drumee/server-core");
 const { remove_dir } = MfsTools;
 const { toArray } = utils;
 const { stringify } = JSON;
+const { writeAudit } = require("./_audit");
 
 const Hub = require("../hub");
 class __private_hub extends Hub {
@@ -53,6 +54,7 @@ class __private_hub extends Hub {
     this.show_privilege = this.show_privilege.bind(this);
     this.add_contributors = this.add_contributors.bind(this);
     this.invite_received_get = this.invite_received_get.bind(this);
+    this.invite = this.invite.bind(this);
     this.invite_with_roles = this.invite_with_roles.bind(this);
     this.delete_contributor = this.delete_contributor.bind(this);
     this.get_space_usage = this.get_space_usage.bind(this);
@@ -202,6 +204,7 @@ class __private_hub extends Hub {
   async update_name() {
     const hub_id = this.hub.get(Attr.id);
     const name = this.input.need(Attr.name);
+    const old_name = this.hub.get(Attr.name) || this.hub.get('hubname');
     let sql = "SELECT * FROM hub WHERE name=?"
     let { id } = await this.yp.await_query(sql, name);
     if (id) {
@@ -218,6 +221,16 @@ class __private_hub extends Hub {
     node.name = hub.hubname;
     node.fieldName = 'hubname';
     await RedisStore.sendData(this.payload(node), recipients);
+
+    await writeAudit(this, {
+      db: this.hub.get(Attr.db_name),
+      uid: this.uid,
+      action: 'changed',
+      category: 'title',
+      entity_id: hub_id,
+      log: `Workspace renamed from '${old_name || hub_id}' to '${name}'`,
+    });
+
     this.output.data(node);
   }
 
@@ -236,19 +249,35 @@ class __private_hub extends Hub {
   update_settings() {
     const vars = this.input.need(Attr.vars);
     const hub_id = this.hub.get(Attr.id);
+    const hub_db = this.hub.get(Attr.db_name);
+    const hub_name = this.hub.get(Attr.name) || hub_id;
+    const self = this;
     async function f() {
       let v;
+      const changed = [];
       for (let k in vars) {
         v = vars[k];
-        await this.yp.await_proc("hub_change_settings", hub_id, k, v);
+        await self.yp.await_proc("hub_change_settings", hub_id, k, v);
+        changed.push(k);
+      }
+      if (changed.length) {
+        await writeAudit(self, {
+          db: hub_db,
+          uid: self.uid,
+          action: 'change_policy',
+          category: 'admin',
+          notify_to: 'admin',
+          entity_id: hub_id,
+          log: `Workspace '${hub_name}' settings updated: ${changed.join(', ')}`,
+        });
       }
       return null;
     }
     f()
       .then(function () {
-        this.yp.call_proc("get_settings", hub_id, this.output.data);
+        self.yp.call_proc("get_settings", hub_id, self.output.data);
       })
-      .catch(this.fallback);
+      .catch(self.fallback);
   }
 
   /**
@@ -523,47 +552,8 @@ class __private_hub extends Hub {
       }
     }
     for (let uid of members) {
-      let r = await this.db.await_proc("add_member", uid, privilege, expiry);
-      if (!r || !r.db_name) continue;
-      rows.push(r);
-      await this.db.await_proc(
-        "permission_grant",
-        "*",
-        uid,
-        expiry,
-        privilege,
-        "system",
-        message
-      );
-      await this.db.await_proc(
-        "permission_grant",
-        mfs_home.chat_upload_id,
-        uid,
-        0,
-        4,
-        "no_traversal",
-        "chat upload permission"
-      );
-      try {
-        await this.yp.await_proc(
-          "contact_log_activity",
-          this.uid,
-          uid,
-          "hub_invite_received",
-          {
-            hub_id: this.hub.get(Attr.id),
-            hub_name: hubname,
-            message: message,
-            from_fullname: username,
-            privilege: privilege
-          }
-        );
-      } catch (err) {
-        this.warn(
-          "[hub] add_contributors: log activity failed for", uid,
-          err && err.message
-        );
-      }
+      const r = await this._grantMembership(uid, privilege, expiry, message, mfs_home, hubname, username);
+      if (r) rows.push(r);
     }
     if (!isEmpty(rows)) {
       for (let recipient of toArray(rows)) {
@@ -629,6 +619,137 @@ class __private_hub extends Hub {
       1
     );
     this.output.data(users);
+  }
+
+  /**
+   * Cấp membership cho một drumate đã có tài khoản vào hub hiện tại.
+   * Dùng chung bởi add_contributors và invite (nhánh B).
+   * @param {string} uid         drumate id
+   * @param {number} privilege   bitmask quyền
+   * @param {number} expiry      số giờ hết hạn (0 = vĩnh viễn)
+   * @param {string} message
+   * @param {object} mfs_home    kết quả mfs_home (có chat_upload_id)
+   * @param {string} hub_name    tên hub (để ghi log activity)
+   * @param {string} from_fullname  tên người mời (để ghi log activity)
+   * @returns {object|null} row từ add_member
+   */
+  async _grantMembership(uid, privilege, expiry, message, mfs_home, hub_name, from_fullname) {
+    const r = await this.db.await_proc("add_member", uid, privilege, expiry);
+    if (!r || !r.db_name) return null;
+    await this.db.await_proc(
+      "permission_grant", "*", uid, expiry, privilege, "system", message
+    );
+    await this.db.await_proc(
+      "permission_grant", mfs_home.chat_upload_id, uid, 0, 4,
+      "no_traversal", "chat upload permission"
+    );
+    try {
+      await this.yp.await_proc(
+        "contact_log_activity", this.uid, uid, "hub_invite_received",
+        {
+          hub_id: this.hub.get(Attr.id),
+          hub_name: hub_name,
+          message: message,
+          from_fullname: from_fullname,
+          privilege: privilege,
+        }
+      );
+    } catch (err) {
+      this.warn(
+        "[hub] _grantMembership: log activity failed for", uid,
+        err && err.message
+      );
+    }
+    return r;
+  }
+
+  /**
+   * Mời người vào workspace. Rẽ nhánh theo area của hub + drumate status.
+   * Input: { hub_id, invitees:[email], permission, message? }
+   */
+  async invite() {
+    let invitees = toArray(this.input.need("invitees"));
+    const privilege = this.input.use(Attr.privilege)
+      || this.hub.get(Attr.settings).default_privilege;
+    const lang = this.user.language() || this.input.app_language();
+    const username = this.user.get("fullname");
+    const hubId = this.hub.get(Attr.id);
+    const hubname = this.hub.get(Attr.name);
+    const homepath = this.input.homepath();
+    const area = this.hub.get(Attr.area);
+    const isShareLink = (area === "share");
+    const EXPIRY_DAYS = 7;
+    const expiryTs = Math.floor(Date.now() / 1000) + EXPIRY_DAYS * 86400;
+    const message = this.input.use(Attr.message)
+      || Cache.message("_x_add_you_to_team", lang).format(username, hubname);
+    const mfs_home = await this.db.await_proc("mfs_home");
+    const results = [];
+
+    for (const email of invitees) {
+      try {
+        let drumate = await this.yp.await_proc("drumate_exists", email);
+        if (isArray(drumate)) drumate = drumate[0];
+        const isDrumate = drumate && drumate.id;
+
+        if (isShareLink) {
+          await this._inviteViaToken(email, hubId, privilege, expiryTs, username, hubname);
+          results.push({ email, branch: "A", status: "ok" });
+        } else if (isDrumate) {
+          await this._grantMembership(drumate.id, privilege, 0, message, mfs_home, hubname, username);
+          await this._sendInviteEmail("hub-invite-added", email,
+            `You've been added to ${hubname}`,
+            { inviter_name: username, workspace_name: hubname, link: `${homepath}#/desk/@${hubId}` });
+          results.push({ email, branch: "B", status: "ok" });
+        } else {
+          await this.yp.await_proc(
+            "yp_add_pending_invitation", hubId, 0, privilege, email
+          );
+          await this._sendInviteEmail("hub-invite-signup", email,
+            `${username} invited you to join ${hubname}`,
+            { inviter_name: username, workspace_name: hubname, link: `${homepath}#/welcome/signup?email=${encodeURIComponent(email)}` });
+          results.push({ email, branch: "C", status: "ok" });
+        }
+      } catch (err) {
+        this.warn("[hub] invite failed for", email, err && err.message);
+        results.push({ email, branch: null, status: "failed", reason: err && err.message });
+      }
+    }
+    this.output.data({ results });
+  }
+
+  /**
+   * Nhánh A: tạo token mời share-link + gửi email kèm link.
+   */
+  async _inviteViaToken(email, hubId, privilege, expiryTs, username, hubname) {
+    const { randomBytes } = require("crypto");
+    const secret = randomBytes(24).toString("hex");
+    const method = `hub_invite:${hubId}`;
+    const metadata = JSON.stringify({ hub_id: hubId, permission: privilege });
+    await this.yp.await_proc(
+      "token_hub_invite_add", email, "", secret, method, this.uid, metadata, expiryTs
+    );
+    const homepath = this.input.homepath();
+    const link = `${homepath}#/welcome/signup?invite=${encodeURIComponent(secret)}`;
+    await this._sendInviteEmail("hub-invite-link", email,
+      `${username} invited you to ${hubname}`,
+      { inviter_name: username, workspace_name: hubname, link, expiry_days: 7 });
+  }
+
+  /**
+   * Gửi 1 email mời theo template app-local service/private/templates/butler/<tpl>.html
+   */
+  async _sendInviteEmail(tpl, recipient, subject, data) {
+    const tplPath = resolve(__dirname, "templates", "butler", `${tpl}.html`);
+    const msg = new Messenger({ subject, recipient, handler: this.exception.email });
+    const html = msg.renderFrom(tplPath, data);
+    // Messenger.send() always resolves { recipient, error } — it never rejects
+    // (errors are routed to the handler). Inspect `error` so an SMTP-time
+    // rejection (e.g. unknown mailbox -> 550) surfaces as a failed invitee
+    // instead of a silent status:"ok".
+    const result = await msg.send({ html });
+    if (result && result.error) {
+      throw new Error(`Email delivery to ${recipient} failed: ${result.error}`);
+    }
   }
 
   /**
@@ -854,6 +975,18 @@ class __private_hub extends Hub {
     // let db_name = this.user.get(Attr.db_name);
     let old_node = this.granted_node(); //await this.yp.await_proc(`${db_name}.mfs_access_node`, this.uid, hub_id);
     let outout = { ...old_node, uid: this.uid, nid:hub_id, id: hub_id, hub_id }
+
+    // Write to deleter's drumate — hub DB is about to be dropped.
+    const hub_name = data.name || data.filename || hub_id;
+    await writeAudit(this, {
+      db: this.user.get(Attr.db_name),
+      uid: this.uid,
+      action: 'deleted',
+      category: 'admin',
+      notify_to: 'admin',
+      entity_id: hub_id,
+      log: `Workspace '${hub_name}' deleted`,
+    });
 
     let sockets = await this.yp.await_proc("entity_sockets", hub_id);
     await RedisStore.sendData(this.payload(outout), sockets);
@@ -1264,6 +1397,8 @@ class __private_hub extends Hub {
 
     let service = "media.remove";
     let hub_id = this.hub.get(Attr.id);
+    const hub_db = this.hub.get(Attr.db_name);
+    const hub_name = this.hub.get(Attr.name) || hub_id;
     for (let uid of members) {
       let { db_name } = await this.yp.await_proc("get_entity", uid);
       await this.yp.await_proc(`${db_name}.leave_hub`, hub_id);
@@ -1272,6 +1407,15 @@ class __private_hub extends Hub {
       let sockets = await this.yp.await_proc("user_sockets", uid);
       let payload = this.payload(node, { service });
       await RedisStore.sendData(payload, sockets);
+      await writeAudit(this, {
+        db: hub_db,
+        uid: this.uid,
+        action: 'removed',
+        category: 'member',
+        notify_to: 'admin',
+        entity_id: uid,
+        log: `Member removed from workspace '${hub_name}'`,
+      });
     }
     users = await this.db.await_proc(
       "hub_get_members_by_type",
@@ -1360,6 +1504,15 @@ class __private_hub extends Hub {
       "system",
       `Granted by ${this.user.get(Attr.email)}`
     )
+    await writeAudit(this, {
+      db: this.hub.get(Attr.db_name),
+      uid: this.uid,
+      action: 'grant_access',
+      category: 'permission',
+      notify_to: 'admin',
+      entity_id: uid,
+      log: `Member privilege set to ${privilege} in workspace '${this.hub.get(Attr.name) || this.hub.get(Attr.id)}'`,
+    });
     let users = await this.db.await_proc(
       "hub_get_members_by_type",
       this.uid,

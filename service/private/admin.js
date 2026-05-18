@@ -110,7 +110,56 @@ class __admin extends Entity {
     this.output.status('OK');
   }
 
-  // ADMIN CONSOLE — AUDIT LOGS TAB
+  // Aggregates action_log rows from hub DBs AND drumate DBs. Drumate
+  // pool is needed for events whose target hub DB is gone by read time
+  // (workspace deletion) — service handlers mirror those writes to the
+  // actor's drumate. Rows mirrored to both pools (e.g. create_workspace)
+  // are de-duped below.
+  async _collect_audit_window(username, from_time, to_time, window) {
+    const dom_id = this.user.domain_id();
+    const hubs     = toArray(await this.yp.await_proc('member_list_hubs_by_domain', dom_id));
+    const drumates = toArray(await this.yp.await_proc('member_list_drumates_by_domain', dom_id));
+
+    const pools = [
+      ...hubs.map(e => ({ ...e, _pool: 'hub' })),
+      ...drumates.map(e => ({ ...e, _pool: 'drumate' })),
+    ];
+
+    let merged = [];
+    let total = 0;
+    for (const e of pools) {
+      try {
+        const rows = toArray(await this.yp.await_proc(
+          `${e.db_name}.hub_get_audit_logs_window`,
+          username, from_time, to_time, window
+        ));
+        rows.forEach(r => { r.hub_id = e.id; r._pool = e._pool; });
+        merged = merged.concat(rows);
+
+        const countRow = toArray(await this.yp.await_proc(
+          `${e.db_name}.hub_get_audit_logs_count`,
+          username, from_time, to_time
+        ))[0];
+        if (countRow) total += parseInt(countRow.total, 10) || 0;
+      } catch (err) {
+        this.warn && this.warn('audit aggregator: read failed', e.db_name, err && err.message);
+      }
+    }
+
+    // Prefer the hub-pool row when an event is mirrored to both pools.
+    const seen = new Map();
+    for (const r of merged) {
+      const key = `${r.uid}|${r.ctime}|${r.action}|${r.category}|${r.entity_id || ''}`;
+      const existing = seen.get(key);
+      if (!existing || (existing._pool === 'drumate' && r._pool === 'hub')) {
+        seen.set(key, r);
+      }
+    }
+    const dedup = Array.from(seen.values());
+    const removed = merged.length - dedup.length;
+    return { rows: dedup, total: Math.max(0, total - removed) };
+  }
+
   async get_audit_logs() {
     const PAGE_SIZE = 20;
     let username  = this.input.use('username', '');
@@ -119,39 +168,17 @@ class __admin extends Entity {
     let page      = parseInt(this.input.use(Attr.page, 1), 10);
     if (!page || page < 1) page = 1;
 
-    const hubs = toArray(await this.yp.await_proc(
-      'member_list_hubs_by_domain',
-      this.user.domain_id()
-    ));
-
-    // To page correctly across N hubs we need the top (page * PAGE_SIZE) rows
-    // globally — and any hub's contribution to that global window is at most
-    // page * PAGE_SIZE rows from its own ctime-desc head. So we ask each hub
-    // for that many, merge, sort, then slice the requested page.
+    // To page correctly across N pools we need the top (page * PAGE_SIZE)
+    // rows globally — any one pool's contribution to that window is at
+    // most page * PAGE_SIZE rows from its own ctime-desc head.
     const window = page * PAGE_SIZE;
+    const { rows, total } = await this._collect_audit_window(username, from_time, to_time, window);
 
-    let allLogs = [];
-    let total   = 0;
-    for (const hub of hubs) {
-      const rows = toArray(await this.yp.await_proc(
-        `${hub.db_name}.hub_get_audit_logs_window`,
-        username, from_time, to_time, window
-      ));
-      rows.forEach(r => { r.hub_id = hub.id; });
-      allLogs = allLogs.concat(rows);
-
-      const countRow = toArray(await this.yp.await_proc(
-        `${hub.db_name}.hub_get_audit_logs_count`,
-        username, from_time, to_time
-      ))[0];
-      if (countRow) total += parseInt(countRow.total, 10) || 0;
-    }
-
-    allLogs.sort((a, b) => b.ctime - a.ctime);
+    rows.sort((a, b) => b.ctime - a.ctime);
 
     const offset = (page - 1) * PAGE_SIZE;
     this.output.json({
-      data: allLogs.slice(offset, offset + PAGE_SIZE),
+      data: rows.slice(offset, offset + PAGE_SIZE),
       total,
       page,
       page_size: PAGE_SIZE,
@@ -159,31 +186,17 @@ class __admin extends Entity {
   }
 
   async export_audit_logs() {
-    // Per-hub cap for the export. Each hub's action_log is bounded by retention
+    // Per-pool cap for the export. Each action_log is bounded by retention
     // policy in practice, so this comfortably covers normal exports without
-    // letting a runaway hub OOM the aggregator.
+    // letting a runaway pool OOM the aggregator.
     const EXPORT_CAP = 50000;
     let username  = this.input.use('username', '');
     let from_time = this.input.use('from_time', 0);
     let to_time   = this.input.use('to_time', 0);
 
-    const hubs = toArray(await this.yp.await_proc(
-      'member_list_hubs_by_domain',
-      this.user.domain_id()
-    ));
-
-    let allLogs = [];
-    for (const hub of hubs) {
-      const rows = toArray(await this.yp.await_proc(
-        `${hub.db_name}.hub_get_audit_logs_window`,
-        username, from_time, to_time, EXPORT_CAP
-      ));
-      rows.forEach(r => { r.hub_id = hub.id; });
-      allLogs = allLogs.concat(rows);
-    }
-
-    allLogs.sort((a, b) => b.ctime - a.ctime);
-    this.output.list(allLogs);
+    const { rows } = await this._collect_audit_window(username, from_time, to_time, EXPORT_CAP);
+    rows.sort((a, b) => b.ctime - a.ctime);
+    this.output.list(rows);
   }
 
   async get_hub_audit_logs() {

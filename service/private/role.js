@@ -652,7 +652,7 @@ class __private_adminpanel extends Mfs {
       },
       handler: this.exception.email
     });
-    let body = msg.send();
+    let body = await msg.send();
     if (_.isString(body)) {
       return {
         subject,
@@ -700,7 +700,7 @@ class __private_adminpanel extends Mfs {
       },
       handler: this.exception.email
     });
-    let body = msg.send();
+    let body = await msg.send();
     if (_.isString(body)) {
       return {
         subject,
@@ -738,7 +738,7 @@ class __private_adminpanel extends Mfs {
       },
       handler: this.exception.email
     });
-    let body = msg.send();
+    let body = await msg.send();
     if (_.isString(body)) {
       return {
         subject,

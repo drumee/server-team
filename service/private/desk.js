@@ -17,6 +17,7 @@
 
 const { isArray, after, union, filter, isEmpty } = require('lodash');
 const Media = require('../media');
+const { writeAudit } = require('./_audit');
 
 const {
   Attr, Privilege, toArray,
@@ -453,14 +454,38 @@ class __private_desk extends Media {
     let sockets = await this.yp.await_proc('entity_sockets', media.hub_id);
     await RedisStore.sendData(this.payload(media), sockets);
     await this.changelog_write({ src: media, event: "media.new" });
+
+    // Mirror to creator's drumate so the trail survives a later delete.
+    const hub_db = await this.yp.await_func('get_db_name', hub_id);
+    if (hub_db) {
+      await writeAudit(this, {
+        db: hub_db,
+        uid: this.uid,
+        action: 'create_workspace',
+        category: 'admin',
+        notify_to: 'admin',
+        entity_id: hub_id,
+        log: `Workspace '${actual_filename}' created (area=${area})`,
+      });
+    }
+    await writeAudit(this, {
+      db: this.user.get(Attr.db_name),
+      uid: this.uid,
+      action: 'create_workspace',
+      category: 'admin',
+      notify_to: 'admin',
+      entity_id: hub_id,
+      log: `Workspace '${actual_filename}' created (area=${area})`,
+    });
+
     this.output.data(media);
   }
 
   /**
-   * 
-   * @param {*} s 
-   * @param {*} status 
-   * @returns 
+   *
+   * @param {*} s
+   * @param {*} status
+   * @returns
    */
   async set_online_status() {
     let r = await this.pushUserOnlineStatus();
@@ -486,6 +511,30 @@ class __private_desk extends Media {
       return
     }
     await this.db.await_proc('leave_hub', hub_id);
+
+    // Mirror to leaver's drumate in case they later lose hub visibility.
+    const hub_db = await this.yp.await_func('get_db_name', hub_id);
+    if (hub_db) {
+      await writeAudit(this, {
+        db: hub_db,
+        uid: this.uid,
+        action: 'left',
+        category: 'member',
+        notify_to: 'admin',
+        entity_id: this.uid,
+        log: `Member left workspace`,
+      });
+    }
+    await writeAudit(this, {
+      db: this.user.get(Attr.db_name),
+      uid: this.uid,
+      action: 'left',
+      category: 'member',
+      notify_to: 'admin',
+      entity_id: hub_id,
+      log: `Left workspace`,
+    });
+
     this.output.data({ uid: this.uid, hub_id });
   }
 

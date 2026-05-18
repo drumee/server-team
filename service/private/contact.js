@@ -567,16 +567,22 @@ class __private_contact extends Contact {
    */
   async delete_contact() {
     const contact_id = this.input.need(Attr.contact_id);
-    let res = {};
+    const service = this.input.get(Attr.service);
     let mycontact = await this.db.await_proc('my_contact_get_next', contact_id, null)
     mycontact.contact_id = mycontact.id
-    res = await this.db.await_proc('my_contact_delete', contact_id);
-    if (!isEmpty(res)) {
-      let sockets = await this.yp.await_proc('user_sockets', res.his_id);
-      await RedisStore.sendData(this.payload(res), sockets);
+    const res = await this.db.await_proc('my_contact_delete', contact_id);
+    // Notify the other party so their Contacts / Pending list refreshes —
+    // my_contact_delete now hard-deletes the relationship on both sides.
+    // `his_id` comes from the proc; fall back to the contact row in case the
+    // single-row proc result collapsed away. The WS message must carry an
+    // explicit `service` or the receiver's onWsMessage switch ignores it.
+    const his_id = (res && res.his_id) || mycontact.uid || mycontact.entity;
+    if (his_id) {
+      const peerSockets = await this.yp.await_proc('user_sockets', his_id);
+      await RedisStore.sendData(this.payload(mycontact, { service }), peerSockets);
     }
-    let sockets = await this.yp.await_proc('user_sockets', this.uid);
-    await RedisStore.sendData(this.payload(mycontact), sockets);
+    const ownSockets = await this.yp.await_proc('user_sockets', this.uid);
+    await RedisStore.sendData(this.payload(mycontact, { service }), ownSockets);
     this.output.data(res);
   }
 
@@ -1213,13 +1219,20 @@ class __private_contact extends Contact {
     }
 
     try {
-      let a = email.split('@');
-      a[1] = a[0]
-      if (a[0].indexOf('.') !== -1) {
-        a = a[0].split('.');
+      // Only synthesize names from email when the caller didn't supply them.
+      // Without this guard, a local-part with no dot ends up duplicated into
+      // both firstname and lastname.
+      if (isEmpty(firstname) && isEmpty(lastname)) {
+        const localPart = (email.split('@')[0] || '').trim();
+        if (localPart.indexOf('.') !== -1) {
+          const parts = localPart.split('.');
+          firstname = parts[0];
+          lastname = parts.slice(1).join(' ');
+        } else {
+          firstname = localPart;
+          lastname = null;
+        }
       }
-      firstname = a[0]
-      lastname = a[1]
 
       drumate = await this.yp.await_proc('drumate_exists', email);
       if (isArray(drumate)) drumate = drumate[0];
@@ -1290,7 +1303,8 @@ class __private_contact extends Contact {
         if ((after.status != before.status) && (after.status == 'invitation' || after.status == 'received' || after.status == 'informed')) {
           data = await this.yp.await_proc('forward_proc', drumate.id, 'contact_notification_by_entity', `'${this.uid}'`)
           let sockets = await this.yp.await_proc('user_sockets', drumate.id);
-          await RedisStore.sendData(this.payload(data), sockets);
+          const service = this.input.get(Attr.service);
+          await RedisStore.sendData(this.payload(data, { service }), sockets);
         }
       }
 
@@ -1528,29 +1542,34 @@ class __private_contact extends Contact {
     await this.handshake(msg_from, peer.id, this.uid)
     await this.handshake(msg_to, this.uid, peer.id)
 
-    let sockets = await this.yp.await_proc('user_sockets', peer.id);
-    await RedisStore.sendData(this.payload(data, { service: this.input.get(Attr.service) }), sockets);
+    // Flip the inviter's contact record to 'informed' BEFORE pushing the
+    // WS — notification_center_next still includes 'informed' rows, so
+    // pushing first would leave the pending rollup on the inviter's panel.
+    try {
+      await this.yp.await_proc(`${peer.db_name}.contact_invite_informed`, this.uid);
+      await this.db.await_proc(`contact_invite_informed`, peer.id);
+    } catch (error) {
+      this.warn('[CONTACT] auto-informed failed:', error.message);
+    }
 
-    // Log invite_accepted activity
     try {
       await this.yp.await_proc(
         'contact_log_activity',
-        this.uid,              // Who accepted 
-        peer.id,            // Who will see this notification
+        this.uid,
+        peer.id,
         'invite_accepted',
         {
           email: peer.email,
           accepter_fullname: this.user.get('fullname')
         }
       );
-      /** Make the peer automatically informed  */
-      await this.yp.await_proc(`${peer.db_name}.contact_invite_informed`, this.uid);
-      await this.db.await_proc(`contact_invite_informed`, peer.id);
     } catch (error) {
       this.warn('[CONTACT] Failed to log accept activity:', error.message);
     }
 
-    this.output.data(res);
+    let sockets = await this.yp.await_proc('user_sockets', peer.id);
+    await RedisStore.sendData(this.payload(data, { service: this.input.get(Attr.service) }), sockets);
+
     this.output.data(res);
   }
 
@@ -1562,7 +1581,7 @@ class __private_contact extends Contact {
    */
   async invite_get() {
     const rows = await this.db.await_proc('contact_notification_get');
-    const list = Array.isArray(rows) ? rows : [];
+    const list = toArray(rows);
     if (list.length === 0) {
       this.output.list(list);
       return;
@@ -1583,7 +1602,7 @@ class __private_contact extends Contact {
         " ORDER BY a.timestamp DESC",
         this.uid, ...inviterIds
       );
-      for (const row of ids || []) {
+      for (const row of toArray(ids)) {
         if (!activityMap[row.uid]) activityMap[row.uid] = row.id;
       }
     }

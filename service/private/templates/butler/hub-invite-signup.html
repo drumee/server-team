@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title><%= inviter_name %> invited you to join <%= workspace_name %> on Drumee</title>
+</head>
+<body style="background: #f4f5f8; padding: 20px;">
+  <div style="max-width: 600px; margin: 0 auto; font-family: Arial, sans-serif; color: #333;">
+    <div style="background: #4b6cb7; padding: 20px; text-align: center; border-radius: 10px 10px 0 0;">
+      <h1 style="color: white; margin: 0;">Drumee</h1>
+    </div>
+    <div style="padding: 30px; background: #ffffff;">
+      <h2 style="color: #4b6cb7; text-align: center;">
+        You've been invited to join Drumee
+      </h2>
+      <p style="line-height: 1.6; text-align: left;">
+        Hello,
+      </p>
+      <p style="line-height: 1.6; text-align: left;">
+        <strong><%= inviter_name %></strong> has invited you to join <strong><%= workspace_name %></strong> on Drumee — a sovereign workspace for files, chat, and collaboration.
+      </p>
+      <p style="line-height: 1.6; text-align: left;">
+        Create your free account to get started and access the workspace.
+      </p>
+      <div style="text-align: center; margin: 30px 0;">
+        <a href="<%= link %>"
+          style="display: inline-block; background: #4b6cb7; color: white; padding: 12px 30px; text-decoration: none; border-radius: 30px; font-weight: bold;">
+          Sign up
+        </a>
+      </div>
+      <p style="color: #999; font-size: 13px; text-align: left;">
+        If you did not expect this invitation, you can safely ignore this email.
+      </p>
+      <p style="color: #666; text-align: left;">
+        The Drumee Team
+      </p>
+    </div>
+    <div style="background: #f0f0f0; padding: 20px; text-align: center; font-size: 14px; color: #666; border-radius: 0 0 10px 10px;">
+      <p>&copy; <%= new Date().getFullYear() %> Drumee. All rights reserved.</p>
+    </div>
+  </div>
+</body>
+</html>

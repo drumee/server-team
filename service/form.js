@@ -136,7 +136,7 @@ class __form extends Mfs {
       },
       handler: this.exception.email
     });
-    msg.send();
+    await msg.send();
   }
 
   /**

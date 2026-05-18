@@ -156,6 +156,38 @@
       "errors": []
     },
 
+    "invite": {
+      "doc": "Invite one or more emails into this workspace, branching on area (share-link vs restricted) and drumate status.",
+      "scope": "hub",
+      "permission": {
+        "src": "admin"
+      },
+      "params": {
+        "invitees": {
+          "type": "array",
+          "required": true,
+          "minItems": 1,
+          "doc": "Array of email addresses to invite",
+          "items": { "type": "string" }
+        },
+        "privilege": {
+          "type": "number",
+          "required": false,
+          "doc": "Privilege level to grant (defaults to hub's default_privilege)"
+        },
+        "message": {
+          "type": "string",
+          "required": false,
+          "doc": "Optional invitation message"
+        }
+      },
+      "returns": {
+        "results": {
+          "type": "array",
+          "doc": "Per-invitee result: { email, branch (A/B/C), status (ok/failed), reason? }"
+        }
+      }
+    },
     "add_contributors": {
       "doc": "Add members to hub with privilege and expiry settings (sends notifications)",
       "scope": "hub",

@@ -22,13 +22,13 @@ const { toArray, randomString } = utils;
 const { main_domain, myConf } = sysEnv();
 const { resolve } = require('path');
 const { stringify } = JSON;
-const { isEmpty, isArray, isString, uniqueId } = require('lodash');
+const { isEmpty, isArray, isString, uniqueId, template } = require('lodash');
 const Crypto = require("crypto");
 // const xlsxj = require("xlsx-to-json");
 const Csv = require('csv-parser');
 const Uniqid = require('uniqid');
 const { Mfs, MfsTools } = require('@drumee/server-core');
-const { createReadStream } = require('fs');
+const { createReadStream, readFileSync } = require('fs');
 const { remove_dir } = MfsTools;
 const { uniqueNamesGenerator, colors, animals, adjectives } = require('unique-names-generator');
 const hubNameConfig = {
@@ -1820,19 +1820,21 @@ class __private_adminpanel extends Mfs {
    */
   async _send_email(subject, recipient, data, tpl_file = 'message.html') {
     const ulang = this.input.ua_language();
-    let lex = Cache.lex(ulang)
-    let tpl = resolve(__dirname, "./templates", tpl_file)
+    let lex = Cache.lex(ulang);
+    let tplPath = resolve(__dirname, "./templates", tpl_file);
+    data.subject = subject;
+    data.signature = data.signature || lex._drumee_team;
+    data.footer = data.footer || lex._copyright.format(`${new Date().getFullYear()}`);
+    data.hello = data.hello || lex._hello_x.format(data.fullname || "");
+    const tplSrc = readFileSync(tplPath, 'utf8');
+    const html = template(tplSrc)(data);
     const msg = new Messenger({
       subject,
       recipient,
+      html,
       handler: this.exception.email,
     });
-    data.subject = subject;
-    data.signature = data.signature || lex._drumee_team;
-    data.footer = data.footer || lex._copyright.format(`${new Date().getFullYear()}`)
-    data.hello = data.hello || lex._hello_x.format(data.fullname || "")
-    let html = msg.renderFrom(tpl, data)
-    await msg.send({ html });
+    await msg.send({ from: myConf.mailSender });
   }
 
 
