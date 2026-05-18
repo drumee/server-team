@@ -401,7 +401,7 @@
     },
     "hub_member_list": {
       "doc": "Return a paginated list of members in a specific workspace hub with their hub-level permission, role label, and online status. Role label is derived from permission value: HUB_OWNER (>=63), HUB_ADMIN (>=31), MEMBER (<31). Online status is resolved from yp.socket.state='active'.",
-      "scope": "hub",
+      "scope": "domain",
       "permission": { "src": "admin" },
       "params": {
         "hub_id": {
@@ -445,7 +445,7 @@
     },
     "hub_member_stats": {
       "doc": "Return summary stat cards for the Workspace Admin Member tab: total members, admins (permission >= 31), external guests (domain_id differs from hub domain), and pending invites (placeholder 0 for Round 1).",
-      "scope": "hub",
+      "scope": "domain",
       "permission": { "src": "admin" },
       "params": {
         "hub_id": {
@@ -472,7 +472,7 @@
     },
     "hub_member_remove": {
       "doc": "Remove a member from a specific workspace hub by deleting their permission row (resource_id='*') and logging a removed action via hub_add_action_log.",
-      "scope": "hub",
+      "scope": "domain",
       "permission": { "src": "admin" },
       "params": {
         "hub_id": {
@@ -501,7 +501,7 @@
     },
     "get_workspace_overview": {
       "doc": "Return a domain-wide list of all workspaces visible to the calling user. Requires hub_id for scope:hub permission check but returns all workspaces the caller has admin access to in the domain via get_workspace_overview SP.",
-      "scope": "hub",
+      "scope": "domain",
       "permission": { "src": "admin" },
       "params": {
         "hub_id": {
