@@ -1,39 +1,187 @@
 {
   "services": {
     "info": {
+      "doc": "Retrieve DMZ share link metadata for a given token. Calls the dmz_info_next stored procedure and injects the platform guest_id into the response. Sets status to WRONG_TICKET when the token is not found, or REQUIRED_PASSWORD when the share requires a password.",
       "scope": "hub",
       "permission": {
         "src": "anonymous",
         "fast_check": "public-api"
-      }
+      },
+      "params": {
+        "token": {
+          "type": "string",
+          "required": true,
+          "doc": "DMZ share token to look up via the dmz_info_next stored procedure"
+        }
+      },
+      "returns": {
+        "status": {
+          "type": "string",
+          "doc": "Present only when an error condition is detected. WRONG_TICKET when the token does not exist; REQUIRED_PASSWORD when the share requires password authentication.",
+          "enum": ["WRONG_TICKET", "REQUIRED_PASSWORD"]
+        },
+        "guest_id": {
+          "type": "string",
+          "doc": "Platform guest user ID injected from Cache.getSysConf(guest_id)"
+        },
+        "hub_id": {
+          "type": "string",
+          "doc": "Hub ID of the shared resource, as returned by dmz_info_next"
+        },
+        "nid": {
+          "type": "string",
+          "doc": "MFS node ID of the shared resource, as returned by dmz_info_next"
+        },
+        "require_password": {
+          "type": "number",
+          "doc": "Flag indicating whether the share link requires password authentication"
+        }
+      },
+      "errors": [
+        {
+          "code": "MISSING_PARAM",
+          "message": "token is required",
+          "http_status": 400
+        }
+      ]
     },
     "login": {
+      "doc": "Authenticate and retrieve access information for a DMZ share link. Validates the token via dmz_info_next, optionally authenticates a side user from the regsid cookie, retrieves hub-level DMZ settings, and checks node access privilege. When the share requires a password and none is provided, returns REQUIRED_PASSWORD status. On password submission, attempts dmz_login and returns WRONG_PASSWORD or TICKET_OK accordingly. Returns merged user and share info on success.",
       "scope": "hub",
       "permission": {
         "src": "anonymous",
         "fast_check": "public-api"
-      }
+      },
+      "params": {
+        "token": {
+          "type": "string",
+          "required": true,
+          "doc": "DMZ share token to authenticate against"
+        },
+        "password": {
+          "type": "string",
+          "required": false,
+          "doc": "Password for the share link. Required only when the share has require_password set and the caller has not yet been granted node access privilege."
+        }
+      },
+      "returns": {
+        "status": {
+          "type": "string",
+          "doc": "Authentication status. TICKET_INVALID when the token does not exist; REQUIRED_PASSWORD when a password is needed; WRONG_PASSWORD when the submitted password is incorrect; TICKET_OK on success.",
+          "enum": ["TICKET_INVALID", "REQUIRED_PASSWORD", "WRONG_PASSWORD", "TICKET_OK"]
+        },
+        "uid": {
+          "type": "string",
+          "doc": "User ID resolved from the session or the side user cookie"
+        },
+        "guest_id": {
+          "type": "string",
+          "doc": "Guest user ID of the share owner as stored in dmz_info_next"
+        },
+        "area": {
+          "type": "string",
+          "doc": "Hub area from the current hub context"
+        },
+        "is_guest": {
+          "type": "boolean",
+          "doc": "True when the share owner is the platform guest user"
+        },
+        "require_pwd": {
+          "type": "number",
+          "doc": "Alias of require_password from the DMZ info record. Set to 0 on successful password authentication."
+        },
+        "hours": {
+          "type": "number",
+          "doc": "DMZ expiry hours from hub-level DMZ settings, when present"
+        },
+        "days": {
+          "type": "number",
+          "doc": "DMZ expiry days from hub-level DMZ settings, when present"
+        },
+        "require_name": {
+          "type": "number",
+          "doc": "Set to 1 for public shares when the guest has no guest_name set"
+        }
+      },
+      "errors": [
+        {
+          "code": "MISSING_PARAM",
+          "message": "token is required",
+          "http_status": 400
+        }
+      ]
     },
     "logout": {
+      "doc": "Terminate the current DMZ session by calling session.dmz_logout. No response body is returned.",
       "scope": "hub",
       "permission": {
         "src": "read",
         "fast_check": "public-api"
-      }
+      },
+      "params": {},
+      "returns": {}
     },
     "reset_sessions": {
+      "doc": "Force-logout all current members of the DMZ hub. Retrieves the full recipient list via dmz_notify_list and calls session_logout_by_admin for each member. Returns the full list of members whose sessions were reset.",
       "scope": "hub",
       "permission": {
         "src": "owner",
         "fast_check": "user_permission"
+      },
+      "params": {},
+      "returns": {
+        "members": {
+          "type": "array",
+          "doc": "List of member records whose sessions were reset, as returned by dmz_notify_list",
+          "items": {
+            "type": "object",
+            "properties": {
+              "recipient_id": {
+                "type": "string",
+                "doc": "User ID that was logged out via session_logout_by_admin"
+              }
+            }
+          }
+        }
       }
     },
     "signup": {
+      "doc": "Initiate the signup flow for a user invited via a DMZ share link. Validates the token via dmz_info_next, verifies the guest session cookie, checks that the email is not already registered, generates a signup token, sends an activation email with a link to the signup page, and updates the token metadata with the share hub context. Returns an object containing the signup link on success, or a status string indicating the failure reason.",
       "scope": "hub",
       "permission": {
         "src": "anonymous",
         "fast_check": "public-api"
-      }
+      },
+      "params": {
+        "token": {
+          "type": "string",
+          "required": true,
+          "doc": "DMZ share token used to look up the invitation record via dmz_info_next"
+        },
+        "socket_id": {
+          "type": "string",
+          "required": false,
+          "doc": "Socket ID of the requesting client. Used alongside the session cookie in the cookie_check_guest verification step."
+        }
+      },
+      "returns": {
+        "link": {
+          "type": "string",
+          "doc": "Signup activation URL in the format: homepath + #/welcome/signup/TOKEN. Present only on success."
+        },
+        "status": {
+          "type": "string",
+          "doc": "Error status. Present only when signup cannot proceed.",
+          "enum": ["WRONG_TICKET", "REQUIRED_PASSWORD", "EMAIL_EXIST", "FACTORY_FAILED"]
+        }
+      },
+      "errors": [
+        {
+          "code": "MISSING_PARAM",
+          "message": "token is required",
+          "http_status": 400
+        }
+      ]
     }
   },
   "modules": {

@@ -14,7 +14,7 @@
  * limitations under the License.
  * =============================================================================
  */
-const { Attr, Constants, Messenger, Cache } = require("@drumee/server-essentials");
+const { Attr, Constants, Messenger, Cache, RedisStore, toArray } = require("@drumee/server-essentials");
 const { Mfs } = require('@drumee/server-core');
 const { isEmpty } = require('lodash');
 const {
@@ -94,6 +94,33 @@ class __dmz extends Mfs {
     metadata.sharebox = res.hub_id;
     await this.yp.await_proc('token_update', token, metadata);
     await msg.send();
+
+    // Track signup_from_share_link
+    const shareHubId = res.hub_id || null;
+    const shareNid   = res.nid   || null;
+    try {
+      if (shareHubId) {
+        const hubDbName = await this.yp.await_func("get_db_name", shareHubId);
+        if (hubDbName) {
+          const track = await this.yp.await_proc(
+            `${hubDbName}.share_track_add`, 'signup_from_share_link', null, shareNid
+          );
+          const row = toArray(track)[0] || {};
+          if (row.inserted) {
+            const recipients = await this.yp.await_proc('entity_sockets', { hub_id: shareHubId });
+            await RedisStore.sendData(
+              this.payload(
+                { event: 'signup_from_share_link', nid: shareNid },
+                { service: 'share.track_event' }
+              ),
+              recipients
+            );
+          }
+        }
+      }
+    } catch (e) {
+      this.warn('[dmz.signup] signup_from_share_link tracking failed:', e && e.message);
+    }
     res = {};
     res.link = link;
     return this.output.data(res);
@@ -144,7 +171,11 @@ class __dmz extends Mfs {
       }
     }
     let rows = await this.yp.await_proc('forward_proc', info.hub_id, 'dmz_settings', ``);
-    if (rows[0] && rows[0].hours !== null) {
+    // dmz_expiry (infinity / active / expired) must be forwarded even when
+    // days/hours are NULL — duration_hours() returns NULL for an *expired*
+    // share, and the old `hours !== null` guard dropped the status exactly
+    // when it mattered. days/hours being null is tolerated downstream.
+    if (rows[0]) {
       info.hours = rows[0].hours;
       info.days = rows[0].days;
       info.dmz_expiry = rows[0].dmz_expiry;
@@ -188,6 +219,25 @@ class __dmz extends Mfs {
       user.profile.is_guest = is_guest;
     }
     let out = { ...user, ...info, guest_id: info.uid, area, is_guest };
+
+    // Track link_opened
+    try {
+      const actor_id = is_guest ? null : (user.id || null);
+      const track = await this.db.await_proc('share_track_add', 'link_opened', actor_id, info.nid || null);
+      const row = toArray(track)[0] || {};
+      if (row.inserted) {
+        const recipients = await this.yp.await_proc('entity_sockets', { hub_id: info.hub_id });
+        await RedisStore.sendData(
+          this.payload(
+            { event: 'link_opened', actor_id, nid: info.nid || null },
+            { service: 'share.track_event' }
+          ),
+          recipients
+        );
+      }
+    } catch (e) {
+      this.warn('[dmz.login] link_opened tracking failed:', e && e.message);
+    }
     this.output.data(out);
   }
 

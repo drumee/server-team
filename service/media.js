@@ -19,20 +19,18 @@ const {
   Attr, Events, Script, toArray, nullValue,
   RedisStore, Cache, sleep, Constants, sysEnv, getFileinfo
 } = require("@drumee/server-essentials");
+const indexQueue = require("../offline/queues/indexQueue");
+const { writeAudit } = require("./private/_audit");
 const { DENIED } = Events;
 const {
   BATCH_FILE,
   CARD,
-  CATEGORY,
   DIRNAME,
   DOWNLOAD_FOLDER,
-  EXTENSION,
   FAILED_CREATE_FILE,
-  FILENAME,
   FILESIZE,
   FOLDER,
   IMAGE,
-  MIMETYPE,
   NODE_ID,
   ORIGINAL,
   PREVIEW,
@@ -82,7 +80,8 @@ const { join, resolve, dirname, basename } = require("path");
 const Spawn = require("child_process").spawn;
 const DATA_ROOT = new RegExp(`^${data_dir}`);
 const SPAWN_OPT = { detached: true, stdio: ["ignore", "ignore", "ignore"] };
-const OFFLINE_DIR = resolve(server_home, "offline", "media");
+const OFFLINE_DIR = resolve(__dirname, "..", "offline", "media");
+
 class __media extends Mfs {
   /**
    *
@@ -112,7 +111,7 @@ class __media extends Mfs {
  */
   manifest() {
     let { id } = this.granted_node();
-    this.db.call_proc("mfs_manifest", id, this.uid, 1, this.output.list);
+    this.db.call_proc("mfs_manifest", { nid: id, uid: this.uid, show_nodes: 1 }, this.output.list);
   }
 
   /**
@@ -123,6 +122,7 @@ class __media extends Mfs {
     const parent = this.source_granted();
     const pid = parent.id || this.home_id;
     let ownpath = decodeURI(this.input.get(Attr.ownpath));
+    const metadata = this.input.get(Attr.metadata);
     let node;
     //let exclude = this.input.need(Attr.socket_id);
     //if (exclude) exclude = [exclude];
@@ -154,6 +154,12 @@ class __media extends Mfs {
       node = await this.db.await_proc("mfs_access_node", uid, dir.id);
     }
 
+    // Update metadata if provided
+    if (metadata && node && node.nid) {
+      await this.db.await_proc("mfs_update_metadata", node.nid, JSON.stringify(metadata));
+      // Refresh node data after metadata update
+      node = await this.db.await_proc("mfs_access_node", uid, node.nid);
+    }
     await this.changelog_write({ src: node, event: "media.new" });
 
     if (/^(.|.+\/.+| )$/.test(dirname)) {
@@ -177,33 +183,25 @@ class __media extends Mfs {
         changelog: this.__changelog
       }
     })
+
+    if (uid && parent.hub_id && node && node.nid) {
+      const hub_db = await this.yp.await_func('get_db_name', parent.hub_id);
+      if (hub_db) {
+        const fname = (node.filename || node.user_filename || node.nid);
+        await writeAudit(this, {
+          db: hub_db,
+          uid,
+          action: 'added',
+          category: 'media',
+          entity_id: node.nid,
+          log: `Folder '${fname}' created`,
+        });
+      }
+    }
+
     this.output.data(node);
   }
 
-  /**
-   * 
-   * @param {*} metadat 
-   */
-  cleanJson(data) {
-    if (!data) return {};
-    let tmp;
-    if (isString(data)) {
-      tmp = JSON.parse(data);
-      let exists = {};
-      if (isString(tmp._seen_)) {
-        let s = toArray(JSON.parse(tmp._seen_));
-        let seen = s.filter((e) => {
-          let key = keys(e)[0];
-          if (exists[key]) return false;
-          exists[key] = e[key];
-          return /[0-9a-f]{16,16}/i.test(key)
-        })
-        tmp._seen_ = stringify(seen);
-      }
-      return tmp;
-    }
-    return data;
-  }
 
   /**
    * ownpath refers to the absolute path within the hub, nid must be set to hone_id
@@ -360,7 +358,7 @@ class __media extends Mfs {
    */
   async configure_icon(nid, incoming_file, filename) {
     const c = await getFileinfo(incoming_file, filename);
-    const ext = c[EXTENSION];
+    const ext = c.extension;
 
     const filepath = join(this.user.get(Attr.home_dir), "__config__", "icons");
     mkdirSync(filepath, { recursive: true });
@@ -438,23 +436,119 @@ class __media extends Mfs {
       return true;
     }
 
-    let { storage } = await this.yp.await_proc("get_quota", this.uid) || {};
-    if (storage == Infinity) {
+    // Get quota info
+    let quotaResult = await this.yp.await_proc("get_quota", this.uid);
+
+    // Handle different result formats from driver
+    let quotaInfo = quotaResult;
+    if (quotaResult && quotaResult.length > 0) {
+      quotaInfo = quotaResult[0];
+    }
+
+    // Parse if string
+    if (typeof quotaInfo === 'string') {
+      try {
+        quotaInfo = JSON.parse(quotaInfo);
+      } catch (e) {
+        this.warn('[QUOTA] Failed to parse quota JSON:', e.message);
+        return true; // Fail open - don't block upload on parse error
+      }
+    }
+
+    let { storage, domain_id } = quotaInfo || {};
+
+    // No storage limit or infinite
+    if (!storage || storage == Infinity || storage === '9223372036854775807') {
       return true;
     }
 
     let curr_filesize = this.input.use(FILESIZE, 0);
-    let { usage } = await this.yp.await_proc("disk_usage", this.uid) || {};
-    let disk_used = parseInt(usage.total);
+    let disk_used = 0;
 
+    // Different logic for free vs paid plans
+    if (!domain_id || domain_id === 1) {
+      // FREE PLAN: Individual user quota
+      // Each free user has separate quota
+      // Will not sum all free users - they all share domain_id=1
+      let usageResult = await this.yp.await_proc("disk_usage", this.uid) || {};
+
+      // Handle different result formats
+      if (usageResult.usage) {
+        // Format 1: { usage: { total: 123 } }
+        let usage = usageResult.usage;
+        if (typeof usage === 'string') {
+          usage = JSON.parse(usage);
+        }
+        disk_used = parseInt(usage.total || 0);
+      } else if (usageResult[0] && usageResult[0].usage) {
+        // Format 2: [{ usage: "JSON" }]
+        let usage = usageResult[0].usage;
+        if (typeof usage === 'string') {
+          usage = JSON.parse(usage);
+        }
+        disk_used = parseInt(usage.total || 0);
+      } else {
+        disk_used = 0;
+      }
+
+      this.debug(`[QUOTA] Free plan check: user=${this.uid}, used=${disk_used}/${storage}`);
+
+    } else {
+      // PAID PLAN: Domain shared quota
+      // All users in organization share quota
+      // Cache is auto-synced by database trigger
+      let usageResult = await this.yp.await_proc("get_domain_usage", domain_id) || {};
+
+      // Handle different result formats
+      if (usageResult.usage) {
+        let usage = usageResult.usage;
+        if (typeof usage === 'string') {
+          usage = JSON.parse(usage);
+        }
+
+        // Check for error (shouldn't happen for domain_id > 1)
+        if (usage.error) {
+          this.warn('[QUOTA] Domain usage error:', usage.error);
+          // Fallback to individual check
+          let fallback = await this.yp.await_proc("disk_usage", this.uid) || {};
+          if (fallback.usage) {
+            let fb = typeof fallback.usage === 'string' ? JSON.parse(fallback.usage) : fallback.usage;
+            disk_used = parseInt(fb.total || 0);
+          }
+        } else {
+          disk_used = parseInt(usage.total || 0);
+        }
+      } else if (usageResult[0] && usageResult[0].usage) {
+        let usage = usageResult[0].usage;
+        if (typeof usage === 'string') {
+          usage = JSON.parse(usage);
+        }
+        disk_used = parseInt(usage.total || 0);
+      } else {
+        disk_used = 0;
+      }
+
+      this.debug(`[QUOTA] Paid plan check: domain=${domain_id}, used=${disk_used}/${storage}`);
+    }
+
+    // Check if upload would exceed limit
     if (disk_used + curr_filesize > storage) {
-      let error = Cache.message("your_limit_exceeded");
-      if (this.uid != owner_id) {
+      this.warn(`[QUOTA] Limit exceeded: used=${disk_used}, new=${curr_filesize}, limit=${storage}`);
+
+      let error;
+      if (!domain_id || domain_id === 1) {
+        // Free plan: your personal limit
+        error = Cache.message("your_limit_exceeded");
+      } else {
+        // Paid plan: organization limit
         error = Cache.message("limit_exceeded");
       }
+
       this.exception.user(error);
       return false;
     }
+
+    this.debug(`[QUOTA] Check passed: used=${disk_used}, new=${curr_filesize}, remaining=${storage - disk_used - curr_filesize}`);
     return true;
   }
 
@@ -474,6 +568,11 @@ class __media extends Mfs {
     if (!(await this.chekcDiskLimit())) return;
 
     const c = await getFileinfo(incoming_file, filename);
+    let { ext } = Cache.getFilecap(c.ext)
+    if (!ext) {
+      /** Update filecap table to ensure proper execution */
+      await this.yp.await_proc('add_filecap', c);
+    }
     const data = {};
     data.filename = c.filename;
     data.parent_id = parent.nid;
@@ -522,45 +621,173 @@ class __media extends Mfs {
 
 
   /**
- * In case of massive write, DB dead lock may appear
- * Retry until dead lock left or too much rety 
- */
+   * In case of massive write, DB dead lock may appear
+   * Retry until dead lock left or too much rety 
+   * 
+   * @param {string} id - Hub/node ID
+   * @param {Array<string>} path - Path segments
+   * @param {boolean} showResult - Whether to return result
+   * @returns {Object} Node object
+   * @throws {Error} If operation fails after retries
+   */
   async ensureMakeDir(id, path, showResult) {
+    // Configuration constants
+    const MAX_RETRIES = 5;
+    const MAX_DURATION_MS = 5000;
+    const MIN_BACKOFF_MS = 100;
+    const MAX_BACKOFF_MS = 2000;
+
+    const START_TIME = Date.now();
+
     let ownpath = join('/', ...path);
     let exists = await this.db.await_func("node_id_from_path", ownpath);
     let node = await this.db.await_proc("mfs_make_dir", id, path, showResult);
+
     let i = 0;
-    let failed;
-    let error;
+    let failed = null;
+    let error = null;
     const Moment = require("moment");
-    while (node[1] && i < 30) {
-      failed = '';
-      error = node[1]
+
+    while (node[1] && i < MAX_RETRIES) {
+      // Timeout protection
+      const elapsed = Date.now() - START_TIME;
+      if (elapsed > MAX_DURATION_MS) {
+        this.error('ensureMakeDir: Operation timeout exceeded', {
+          elapsed_ms: elapsed,
+          max_duration_ms: MAX_DURATION_MS,
+          retries: i,
+          path: ownpath,
+          sqlstate: node[1]?.sqlstate
+        });
+
+        throw this.exception.server({
+          message: 'MKDIR_OPERATION_TIMEOUT',
+          elapsed_ms: elapsed,
+          retries: i,
+          path: ownpath,
+          sqlstate: node[1]?.sqlstate
+        });
+      }
+
+      // Save error info
+      error = node[1];
+      failed = null;
+
+      // Handle specific SQL errors
       switch (node[1].sqlstate) {
-        case '40001':
-          failed = 'DEAD_LOCK_WAIT_TOOL_LONG';
-          await sleep(500);
-          node = await this.db.await_proc("mfs_make_dir", id, path, showResult);
+        case '40001':  // DEADLOCK
+          {
+            failed = 'DEADLOCK_DETECTED';
+
+            // Exponential backoff: 100ms, 200ms, 400ms, 800ms, 1600ms
+            const backoffDelay = Math.min(
+              MIN_BACKOFF_MS * Math.pow(2, i),
+              MAX_BACKOFF_MS
+            );
+
+            this.debug(`ensureMakeDir: Deadlock detected, retrying`, {
+              attempt: i + 1,
+              max_retries: MAX_RETRIES,
+              delay_ms: backoffDelay,
+              path: ownpath,
+              elapsed_ms: Date.now() - START_TIME
+            });
+
+            await sleep(backoffDelay);
+            node = await this.db.await_proc("mfs_make_dir", id, path, showResult);
+          }
           break;
-        case '23000':
-          failed = 'DUPLICATE_ENTRY';
-          await sleep(1000);
-          let t = Moment(Moment.now() / 1000, "X").format("YYYY-MM-DD@hh:mm:ss@");
-          args.filename = `${args.filename}-${t}`
-          node = await this.db.await_proc("mfs_make_dir", id, path, showResult);
+
+        case '23000':  // DUPLICATE_ENTRY
+          {
+            failed = 'DUPLICATE_ENTRY';
+
+            this.debug(`ensureMakeDir: Duplicate entry, retrying with timestamp`, {
+              attempt: i + 1,
+              max_retries: MAX_RETRIES,
+              path: ownpath
+            });
+
+            await sleep(1000);
+
+            // Create timestamped path
+            let t = Moment(Date.now() / 1000, "X").format("YYYY-MM-DD@HH-mm-ss");
+            let timestampedPath = [...path];
+
+            if (timestampedPath.length > 0) {
+              let lastSegment = timestampedPath[timestampedPath.length - 1];
+              timestampedPath[timestampedPath.length - 1] = `${lastSegment}-${t}`;
+            }
+
+            node = await this.db.await_proc("mfs_make_dir", id, timestampedPath, showResult);
+          }
           break;
-        default:
-          failed = `${UNEXPECTED_ERROR} ${node[1].sqlstate}`;
+
+        default:  // UNKNOWN ERROR
+          {
+            failed = `UNEXPECTED_SQL_ERROR_${node[1].sqlstate}`;
+
+            this.error(`ensureMakeDir: Unexpected SQL error`, {
+              sqlstate: node[1].sqlstate,
+              errno: node[1].errno,
+              sqlMessage: node[1].sqlMessage,
+              path: ownpath,
+              attempt: i + 1
+            });
+
+            // Break immediately
+            break;
+          }
       }
+
       i++;
-    }
-    if (failed) {
-      this.warn(`${failed}: mfs_create_node waited ${i} times`, error)
-    } else {
-      if (!exists && node.nid) {
-        await this.notifyNewNode(node);
+
+      // Break out early for unknown errors
+      if (failed && failed.startsWith('UNEXPECTED_SQL_ERROR')) {
+        break;
       }
     }
+
+    // Check if operation ultimately failed
+    if (node[1] || failed) {
+      const elapsed = Date.now() - START_TIME;
+
+      this.error(`ensureMakeDir: Operation failed after retries`, {
+        failed_reason: failed,
+        retries: i,
+        elapsed_ms: elapsed,
+        path: ownpath,
+        sqlstate: error?.sqlstate,
+        errno: error?.errno,
+        sqlMessage: error?.sqlMessage
+      });
+
+      // Throw error to propagate failure to caller
+      throw this.exception.server({
+        message: failed || 'MKDIR_FAILED',
+        retries: i,
+        elapsed_ms: elapsed,
+        path: ownpath,
+        sqlstate: error?.sqlstate,
+        errno: error?.errno,
+        originalError: error
+      });
+    }
+
+    // Success case
+    this.debug(`ensureMakeDir: Success`, {
+      path: ownpath,
+      nid: node.nid,
+      existed: !!exists,
+      retries: i,
+      elapsed_ms: Date.now() - START_TIME
+    });
+
+    // Notify if new node was created
+    if (!exists && node.nid) {
+      await this.notifyNewNode(node);
+    }
+
     return node;
   }
 
@@ -592,7 +819,7 @@ class __media extends Mfs {
           node = await this.db.await_proc("mfs_create_node", args, metadata, results);
           break;
         default:
-          failed = `${UNEXPECTED_ERROR} ${node[1].sqlstate}`;
+          failed = `UNEXPECTED_ERROR ${node[1].sqlstate}`;
       }
       i++;
     }
@@ -635,7 +862,7 @@ class __media extends Mfs {
     if (!data) {
       return { error: "failed_to_store" };
     }
-    filename = data[FILENAME] || this.randomString();
+    filename = data.filename || this.randomString();
     if (filename.length > 126) {
       filename = filename.slice(0, 126);
     }
@@ -644,10 +871,10 @@ class __media extends Mfs {
       owner_id: uid,
       filename,
       pid,
-      category: data[CATEGORY],
-      ext: data[EXTENSION],
-      mimetype: data[MIMETYPE],
-      filesize: data[FILESIZE],
+      category: data.category,
+      ext: data.extension,
+      mimetype: data.mimetype,
+      filesize: data.filesize,
       showResults: 1
     }
     let md = this.input.get(Attr.metadata);
@@ -670,7 +897,7 @@ class __media extends Mfs {
     }
     let res = await this.after_store(pid, incoming_file, node);
     if (res.error || res.done) {
-      return;
+      return res;
     }
 
     let service = "";
@@ -693,14 +920,26 @@ class __media extends Mfs {
       myData: res
     });
 
-    /** May reuqires CPU power -- stand by */
+    /** SEO Indexing via Bull Queue */
     // if ([Attr.document, Attr.image].includes(data[CATEGORY])) {
-    //   if (data[FILESIZE] < 1024 * 1024) {
-    //     Document.buildIndex(node);
-    //   } else {
-    //     TO DO : add yp.crontab
-    //   }
-    // }
+    if ([Attr.document].includes(data.category)) {
+      try {
+        // Add to indexing queue
+        res.actual_db = this.db._dbname;/** Require by the indexer. Do not use db_name, due to filter */
+        res.hub_db = this.db._dbname;
+        res.xdb = this.db._dbname;
+        indexQueue.addFile(res, {
+          uid: this.uid,
+          socket_id: this.input.get(Attr.socket_id),
+          hub_id: this.hub.get(Attr.id)
+        });
+
+        this.debug(`[MEDIA] Queued for indexing: ${res.filename}`);
+      } catch (error) {
+        // Don't fail upload if indexing queue fails
+        this.warn(`[MEDIA] Failed to queue for indexing: ${error.message}`);
+      }
+    }
 
     if (isFunction(callback)) {
       return callback(node);
@@ -955,11 +1194,21 @@ class __media extends Mfs {
   /**
    * 
    */
-  get_all() {
-    const node_id =
-      this.input.use(Attr.nid) || this.input.use(Attr.node_id, this.get_home_id());
+  async get_all() {
+    const node_id = this.input.use(Attr.nid) || this.input.use(Attr.node_id, this.get_home_id());
     const page = this.input.use(Attr.page, 1);
-    this.db.call_proc("mfs_list_all", node_id, page, this.output.data);
+    const VALID_TYPES = ['all', 'docs', 'pdf', 'image', 'other'];
+    let type = this.input.use(Attr.type, 'all');
+    if (!VALID_TYPES.includes(type)) {
+      type = 'all';
+    }
+    let data = await this.db.await_proc(
+      "mfs_show_node_by",
+      node_id,
+      this.uid,
+      { sort_by: 'date', order: 'desc', page, type }
+    );
+    this.output.list(data);
   }
 
   /**
@@ -967,22 +1216,25 @@ class __media extends Mfs {
    */
   async show_node_by() {
     const nid = this.source_granted().id || "0";
-    let sort = this.input.use(Attr.sort, Attr.rank).toLowerCase();
+    const VALID_TYPES = ['all', 'node', Attr.file, Attr.hub, 'docs', 'pdf', 'image', 'other'];
+    let sort_by = this.input.use(Attr.sort, Attr.rank).toLowerCase();
     let order = this.input.use(Attr.order, "asc").toLowerCase();
-    if (![Attr.rank, Attr.date, Attr.size, Attr.sort].includes(sort)) {
-      sort = Attr.rank;
+    let type = this.input.use(Attr.type, 'all');
+    if (![Attr.rank, Attr.date, Attr.size, Attr.sort].includes(sort_by)) {
+      sort_by = Attr.rank;
     }
     if (!["asc", "desc"].includes(order)) {
       order = "asc";
+    }
+    if (!VALID_TYPES.includes(type)) {
+      type = 'all';
     }
     const page = this.input.use(Attr.page, 1);
     let data = await this.db.await_proc(
       "mfs_show_node_by",
       nid,
       this.uid,
-      sort,
-      order,
-      page
+      { sort_by, order, page, type }
     );
     this.output.list(data);
   }
@@ -992,22 +1244,25 @@ class __media extends Mfs {
    */
   async show_node_by_with_size() {
     const nid = this.source_granted().id || "0";
-    let sort = this.input.use(Attr.sort, Attr.rank).toLowerCase();
+    const VALID_TYPES = ['all', 'node', 'file', 'hub', 'docs', 'pdf', 'image', 'other'];
+    let sort_by = this.input.use(Attr.sort, Attr.rank).toLowerCase();
     let order = this.input.use(Attr.order, "asc").toLowerCase();
-    if (![Attr.rank, Attr.date, Attr.size, Attr.sort].includes(sort)) {
-      sort = Attr.rank;
+    let type = this.input.use(Attr.type, 'all');
+    if (![Attr.rank, Attr.date, Attr.size, Attr.sort].includes(sort_by)) {
+      sort_by = Attr.rank;
     }
     if (!["asc", "desc"].includes(order)) {
       order = "asc";
+    }
+    if (!VALID_TYPES.includes(type)) {
+      type = 'all';
     }
     const page = this.input.use(Attr.page, 1);
     let branch = await this.db.await_proc(
       "mfs_show_node_by",
       nid,
       this.uid,
-      sort,
-      order,
-      page
+      { sort_by, order, page, type }
     );
     if (!isArray(branch)) {
       branch = [branch];
@@ -1015,9 +1270,8 @@ class __media extends Mfs {
     let tree = [];
     for (let file of branch) {
       if (file.ftype == "folder") {
-        let nodes = await this.db.await_proc("mfs_manifest", nid, this.uid, 0);
+        let nodes = await this.db.await_proc("mfs_manifest", { nid, uid: this.uid, show_nodes: 0 });
         file.filesize = nodes[0].total_size;
-        //file.node = nodes
       }
       tree.push(file);
     }
@@ -1056,22 +1310,9 @@ class __media extends Mfs {
    * Gets list of all medias inside a node.
    */
   async get_path() {
-    const node_id = this.source_granted().id;
-    const filenames = await this.db.call_proc("mfs_get_filenames", node_id);
-    const data = await this.db.call_proc("mfs_get_path", node_id);
-
-    const p = [];
-    if (isArray(data)) {
-      for (let d of data) {
-        if (!isEmpty(d)) {
-          p.push(d);
-        }
-      }
-    } else {
-      p.push(data);
-    }
-    this.output.add_data({ filenames });
-    this.output.data(p);
+    const { id } = this.source_granted();
+    const data = await this.db.await_proc("mfs_get_path", id, this.uid);
+    this.output.list(data);
   }
 
   /**
@@ -1090,6 +1331,84 @@ class __media extends Mfs {
    */
   media_search() {
     return this.exception.user("DEPRECATED")
+  }
+
+  /**
+  * Unified search: filenames + indexed content
+  * Service: media.search_all
+  * 
+  * Searches both:
+  * - Filenames
+  * - File extensions
+  * - Indexed content (words extracted from documents/images)
+  * 
+  * Returns results ranked by relevance:
+  * - Exact filename match: highest priority
+  * - Filename contains term: high priority  
+  * - Extension match: medium priority
+  * - Content match: lower priority
+  */
+  async search_all() {
+    const query = this.input.safe_string(Attr.string) ||
+      this.input.safe_string(Attr.query);
+
+    const hub_id = this.hub.get(Attr.id);
+    const page = this.input.use(Attr.page, 1);
+    const limit = this.input.use(Attr.limit, 20);
+
+    if (isEmpty(query)) {
+      this.output.list([]);
+      return;
+    }
+
+    const normalized_query = query.trim().replace(/ +/g, ' ');
+
+    if (normalized_query.length < 2) {
+      this.output.list([]);
+      return;
+    }
+
+    try {
+      this.debug(`[SEARCH] Query: "${normalized_query}" | Hub: ${hub_id} | Page: ${page}`);
+
+      const results = await this.db.await_proc(
+        'seo_search_unified',
+        hub_id,
+        this.uid,
+        normalized_query,
+        page,
+        limit
+      );
+
+      if (!results) {
+        this.output.list([]);
+        return;
+      }
+
+      const result_array = isArray(results) ? results : [results];
+
+      // Log search for analytics (don't fail if logging fails)
+      try {
+        await this.yp.await_proc(
+          'log_search',
+          this.uid,
+          hub_id,
+          normalized_query,
+          result_array.length
+        );
+      } catch (e) {
+        // Silently ignore logging errors
+        this.debug('[SEARCH] Failed to log search:', e.message);
+      }
+
+      this.output.list(result_array);
+
+    } catch (error) {
+      this.warn('[SEARCH] Search failed:', error.message);
+
+      // Return empty list on error instead of throwing exception
+      this.output.list([]);
+    }
   }
 
   /**
@@ -1339,18 +1658,14 @@ class __media extends Mfs {
     if (isArray(ids)) {
       let res = [];
       for (let n of ids) {
-        r = await this.yp.await_proc(
-          "redirect_proc",
-          n.hub_id,
-          "mfs_manifest",
-          [n.nid, this.uid, 1]
-        );
+        let db_name = await this.yp.await_func("get_db_name", n.hub_id);
+        r = await this.db.await_proc("mfs_manifest", { nid, uid: this.uid, show_nodes: 1 });
         res = res.concat(r[0]);
         size = parseInt(size) + parseInt(r[1].total_size);
       }
       nodes = [res, { size, total_size: size }, { filename }];
     } else {
-      r = await this.db.await_proc("mfs_manifest", nid, this.uid, 1);
+      r = await this.db.await_proc("mfs_manifest", { nid, uid: this.uid, show_nodes: 1 });
       filename = this.granted_node().filename || r[2].filename || "drumee";
       size = parseInt(r[1].total_size);
       nodes = [r[0], { size, total_size: size }, { filename }];
@@ -1443,22 +1758,25 @@ class __media extends Mfs {
    */
   async zip() {
     const id = this.input.need(Attr.id);
-    const hub_id = this.hub.get(Attr.id);
+    const zipname = this.input.need("zipname") || `index`;
+    // Use this.uid to match the path used by create_small_zip() and
+    // create_large_zip(). Using hub_id caused path mismatch in workspaces
+    // where hub_id ≠ uid, resulting in 404 on zip retrieval.
     const src = join(
       tmp_dir,
       DOWNLOAD_FOLDER,
-      hub_id,
+      this.uid,
       id,
-      `index.zip`
+      `${zipname}.zip`
     );
     const target = join(
       mfs_dir,
       DOWNLOAD_FOLDER,
-      hub_id,
+      this.uid,
       id
     );
     mkdirSync(target, { recursive: true });
-    const file = join(target, `index.zip`);
+    const file = join(target, `${zipname}.zip`);
     const fileio = new FileIo(this);
 
     // In case of download several time, remove existing symlink
@@ -1615,8 +1933,9 @@ class __media extends Mfs {
         this.warn("FAILED TO GET HTML CONTENT", e);
       }
       await this.send_media(data.id, ORIGINAL, null, "raw");
-      if (this.input.get("xid")) {
-        this.session.log_service();
+      let xid = this.input.get("xid")
+      if (xid) {
+        this.session.log_service({ xid });
       }
       return;
     }
@@ -1667,11 +1986,7 @@ class __media extends Mfs {
     switch (node.filetype) {
       case Attr.document:
         info = Document.getInfo(node);
-        if (
-          info.error == "FILE_NOT_FOUND" ||
-          !info.pdf ||
-          !existsSync(info.pdf)
-        ) {
+        if (info.error == "FILE_NOT_FOUND" || nullValue(info.pages) || !info.pdf || !existsSync(info.pdf)) {
           info = Document.rebuildInfo(
             node,
             this.uid,
@@ -1702,7 +2017,7 @@ class __media extends Mfs {
         break;
 
       case Attr.folder:
-        info = await this.db.await_proc("mfs_manifest", node.id, this.uid, 0);
+        info = await this.db.await_proc("mfs_manifest", { nid: node.id, uid: this.uid, show_nodes: 0 });
         break;
     }
     if (isEmpty(info)) {

@@ -109,7 +109,6 @@ const http = HttpServer.createServer(handler);
 
 Router.once(ROUTER_READY, async function () {
   console.log("START WEBSOCKET SERVER...", env.endpointAddress);
-  // await env.yp.await_query("SET @@character_set_collations = 'utf8mb4=utf8mb4_general_ci'", env.endpointAddress);
   await env.yp.await_proc("socket_reset", env.endpointAddress);
   new DrumeeCache();
   await DrumeeCache.load();
@@ -138,4 +137,9 @@ Router.once(ROUTER_READY, async function () {
 });
 
 http.listen(env.pushPort);
-configs.handleSignals();
+configs.handleSignals(async () => {
+  console.log("Reloading Page Server");
+  const { loadSysEnv } = require("@drumee/server-essentials");
+  await Cache.load(env.yp, 1);
+  loadSysEnv()
+});

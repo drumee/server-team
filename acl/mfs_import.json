@@ -5,14 +5,177 @@
       "scope": "hub",
       "permission": {
         "src": "write"
-      }
+      },
+      "params": {
+        "source_url": {
+          "type": "string",
+          "required": true,
+          "description": "Base URL of the source Drumee instance to import from (e.g. https://source.drumee.com)"
+        },
+        "hub_id": {
+          "type": "string",
+          "required": true,
+          "description": "Hub ID on the source Drumee instance containing the folder to import"
+        },
+        "nid": {
+          "type": "string",
+          "required": true,
+          "description": "Node ID of the folder on the source Drumee instance to import recursively"
+        },
+        "token": {
+          "type": "string",
+          "required": true,
+          "description": "MFS API token for authenticating requests to the source Drumee instance. Sent as x-param-mfs-token header."
+        },
+        "dest_nid": {
+          "type": "string",
+          "required": false,
+          "description": "Destination folder node ID in the local Drumee MFS where the imported content will be placed. Defaults to the current user home folder if not provided."
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Result object. On success contains status ok and import statistics. On failure contains status error with error code and message.",
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "Result status: ok on success, error on failure"
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable result message"
+          },
+          "stats": {
+            "type": "object",
+            "description": "Import statistics object, present on success. Contains folders, files, skipped counts and a per-file errors array."
+          },
+          "error": {
+            "type": "string",
+            "description": "Error code on failure: missing_parameters, invalid_dest, or internal_error"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "missing_parameters",
+          "message": "source_url, hub_id, nid, and token are required",
+          "returns": {
+            "status": "error",
+            "error": "missing_parameters"
+          }
+        },
+        {
+          "code": "invalid_dest",
+          "message": "Invalid destination folder ID",
+          "returns": {
+            "status": "error",
+            "error": "invalid_dest"
+          }
+        },
+        {
+          "code": "internal_error",
+          "message": "Failed to import: error message from exception",
+          "returns": {
+            "status": "error",
+            "error": "internal_error"
+          }
+        }
+      ]
     },
     "import_file": {
       "doc": "Import single file from another Drumee instance",
       "scope": "hub",
       "permission": {
         "src": "write"
-      }
+      },
+      "params": {
+        "source_url": {
+          "type": "string",
+          "required": true,
+          "description": "Base URL of the source Drumee instance to import from (e.g. https://source.drumee.com)"
+        },
+        "hub_id": {
+          "type": "string",
+          "required": true,
+          "description": "Hub ID on the source Drumee instance containing the file to import"
+        },
+        "nid": {
+          "type": "string",
+          "required": true,
+          "description": "Node ID of the file on the source Drumee instance to import"
+        },
+        "token": {
+          "type": "string",
+          "required": true,
+          "description": "MFS API token for authenticating requests to the source Drumee instance. Sent as x-param-mfs-token header."
+        },
+        "dest_nid": {
+          "type": "string",
+          "required": false,
+          "description": "Destination folder node ID in the local Drumee MFS where the imported file will be placed. Defaults to the current user home folder if not provided."
+        },
+        "filename": {
+          "type": "string",
+          "required": false,
+          "description": "Override filename for the imported file. If provided, the file is stored with this name instead of the original filename from the source."
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Result object. On success contains status ok and the newly created MFS node. On failure contains status error with error code and message.",
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "Result status: ok on success, error on failure"
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable result message"
+          },
+          "node": {
+            "type": "object",
+            "description": "The newly created MFS node object in local Drumee, present on success. Contains id, file_path, filename, mimetype, filesize, and other standard MFS node attributes."
+          },
+          "error": {
+            "type": "string",
+            "description": "Error code on failure: missing_parameters, invalid_dest, node_not_found, or internal_error"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "missing_parameters",
+          "message": "source_url, hub_id, nid, and token are required",
+          "returns": {
+            "status": "error",
+            "error": "missing_parameters"
+          }
+        },
+        {
+          "code": "invalid_dest",
+          "message": "Invalid destination folder ID",
+          "returns": {
+            "status": "error",
+            "error": "invalid_dest"
+          }
+        },
+        {
+          "code": "node_not_found",
+          "message": "File not found in source",
+          "returns": {
+            "status": "error",
+            "error": "node_not_found"
+          }
+        },
+        {
+          "code": "internal_error",
+          "message": "Failed to import file: error message from exception",
+          "returns": {
+            "status": "error",
+            "error": "internal_error"
+          }
+        }
+      ]
     }
   },
   "modules": {

@@ -1,16 +1,71 @@
 {
   "services": {
     "create": {
+      "doc": "Build a full-text search index for a granted document or image node. Checks the node filetype via source_granted() and triggers Document.buildIndex only for document or image types. Returns the node object if indexed, or an empty object if the filetype is not indexable.",
       "scope": "hub",
       "permission": {
         "src": "write"
-      }
+      },
+      "params": {},
+      "returns": {
+        "type": "object",
+        "description": "The source node object if indexing was triggered, or empty object if filetype is not indexable (not document or image)",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Node ID (present when node was indexed)"
+          },
+          "filetype": {
+            "type": "string",
+            "description": "Node filetype (document or image)"
+          }
+        }
+      },
+      "errors": []
     },
+
     "find": {
+      "doc": "Search indexed nodes using full-text keyword matching. Splits the search string on whitespace and common punctuation delimiters, then queries the seo_search stored procedure with the resulting word array. Returns an empty array immediately if the search string is blank. Results are paginated.",
       "scope": "hub",
       "permission": {
         "src": "read"
-      }
+      },
+      "params": {
+        "string": {
+          "type": "string",
+          "required": false,
+          "default": "",
+          "description": "Search query string. Split on spaces, commas, periods, semicolons, colons, exclamation marks, percent, at, slashes, equals, plus, hyphens, underscores, and hash characters. Returns empty array if blank."
+        },
+        "page": {
+          "type": "integer",
+          "required": false,
+          "default": 1,
+          "description": "Page number for paginated results"
+        }
+      },
+      "returns": {
+        "type": "array",
+        "description": "List of MFS node objects matching the search keywords. Each entry is a parsed JSON node record from the seo index.",
+        "items": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "Node ID"
+            },
+            "filename": {
+              "type": "string",
+              "description": "Node filename"
+            },
+            "filetype": {
+              "type": "string",
+              "description": "Node filetype"
+            }
+          }
+        }
+      },
+      "errors": []
     }
   },
   "modules": {

@@ -1,98 +1,900 @@
 {
   "services": {
     "acknowledge": {
+      "doc": "Mark a P2P conversation as read. Advances the read cursor (ref_ctime) for the conversation with the specified peer. No longer requires a specific message_id — acknowledges up to the current timestamp or a supplied ref_ctime.",
       "scope": "hub",
       "permission": {
         "src": "write"
-      }
+      },
+      "params": {
+        "peer_id": {
+          "type": "string",
+          "required": true,
+          "description": "The peer user ID whose conversation is being acknowledged. Accepts entity_id as alias."
+        },
+        "ref_ctime": {
+          "type": "integer",
+          "required": false,
+          "description": "Unix timestamp to acknowledge up to. Defaults to current server time if omitted."
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Acknowledgment confirmation",
+        "properties": {
+          "peer_id": {
+            "type": "string",
+            "description": "Peer ID that was acknowledged"
+          }
+        }
+      },
+      "errors": []
     },
+
     "attachment": {
+      "doc": "Get attachments for a specific message with pagination. Returns media files attached to a message, with 5 items per page. Each attachment includes full file metadata.",
       "scope": "hub",
       "permission": {
         "src": "read"
-      }
+      },
+      "params": {
+        "message_id": {
+          "type": "string",
+          "required": true,
+          "description": "ID of the message to get attachments for"
+        },
+        "page": {
+          "type": "integer",
+          "required": false,
+          "default": 1,
+          "description": "Page number for pagination (5 attachments per page)"
+        }
+      },
+      "returns": {
+        "type": "array",
+        "description": "List of attachment file objects (5 per page)",
+        "items": {
+          "type": "object",
+          "properties": {
+            "nid": {
+              "type": "string",
+              "description": "File node ID"
+            },
+            "hub_id": {
+              "type": "string",
+              "description": "Hub ID where file is stored"
+            },
+            "file_name": {
+              "type": "string",
+              "description": "Name of the file"
+            },
+            "filesize": {
+              "type": "integer",
+              "description": "File size in bytes"
+            },
+            "extension": {
+              "type": "string",
+              "description": "File extension"
+            },
+            "category": {
+              "type": "string",
+              "description": "File category (image, video, document, etc.)"
+            },
+            "privilege": {
+              "type": "integer",
+              "description": "User's access privilege level"
+            },
+            "page": {
+              "type": "integer",
+              "description": "Current page number"
+            }
+          }
+        }
+      },
+      "errors": []
     },
+
     "chat_rooms": {
+      "doc": "List chat rooms with filtering and pagination. Returns paginated list of chat rooms with optional filtering by tag, keyword, flag, and status (active/archived).",
       "scope": "hub",
       "permission": {
         "src": "write"
-      }
+      },
+      "params": {
+        "tag_id": {
+          "type": "string",
+          "required": false,
+          "default": "",
+          "description": "Filter by tag ID"
+        },
+        "page": {
+          "type": "integer",
+          "required": false,
+          "default": 1,
+          "description": "Page number for pagination"
+        },
+        "key": {
+          "type": "string",
+          "required": false,
+          "default": "",
+          "description": "Search keyword to filter chat rooms"
+        },
+        "flag": {
+          "type": "string",
+          "required": false,
+          "default": "",
+          "description": "Additional flag filter"
+        },
+        "option": {
+          "type": "string",
+          "required": false,
+          "default": "active",
+          "description": "Room status filter (active or archived)"
+        }
+      },
+      "returns": {
+        "type": "array",
+        "description": "Paginated list of chat rooms matching filters",
+        "items": {
+          "type": "object",
+          "properties": {
+            "entity_id": {
+              "type": "string",
+              "description": "Chat room entity ID"
+            },
+            "contact_id": {
+              "type": "string",
+              "description": "Contact ID"
+            },
+            "firstname": {
+              "type": "string",
+              "description": "Contact first name"
+            },
+            "lastname": {
+              "type": "string",
+              "description": "Contact last name"
+            },
+            "last_message": {
+              "type": "string",
+              "description": "Preview of last message"
+            },
+            "unread_count": {
+              "type": "integer",
+              "description": "Number of unread messages"
+            },
+            "last_activity": {
+              "type": "integer",
+              "description": "Timestamp of last activity"
+            }
+          }
+        }
+      },
+      "errors": []
     },
+
     "chat_room_info": {
+      "doc": "Get detailed information about a specific chat room. Returns complete metadata and current status of a chat room identified by key.",
       "scope": "hub",
       "permission": {
         "src": "write"
-      }
+      },
+      "params": {
+        "key": {
+          "type": "string",
+          "required": true,
+          "description": "Chat room identifier/key"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Chat room details",
+        "properties": {
+          "entity_id": {
+            "type": "string",
+            "description": "Room entity ID"
+          },
+          "contact_id": {
+            "type": "string",
+            "description": "Associated contact ID"
+          },
+          "firstname": {
+            "type": "string",
+            "description": "Contact first name"
+          },
+          "lastname": {
+            "type": "string",
+            "description": "Contact last name"
+          },
+          "status": {
+            "type": "string",
+            "description": "Room status (active/archived)"
+          },
+          "unread_count": {
+            "type": "integer",
+            "description": "Unread message count"
+          }
+        }
+      },
+      "errors": []
     },
+
     "change_status": {
+      "doc": "Change chat room status (archive or unarchive). Archives or restores a chat conversation. Triggers WebSocket notification to update UI across all user sessions.",
       "scope": "hub",
       "permission": {
         "src": "write"
-      }
+      },
+      "params": {
+        "entity_id": {
+          "type": "string",
+          "required": true,
+          "description": "Chat entity/contact ID to change status for"
+        },
+        "status": {
+          "type": "string",
+          "required": true,
+          "description": "New status: 'archived' or 'active'"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Updated chat room status",
+        "properties": {
+          "entity_id": {
+            "type": "string",
+            "description": "Chat entity ID"
+          },
+          "status": {
+            "type": "string",
+            "description": "New status (archived/active)"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "INVALID_STATUS0",
+          "message": "Status must be 'archived' or 'active'",
+          "returns": {
+            "status": "INVALID_STATUS0"
+          }
+        }
+      ]
     },
+
     "contact_rooms": {
+      "doc": "List chat rooms filtered by contacts. Returns chat rooms specifically for direct contact conversations (not group chats), with optional tag and keyword filtering.",
       "scope": "hub",
       "permission": {
         "src": "write"
-      }
+      },
+      "params": {
+        "tag_id": {
+          "type": "string",
+          "required": false,
+          "default": "",
+          "description": "Filter by contact tag ID"
+        },
+        "page": {
+          "type": "integer",
+          "required": false,
+          "default": 1,
+          "description": "Page number for pagination"
+        },
+        "key": {
+          "type": "string",
+          "required": false,
+          "default": "",
+          "description": "Search keyword to filter rooms"
+        }
+      },
+      "returns": {
+        "type": "array",
+        "description": "Paginated list of contact chat rooms",
+        "items": {
+          "type": "object",
+          "properties": {
+            "entity_id": {
+              "type": "string",
+              "description": "Contact entity ID"
+            },
+            "contact_id": {
+              "type": "string",
+              "description": "Contact ID"
+            },
+            "firstname": {
+              "type": "string",
+              "description": "Contact first name"
+            },
+            "lastname": {
+              "type": "string",
+              "description": "Contact last name"
+            },
+            "last_message": {
+              "type": "string",
+              "description": "Last message preview"
+            },
+            "unread_count": {
+              "type": "integer",
+              "description": "Unread messages count"
+            }
+          }
+        }
+      },
+      "errors": []
     },
+
     "count_all": {
+      "doc": "Get unread message counts across all chat categories. Returns breakdown by contact P2P chats, shared hub chats, archived chats, and support tickets.",
       "scope": "hub",
       "permission": {
         "src": "write"
-      }
+      },
+      "params": {},
+      "returns": {
+        "type": "object",
+        "description": "Unread count breakdown",
+        "properties": {
+          "contact_chat_cnt": {
+            "type": "integer",
+            "description": "Unread P2P contact conversations (excluding archived)"
+          },
+          "share_chat_cnt": {
+            "type": "integer",
+            "description": "Unread messages in shared hub rooms"
+          },
+          "archive_chat_cnt": {
+            "type": "integer",
+            "description": "Unread messages in archived conversations"
+          },
+          "support_cnt": {
+            "type": "integer",
+            "description": "Unread support ticket messages"
+          },
+          "head_chat_cnt": {
+            "type": "integer",
+            "description": "Total number of conversations with any unread"
+          },
+          "total_cnt": {
+            "type": "integer",
+            "description": "Grand total unread across all categories"
+          }
+        }
+      },
+      "errors": []
     },
+
     "delete": {
+      "doc": "Delete messages from a P2P or hub chat. For P2P: pass peer_id to activate the P2P delete path — 'me' soft-deletes from sender DB, 'all' deletes from both sides via cross-DB. For hub chat: omit peer_id (legacy path). Option 'all' requires user to be the message author.",
       "scope": "hub",
       "permission": {
         "src": "write"
-      }
+      },
+      "params": {
+        "option": {
+          "type": "string",
+          "required": true,
+          "description": "'me' to hide from self only, 'all' to delete for both parties (author only)"
+        },
+        "messages": {
+          "type": "array",
+          "required": true,
+          "description": "Array of message IDs to delete",
+          "items": {
+            "type": "string",
+            "description": "message_id"
+          }
+        },
+        "peer_id": {
+          "type": "string",
+          "required": false,
+          "description": "Peer user ID. Required for P2P delete. If omitted, falls through to hub chat delete path."
+        }
+      },
+      "returns": {
+        "type": "array",
+        "description": "Deletion result per message",
+        "items": {
+          "type": "object",
+          "properties": {
+            "message_id": {
+              "type": "string",
+              "description": "Deleted message ID"
+            }
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "INVALID_OPTION",
+          "message": "Option must be 'me' or 'all'",
+          "returns": { "status": "INVALID_OPTION" }
+        },
+        {
+          "code": "INVALID_MESSAGES",
+          "message": "One or more message IDs do not exist",
+          "returns": { "status": "INVALID_MESSAGES" }
+        }
+      ]
     },
+
     "forward": {
+      "doc": "Forward messages to multiple recipients. Takes existing messages and sends copies to specified entities. Preserves original message content and attachments. Supports bulk forwarding.",
       "scope": "hub",
       "permission": {
         "src": "write"
-      }
+      },
+      "params": {
+        "entities": {
+          "type": "array",
+          "required": true,
+          "description": "Array of entity IDs to forward messages to",
+          "items": {
+            "type": "string",
+            "description": "Recipient entity ID"
+          }
+        },
+        "nodes": {
+          "type": "object",
+          "required": true,
+          "description": "Message nodes to forward (contains message IDs and metadata)"
+        }
+      },
+      "returns": {
+        "type": "array",
+        "description": "List of forwarded messages sent to each recipient",
+        "items": {
+          "type": "object",
+          "properties": {
+            "message_id": {
+              "type": "string",
+              "description": "New message ID (copy)"
+            },
+            "entity_id": {
+              "type": "string",
+              "description": "Recipient entity ID"
+            },
+            "forward_message_id": {
+              "type": "string",
+              "description": "Original message ID that was forwarded"
+            },
+            "author_id": {
+              "type": "string",
+              "description": "Forward sender's user ID"
+            },
+            "is_attachment": {
+              "type": "integer",
+              "description": "1 if message has attachments, 0 otherwise"
+            }
+          }
+        }
+      },
+      "errors": []
     },
+
     "messages": {
+      "doc": "Get paginated message list for a P2P conversation. Returns messages from both sides of the conversation (sent and received), merged and sorted by ctime descending. Automatically advances the read cursor. Notifies message authors via WebSocket that their messages were seen.",
       "scope": "hub",
       "permission": {
         "src": "write"
-      }
+      },
+      "params": {
+        "entity_id": {
+          "type": "string",
+          "required": true,
+          "description": "Peer user ID to load conversation with. Also accepted as peer_id."
+        },
+        "page": {
+          "type": "integer",
+          "required": false,
+          "default": 1,
+          "description": "Page number for pagination"
+        }
+      },
+      "returns": {
+        "type": "array",
+        "description": "Paginated list of messages from both sides of the P2P conversation",
+        "items": {
+          "type": "object",
+          "properties": {
+            "sys_id": {
+              "type": "integer",
+              "description": "Message row ID"
+            },
+            "peer_id": {
+              "type": "string",
+              "description": "The peer this message belongs to (replaces entity_id)"
+            },
+            "message_id": {
+              "type": "string",
+              "description": "Unique message ID"
+            },
+            "author_id": {
+              "type": "string",
+              "description": "User ID who sent the message"
+            },
+            "message": {
+              "type": "string",
+              "description": "Message text content"
+            },
+            "ctime": {
+              "type": "integer",
+              "description": "Message creation Unix timestamp"
+            },
+            "is_readed": {
+              "type": "integer",
+              "description": "1 if message has been read by recipient"
+            },
+            "is_seen": {
+              "type": "integer",
+              "description": "1 if message has been seen by all delivered parties"
+            },
+            "is_notify": {
+              "type": "integer",
+              "description": "1 if this message triggered a notification"
+            },
+            "is_attachment": {
+              "type": "integer",
+              "description": "1 if message has attachments"
+            },
+            "attachment_first": {
+              "type": "object",
+              "description": "First attachment object (if any)"
+            },
+            "attachment_count": {
+              "type": "integer",
+              "description": "Total number of attachments"
+            },
+            "mention_ids": {
+              "type": "array",
+              "description": "Array of mentioned user IDs"
+            },
+            "message_type": {
+              "type": "string",
+              "description": "Message type: chat, call, etc. Defaults to 'chat'."
+            },
+            "thread_id": {
+              "type": "string",
+              "description": "Thread/reply parent message ID"
+            },
+            "is_forward": {
+              "type": "integer",
+              "description": "1 if message is a forward"
+            },
+            "metadata": {
+              "type": "object",
+              "description": "Internal delivery/seen tracking metadata"
+            },
+            "entity": {
+              "type": "object",
+              "description": "Contact info of the peer (populated for messages not authored by caller)"
+            },
+            "thread": {
+              "type": "object",
+              "description": "Thread/reply context object (if message is a reply)"
+            }
+          }
+        }
+      },
+      "errors": []
     },
+
     "post": {
+      "doc": "Send a P2P message to a contact. Message is stored in sender's DB only (single-write). Peer's conversation list (p2p_time) is updated cross-DB. Both sender and recipient are notified via WebSocket.",
       "scope": "hub",
       "permission": {
         "src": "write"
-      }
+      },
+      "params": {
+        "entity_id": {
+          "type": "string",
+          "required": true,
+          "description": "Recipient contact's user ID (peer_id)"
+        },
+        "message": {
+          "type": "string",
+          "required": false,
+          "default": "",
+          "description": "Message text content"
+        },
+        "thread_id": {
+          "type": "string",
+          "required": false,
+          "description": "ID of message being replied to"
+        },
+        "attachment": {
+          "type": "array",
+          "required": false,
+          "default": [],
+          "description": "Array of file node IDs to attach",
+          "items": {
+            "type": "string",
+            "description": "File node ID (nid)"
+          }
+        }
+      },
+      "returns": {
+        "type": "array",
+        "description": "Array of message delivery objects. First item is sender's copy; second is the peer notification payload.",
+        "items": {
+          "type": "object",
+          "properties": {
+            "sys_id": {
+              "type": "integer",
+              "description": "Message row ID"
+            },
+            "peer_id": {
+              "type": "string",
+              "description": "The peer this message is addressed to (replaces entity_id)"
+            },
+            "message_id": {
+              "type": "string",
+              "description": "Unique message ID"
+            },
+            "author_id": {
+              "type": "string",
+              "description": "Sender user ID"
+            },
+            "to_id": {
+              "type": "string",
+              "description": "Recipient user ID"
+            },
+            "message": {
+              "type": "string",
+              "description": "Message content"
+            },
+            "ctime": {
+              "type": "integer",
+              "description": "Creation Unix timestamp"
+            },
+            "is_attachment": {
+              "type": "integer",
+              "description": "1 if has attachments"
+            },
+            "message_type": {
+              "type": "string",
+              "description": "Message type, defaults to 'chat'"
+            },
+            "is_readed": {
+              "type": "integer",
+              "description": "1 for sender's copy (auto-read)"
+            },
+            "is_seen": {
+              "type": "integer",
+              "description": "1 if peer has seen the message"
+            },
+            "entity": {
+              "type": "object",
+              "description": "Peer contact information"
+            },
+            "thread": {
+              "type": "object",
+              "description": "Thread context (if reply)"
+            },
+            "room": {
+              "type": "integer",
+              "description": "Unread count for this P2P conversation"
+            },
+            "total": {
+              "type": "integer",
+              "description": "Total unread P2P conversations"
+            },
+            "echoId": {
+              "type": "string",
+              "description": "Echo ID echoed back from client request"
+            }
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "INVALID_CONTACT",
+          "message": "Contact does not exist or is invalid",
+          "returns": { "status": "INVALID_CONTACT" }
+        },
+        {
+          "code": "INVALID_ATTACHMENT",
+          "message": "One or more attachments are invalid or inaccessible",
+          "returns": { "status": "INVALID_ATTACHMENT" }
+        },
+        {
+          "code": "INVALID_THREAD",
+          "message": "Thread ID does not exist",
+          "returns": { "status": "INVALID_THREAD" }
+        }
+      ]
     },
+
     "share_rooms": {
+      "doc": "List group/shared chat rooms. Returns chat rooms for group conversations (not direct contact chats), with optional keyword filtering and pagination.",
       "scope": "hub",
       "permission": {
         "src": "write"
-      }
+      },
+      "params": {
+        "page": {
+          "type": "integer",
+          "required": false,
+          "default": 1,
+          "description": "Page number for pagination"
+        },
+        "key": {
+          "type": "string",
+          "required": false,
+          "default": "",
+          "description": "Search keyword to filter group rooms"
+        }
+      },
+      "returns": {
+        "type": "array",
+        "description": "Paginated list of group chat rooms",
+        "items": {
+          "type": "object",
+          "properties": {
+            "entity_id": {
+              "type": "string",
+              "description": "Group entity ID"
+            },
+            "group_name": {
+              "type": "string",
+              "description": "Name of the group"
+            },
+            "last_message": {
+              "type": "string",
+              "description": "Last message preview"
+            },
+            "unread_count": {
+              "type": "integer",
+              "description": "Unread messages count"
+            },
+            "member_count": {
+              "type": "integer",
+              "description": "Number of group members"
+            }
+          }
+        }
+      },
+      "errors": []
     },
+
     "tag_chat_count": {
+      "doc": "Get chat count for a specific tag. Returns the number of chat rooms associated with a contact tag.",
       "scope": "hub",
       "permission": {
         "src": "write"
-      }
+      },
+      "params": {
+        "tag_id": {
+          "type": "string",
+          "required": true,
+          "description": "Tag ID to count chats for"
+        }
+      },
+      "returns": {
+        "type": "array",
+        "description": "List of chat counts by tag",
+        "items": {
+          "type": "object",
+          "properties": {
+            "tag_id": {
+              "type": "string",
+              "description": "Tag ID"
+            },
+            "tag_name": {
+              "type": "string",
+              "description": "Tag name"
+            },
+            "chat_count": {
+              "type": "integer",
+              "description": "Number of chats with this tag"
+            }
+          }
+        }
+      },
+      "errors": []
     },
+
     "to_read": {
+      "doc": "Get number of unread message pages for a contact. Returns how many pages of unread messages exist in a conversation. Used for pagination UI indicators.",
       "scope": "hub",
       "permission": {
         "src": "write"
       },
-      "method": "pages_to_read"
+      "method": "pages_to_read",
+      "params": {
+        "entity_id": {
+          "type": "string",
+          "required": true,
+          "description": "Contact entity ID to check unread pages for"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Unread pages count",
+        "properties": {
+          "entity_id": {
+            "type": "string",
+            "description": "Contact entity ID"
+          },
+          "pages_to_read": {
+            "type": "integer",
+            "description": "Number of pages containing unread messages",
+            "example": 3
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "INVALID_CONTACT",
+          "message": "Contact does not exist or is invalid",
+          "returns": {
+            "status": "INVALID_CONTACT"
+          }
+        }
+      ]
     },
+
     "upload_remove": {
+      "doc": "Remove an uploaded attachment before sending. Deletes a file from chat upload directory. Only works on files in /__chat__/__upload__/ path. File must be owned by user and cannot be a folder or hub.",
       "scope": "hub",
       "permission": {
         "src": "write"
       },
-      "method": "remove_attachment"
+      "method": "remove_attachment",
+      "params": {
+        "nid": {
+          "type": "string",
+          "required": true,
+          "description": "Node ID of the attachment file to remove"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Deleted file information",
+        "properties": {
+          "nid": {
+            "type": "string",
+            "description": "Deleted file node ID"
+          },
+          "file_name": {
+            "type": "string",
+            "description": "Name of deleted file"
+          },
+          "filesize": {
+            "type": "integer",
+            "description": "Size of deleted file"
+          },
+          "ftype": {
+            "type": "string",
+            "description": "File type"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "INVALID_ATTACHMENT",
+          "message": "File does not exist",
+          "returns": {
+            "status": "INVALID_ATTACHMENT"
+          }
+        },
+        {
+          "code": "INVALID_ATTACHMENT",
+          "message": "File is not in chat upload directory (/__chat__/__upload__/)",
+          "returns": {
+            "status": "INVALID_ATTACHMENT"
+          }
+        },
+        {
+          "code": "INVALID_ATTACHMENT",
+          "message": "Cannot delete folders or hubs",
+          "returns": {
+            "status": "INVALID_ATTACHMENT"
+          }
+        }
+      ]
     }
   },
+
   "modules": {
     "private": "service/private/chat"
   }

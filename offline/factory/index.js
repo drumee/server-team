@@ -25,6 +25,7 @@ const { userInfo } = require('os');
 const { Mariadb, Offline, sysEnv, Constants } = require("@drumee/server-essentials");
 const { system_user } = sysEnv();
 const LOG_CHANGED = {};
+const { load } = require("../../configs")
 class __drumee_factory extends Offline {
   /**
    * 
@@ -32,9 +33,10 @@ class __drumee_factory extends Offline {
   initialize() {
     this.yp = new Mariadb();
     this.timer = 5000;
+    const { watermark } = load() || {}
     this.watermark = {
-      hub: 210,
-      drumate: 210,
+      hub: watermark.hub || 210,
+      drumate: watermark.drumate || 210,
     };
     this.info = this.checkSanity().then(async () => {
       if (argv.rebuild === "no" && this.scripts_clean()) {
@@ -58,7 +60,6 @@ class __drumee_factory extends Offline {
       for (var type of ["drumate", "hub"]) {
         let ok = await this.check_pool(type);
         let file = this.script_path(type, "ok");
-        console.log("AAA:44", file)
         if (!existsSync(file)) {
           this.error("Exit due to doubious template!");
           return;
@@ -68,7 +69,7 @@ class __drumee_factory extends Offline {
           LOG_CHANGED[type] = true;
           await this.make_schema(type);
         } else {
-          if(LOG_CHANGED[type]){
+          if (LOG_CHANGED[type]) {
             console.log(`Watermark ${type}=${ok}, timer=${this.timer}`);
           }
           LOG_CHANGED[type] = false;

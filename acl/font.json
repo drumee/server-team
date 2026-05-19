@@ -1,25 +1,148 @@
 {
   "services": {
     "font_list": {
+      "doc": "Retrieve a paginated list of all available fonts on the platform. Calls stored procedure font_list with the requested page number. Results are paginated server-side.",
       "scope": "hub",
       "permission": {
         "src": "owner"
       },
-      "method": "font_list"
+      "method": "font_list",
+      "params": {
+        "page": {
+          "type": "integer",
+          "required": false,
+          "description": "Page number for pagination. Defaults to 1 if not provided.",
+          "default": 1
+        }
+      },
+      "returns": {
+        "type": "array",
+        "description": "Paginated list of font records returned by stored procedure font_list",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "description": "Font record identifier"
+          },
+          "name": {
+            "type": "string",
+            "description": "Font family name"
+          },
+          "category": {
+            "type": "string",
+            "description": "Font classification category (e.g. serif, sans-serif, monospace)"
+          },
+          "variants": {
+            "type": "string",
+            "description": "Available font variants or weights"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "INTERNAL_ERROR",
+          "message": "Database error executing stored procedure font_list",
+          "returns": {
+            "status": "INTERNAL_ERROR"
+          }
+        }
+      ]
     },
     "search": {
+      "doc": "Search fonts by name or keyword using a paginated full-text search. Calls stored procedure plf_search_fonts with the search value and page number. Returns fonts matching the query string.",
       "scope": "hub",
       "permission": {
         "src": "owner"
       },
-      "method": "font_search"
+      "method": "font_search",
+      "params": {
+        "value": {
+          "type": "string",
+          "required": false,
+          "description": "Search keyword or font name to query. Defaults to \"a\" if not provided.",
+          "default": "a"
+        },
+        "page": {
+          "type": "integer",
+          "required": false,
+          "description": "Page number for paginated search results. Defaults to 1 if not provided.",
+          "default": 1
+        }
+      },
+      "returns": {
+        "type": "array",
+        "description": "Paginated list of font records matching the search value, returned by stored procedure plf_search_fonts",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "description": "Font record identifier"
+          },
+          "name": {
+            "type": "string",
+            "description": "Font family name matching the search query"
+          },
+          "category": {
+            "type": "string",
+            "description": "Font classification category"
+          },
+          "variants": {
+            "type": "string",
+            "description": "Available font variants or weights"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "INTERNAL_ERROR",
+          "message": "Database error executing stored procedure plf_search_fonts",
+          "returns": {
+            "status": "INTERNAL_ERROR"
+          }
+        }
+      ]
     },
     "files": {
+      "doc": "Retrieve the list of all font files available on the platform. Calls stored procedure font_get_files with no additional parameters. Returns file records for all registered font assets.",
       "scope": "hub",
       "permission": {
         "src": "owner"
       },
-      "method": "get_files"
+      "method": "get_files",
+      "params": {},
+      "returns": {
+        "type": "array",
+        "description": "List of font file records returned by stored procedure font_get_files",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "description": "Font file record identifier"
+          },
+          "font_id": {
+            "type": "integer",
+            "description": "Reference to the parent font record"
+          },
+          "filename": {
+            "type": "string",
+            "description": "Font file name including extension (e.g. OpenSans-Regular.woff2)"
+          },
+          "format": {
+            "type": "string",
+            "description": "Font file format (e.g. woff, woff2, ttf, otf)"
+          },
+          "url": {
+            "type": "string",
+            "description": "Accessible URL or path to the font file"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "INTERNAL_ERROR",
+          "message": "Database error executing stored procedure font_get_files",
+          "returns": {
+            "status": "INTERNAL_ERROR"
+          }
+        }
+      ]
     }
   },
   "modules": {

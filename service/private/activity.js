@@ -1,4 +1,4 @@
-// File: service/mfs_activity.js
+// File: service/private/activity.js
 // Purpose: MFS activity notification service - handle read/unread status
 
 const { Entity } = require('@drumee/server-core');
@@ -6,9 +6,29 @@ const { Attr, toArray } = require('@drumee/server-essentials');
 
 class MfsActivity extends Entity {
 
-  initialize(opt) {
-    super.initialize(opt);
-    this.debug('[MFS_ACTIVITY] Service initialized');
+
+  /**
+   * Call stored procedure in user's database
+   * Ensures procedures run in user context, not hub context
+   * 
+   * @param {string} procName - Procedure name
+   * @param {...any} args - Procedure arguments
+   */
+  async _callUserProc(procName, ...args) {
+    // const argsStr = args.map(arg => {
+    //   if (typeof arg === 'string') return `'${arg}'`;
+    //   if (typeof arg === 'object') return `'${JSON.stringify(arg)}'`;
+    //   return String(arg);
+    // }).join(', ');
+    const proc = `${this.user.get(Attr.db_name)}.${procName}`;
+    this.debug(`[MFS_ACTIVITY] Calling ${proc}`, ...args);
+
+    // Call via forward_proc to ensure it runs in user's database
+    const result = await this.yp.await_proc(`${proc}`, ...args);
+
+    // this.debug(`[MFS_ACTIVITY] Result from ${procName}:`, result);
+
+    return result;
   }
 
   /**
@@ -19,43 +39,13 @@ class MfsActivity extends Entity {
    * - unread_count: Number of unread notifications
    */
   async get_unread_count() {
-    const result = await this.db.await_proc('mfs_get_unread_count', this.uid);
+    const result = await this._callUserProc('mfs_get_unread_count', this.uid);
     const data = toArray(result)[0] || { unread_count: 0 };
 
     return this.output.data({
       status: 'ok',
       unread_count: data.unread_count
     });
-
-    //   try {
-    //   const userId = this.uid;
-
-    //   if (!userId) {
-    //     return this.output.data({
-    //       status: 'error',
-    //       error: 'not_authenticated',
-    //       message: 'User not authenticated'
-    //     });
-    //   }
-
-    //   this.debug(`[MFS_ACTIVITY] Getting unread count for user: ${userId}`);
-
-    //   const result = await this.db.await_proc('mfs_get_unread_count', userId);
-    //   const data = toArray(result)[0] || { unread_count: 0 };
-
-    //   return this.output.data({
-    //     status: 'ok',
-    //     unread_count: data.unread_count
-    //   });
-
-    // } catch (error) {
-    //   this.warn('[MFS_ACTIVITY] Error in get_unread_count:', error.message);
-    //   return this.output.data({
-    //     status: 'error',
-    //     error: 'internal_error',
-    //     message: error.message
-    //   });
-    // }
   }
 
   /**
@@ -72,19 +62,11 @@ class MfsActivity extends Entity {
    */
   async mark_all_read() {
 
-    let lastId = parseInt(this.input.get('last_id'));
-
-    if (!lastId || lastId <= 0) {
-      const latestResult = await this.yp.await_query(
-        'SELECT MAX(id) as max_id FROM mfs_changelog'
-      );
-      const latest = toArray(latestResult)[0];
-      lastId = latest?.max_id || 0;
-    }
+    const lastId = parseInt(this.input.get('last_id')) || 0;
 
     this.debug(`[MFS_ACTIVITY] Marking all read for user ${this.uid}, last_id: ${lastId}`);
 
-    const result = await this.db.await_proc('mfs_mark_all_read', this.uid, lastId);
+    const result = await this._callUserProc('mfs_mark_all_read', this.uid, lastId);
     const data = toArray(result)[0];
 
     if (data && data.status === 'ok') {
@@ -95,57 +77,13 @@ class MfsActivity extends Entity {
         mtime: data.mtime
       });
     }
+
+    this.warn('[MFS_ACTIVITY] mark_all_read failed:', data);
     return this.output.data({
       status: 'error',
+      message: 'Failed to mark as read',
       last_read_id: 0,
     });
-
-    //   try {
-    //   const userId = this.uid;
-
-    //   if (!userId) {
-    //     return this.output.data({
-    //       status: 'error',
-    //       error: 'not_authenticated',
-    //       message: 'User not authenticated'
-    //     });
-    //   }
-
-    //   // Get last_id from input, or fetch latest from yp.mfs_changelog
-    //   let lastId = parseInt(this.input.get('last_id'));
-
-    //   if (!lastId || lastId <= 0) {
-    //     const latestResult = await this.yp.await_query(
-    //       'SELECT MAX(id) as max_id FROM mfs_changelog'
-    //     );
-    //     const latest = toArray(latestResult)[0];
-    //     lastId = latest?.max_id || 0;
-    //   }
-
-    //   this.debug(`[MFS_ACTIVITY] Marking all read for user ${userId}, last_id: ${lastId}`);
-
-    //   const result = await this.db.await_proc('mfs_mark_all_read', userId, lastId);
-    //   const data = toArray(result)[0];
-
-    //   if (data && data.status === 'ok') {
-    //     return this.output.data({
-    //       status: 'ok',
-    //       message: 'All notifications marked as read',
-    //       last_read_id: data.last_read_id,
-    //       mtime: data.mtime
-    //     });
-    //   } else {
-    //     throw new Error('Failed to update acknowledgement');
-    //   }
-
-    // } catch (error) {
-    //   this.warn('[MFS_ACTIVITY] Error in mark_all_read:', error.message);
-    //   return this.output.data({
-    //     status: 'error',
-    //     error: 'internal_error',
-    //     message: error.message
-    //   });
-    // }
   }
 
   /**
@@ -162,67 +100,49 @@ class MfsActivity extends Entity {
    */
   async get_feed() {
     const page = this.input.use(Attr.page) || 1;
-    const result = await this.db.await_proc('mfs_get_activity_feed', this.uid, page);
-    this.debug("AAA:166", result, this.uid)
+    const filter = this.input.use('filter') || 'all';
+    const unreadOnly = parseInt(this.input.use('unread_only') || 0);
+    const proc = unreadOnly ? 'mfs_get_activity_feed' : 'activity_get_log';
+    let result = await this._callUserProc(proc, this.uid, page);
+    result = toArray(result);
+    if (filter === 'mentions') {
+      result = result.filter((row) => row.event !== 'media.share');
+    } else if (filter === 'shares') {
+      result = result.filter((row) => row.event === 'media.share');
+    }
     this.output.list(result);
+  }
 
-    /** I'am sorry to remove so mant line, but this the way Drumee make thing shorter :D */
-    // try {
-    //   const userId = this.uid;
 
-    //   if (!userId) {
-    //     return this.output.data({
-    //       status: 'error',
-    //       error: 'not_authenticated',
-    //       message: 'User not authenticated'
-    //     });
-    //   }
+  /**
+   * Get unified activity log (contacts + MFS)
+   * Endpoint: GET /activity.log
+   * 
+   * Priority: ALL contact events first, then ALL MFS events
+   */
+  async log() {
+    const page = this.input.use(Attr.page) || 1;
+    this.debug(`[ACTIVITY] Getting unified log for user ${this.uid}, page: ${page}`);
+    
+    const result = await this._callUserProc('activity_get_log', this.uid, page);
+    
+    this.output.list(result);
+  }
 
-    //   const limit = parseInt(this.input.get('limit')) || 20;
-    //   const offset = parseInt(this.input.get('offset')) || 0;
-
-    //   if (limit <= 0 || limit > 100) {
-    //     return this.output.data({
-    //       status: 'error',
-    //       error: 'invalid_limit',
-    //       message: 'Limit must be between 1 and 100'
-    //     });
-    //   }
-
-    //   if (offset < 0) {
-    //     return this.output.data({
-    //       status: 'error',
-    //       error: 'invalid_offset',
-    //       message: 'Offset must be non-negative'
-    //     });
-    //   }
-
-    //   this.debug(`[MFS_ACTIVITY] Getting feed for user ${userId}, limit: ${limit}, offset: ${offset}`);
-
-    //   const result = await this.db.await_proc('mfs_get_activity_feed', userId, limit, offset);
-    //   const items = toArray(result);
-
-    //   const hasMore = items.length === limit;
-
-    //   return this.output.data({
-    //     status: 'ok',
-    //     items: items,
-    //     pagination: {
-    //       limit: limit,
-    //       offset: offset,
-    //       count: items.length,
-    //       has_more: hasMore
-    //     }
-    //   });
-
-    // } catch (error) {
-    //   this.warn('[MFS_ACTIVITY] Error in get_feed:', error.message);
-    //   return this.output.data({
-    //     status: 'error',
-    //     error: 'internal_error',
-    //     message: error.message
-    //   });
-    // }
+  /**
+   * Get activity log for a specific folder
+   * Endpoint: GET /activity.folder_log
+   * Shows MFS events related to a specific folder/node
+   */
+  async folder_log() {
+    const nid = this.input.need(Attr.nid);
+    const page = this.input.use(Attr.page) || 1;
+    
+    this.debug(`[ACTIVITY] Getting folder log for nid: ${nid}, user: ${this.uid}, page: ${page}`);
+    
+    const result = await this._callUserProc('activity_get_folder_log', this.uid, nid, page);
+    
+    this.output.list(result);
   }
 
   /**
@@ -233,54 +153,42 @@ class MfsActivity extends Entity {
    * - last_read_id: Last changelog ID marked as read
    */
   async get_last_read() {
-    const result = await this.db.await_query(
-      'SELECT user_id, last_read_id, mtime FROM mfs_ack WHERE user_id = ?',
+    // Get user's database name
+    const userDb = await this.yp.await_query(
+      'SELECT db_name FROM yp.entity WHERE id = ?',
       this.uid
     );
-    this.output.data(result);
+    const userDbName = toArray(userDb)[0]?.db_name;
 
-    //   try {
-    //   const userId = this.uid;
+    if (!userDbName) {
+      this.warn(`[MFS_ACTIVITY] User database not found for ${this.uid}`);
+      return this.output.data({
+        user_id: this.uid,
+        last_read_id: 0,
+        mtime: 0
+      });
+    }
 
-    //   if (!userId) {
-    //     return this.output.data({
-    //       status: 'error',
-    //       error: 'not_authenticated',
-    //       message: 'User not authenticated'
-    //     });
-    //   }
+    this.debug(`[MFS_ACTIVITY] Querying mfs_ack from ${userDbName}`);
 
-    //   this.debug(`[MFS_ACTIVITY] Getting last read info for user: ${userId}`);
+    // Query mfs_ack from user's database
+    const result = await this.db.await_query(
+      'SELECT user_id, last_read_id, mtime FROM ${userDbName}.mfs_ack WHERE user_id = ?',
+      this.uid
+    );
 
-    //   const result = await this.db.await_query(
-    //     'SELECT user_id, last_read_id, mtime FROM mfs_ack WHERE user_id = ?',
-    //     this.uid
-    //   );
+    const data = toArray(result)[0];
 
-    //   const data = toArray(result)[0];
+    if (data) {
+      this.output.data(data);
+    } else {
+      this.output.data({
+        user_id: this.uid,
+        last_read_id: 0,
+        mtime: 0
+      });
+    }
 
-    //   if (data) {
-    //     return this.output.data({
-    //       status: 'ok',
-    //       last_read_id: data.last_read_id,
-    //       mtime: data.mtime
-    //     });
-    //   } else {
-    //     return this.output.data({
-    //       status: 'ok',
-    //       last_read_id: 0,
-    //       mtime: 0
-    //     });
-    //   }
-
-    // } catch (error) {
-    //   this.warn('[MFS_ACTIVITY] Error in get_last_read:', error.message);
-    //   return this.output.data({
-    //     status: 'error',
-    //     error: 'internal_error',
-    //     message: error.message
-    //   });
-    // }
   }
 
   /**
@@ -296,7 +204,7 @@ class MfsActivity extends Entity {
 
     this.debug(`[MFS_ACTIVITY] Acknowledging file: ${nodeId} for user: ${userId}`);
 
-    const result = await this.db.await_proc('mfs_acknowledge_file', userId, nodeId);
+    const result = await this._callUserProc('mfs_acknowledge_file', userId, nodeId);
     const data = toArray(result)[0];
 
     if (data && data.status === 'ok') {
@@ -321,70 +229,177 @@ class MfsActivity extends Entity {
       });
 
     }
+    this.warn('[MFS_ACTIVITY] acknowledge_file failed:', data);
     this.output.data({
       status: 'error',
       message: 'File not acknowledged',
     });
 
-    //     try {
-    //     const userId = this.uid;
-    //     const nodeId = this.input.need(Attr.nid);
+  }
 
-    //     if (!userId) {
-    //       return this.output.data({
-    //         status: 'error',
-    //         error: 'not_authenticated',
-    //         message: 'User not authenticated'
-    //       });
-    //     }
+  async dismiss() {
+    const changelogId = parseInt(this.input.need('changelog_id'));
+    const result = await this._callUserProc('mfs_dismiss_activity', this.uid, changelogId);
+    const data = toArray(result)[0] || {};
+    this.output.data(data);
+  }
 
-    //     if (!nodeId) {
-    //       return this.output.data({
-    //         status: 'error',
-    //         error: 'missing_node_id',
-    //         message: 'Node ID is required'
-    //       });
-    //     }
+  /**
+   * Hide a single contact_activity row (hub invite, contact invite, etc.)
+   * from the user's activity feed. Underlying event stays around for audit.
+   * Endpoint: POST /activity.dismiss_contact_event
+   * Input: activity_id (integer)
+   */
+  async dismiss_contact_event() {
+    const activityId = parseInt(this.input.need('activity_id'));
+    const result = await this._callUserProc('contact_activity_dismiss', this.uid, activityId);
+    const data = toArray(result)[0] || {};
+    this.output.data(data);
+  }
 
-    //     this.debug(`[MFS_ACTIVITY] Acknowledging file: ${nodeId} for user: ${userId}`);
+  /**
+   * Unified notification dismiss for any rollup returned by drumate.notification_center.
+   * Routes by `category` to the right read-pointer / status update.
+   * Endpoint: POST /activity.notification_dismiss
+   * Input: category (string), key_id (string), hub_id (string), last_id (integer)
+   */
+  async notification_dismiss() {
+    const category = String(this.input.need('category'));
+    const key_id = String(this.input.need('key_id'));
+    const hub_id = String(this.input.use('hub_id') || '');
+    const last_id = parseInt(this.input.use('last_id') || 0);
+    const result = await this._callUserProc(
+      'notification_dismiss',
+      category,
+      key_id,
+      hub_id,
+      last_id
+    );
+    const data = toArray(result)[0] || {};
+    this.output.data(data);
+  }
 
-    //     const result = await this.db.await_proc('mfs_acknowledge_file', userId, nodeId);
-    //     const data = toArray(result)[0];
+  // ============================================================
+  // Unified activity API (Approach C: wrap-only consolidation)
+  //
+  // The activity panel and any other client should use only these
+  // four endpoints; underlying tables stay where they are.
+  // ============================================================
 
-    //     if (data && data.status === 'ok') {
-    //       const recipients = await this.yp.await_proc('user_sockets', userId);
-    //       const keys = { entity_id: Attr.hub_id };
+  /**
+   * Single-call notification feed. Aggregates the 5 rollup categories from
+   * `notification_center_next` plus the standalone hub-invite stream from
+   * `yp.contact_activity` (event = 'hub_invite_received'). Result is a flat
+   * array; client renders by `category`.
+   *
+   * Endpoint: POST /activity.list
+   */
+  async list() {
+    const [rollups, hubInvites] = await Promise.all([
+      this._callUserProc('notification_center_next'),
+      this._callUserProc('notification_hub_invites'),
+    ]);
+    const rows = toArray(rollups);
+    const hubs = toArray(hubInvites);
+    const items = [
+      ...rows.map((r) => ({
+        category: r.category,
+        key_id: r.key_id,
+        hub_id: r.hub_id,
+        last_id: r.last_id,
+        cnt: r.cnt,
+        ctime: r.ctime,
+        firstname: r.firstname,
+        lastname: r.lastname,
+        surname: r.surname,
+        email: r.email,
+        status: r.status,
+        contact_id: r.contact_id,
+        drumate_id: r.drumate_id,
+        guest_id: r.guest_id,
+        area: r.area,
+        tag_id: r.tag_id,
+      })),
+      ...hubs.map((r) => {
+        let meta = {};
+        if (r.data) {
+          try { meta = typeof r.data === 'string' ? JSON.parse(r.data) : r.data; } catch (_) {}
+        }
+        return {
+          category: 'hub_invite',
+          key_id: String(r.id),
+          hub_id: meta.hub_id || null,
+          last_id: r.id,
+          cnt: 1,
+          ctime: r.ctime,
+          firstname: meta.from_firstname || r.inviter_firstname,
+          lastname: meta.from_lastname || r.inviter_lastname,
+          surname: meta.from_fullname || r.hub_headline,
+          email: r.inviter_email,
+          author_id: r.author_id,
+          hub_name: r.hub_headline || r.hub_ident,
+        };
+      }),
+    ];
+    this.output.list(items);
+  }
 
-    //       await RedisStore.sendData(
-    //         this.payload(data, { keys }),
-    //         recipients
-    //       );
+  /**
+   * Alias of `notification_dismiss` under the consolidated activity.* API.
+   * Hides the rollup row from the activity feed.
+   * Endpoint: POST /activity.dismiss
+   */
+  async dismiss_rollup() {
+    return this.notification_dismiss();
+  }
 
-    //       await RedisStore.sendData(
-    //         this.payload({}, { service: 'notification.resync' }),
-    //         recipients
-    //       );
+  /**
+   * Mark a rollup as read without hiding it. For backends that distinguish
+   * between read-pointer and dismissed-flag (contact, mfs_changelog), we only
+   * advance the read pointer. For the others (chat/teamchat/ticket) read and
+   * dismiss collapse into the same operation, so we just delegate.
+   * Endpoint: POST /activity.read
+   */
+  async read() {
+    const category = String(this.input.need('category'));
+    const key_id = String(this.input.need('key_id'));
+    const hub_id = String(this.input.use('hub_id') || '');
+    const last_id = parseInt(this.input.use('last_id') || 0);
+    const result = await this._callUserProc(
+      'notification_read',
+      category,
+      key_id,
+      hub_id,
+      last_id
+    );
+    const data = toArray(result)[0] || {};
+    this.output.data(data);
+  }
 
-    //       return this.output.data({
-    //         status: 'ok',
-    //         message: 'File acknowledged',
-    //         last_read_id: data.last_read_id,
-    //         mtime: data.mtime
-    //       });
-    //     } else {
-    //       throw new Error('Failed to acknowledge file');
-    //     }
-
-    //   } catch (error) {
-    //     this.warn('[MFS_ACTIVITY] Error in acknowledge_file:', error.message);
-    //     return this.output.data({
-    //       status: 'error',
-    //       error: 'internal_error',
-    //       message: error.message
-    //     });
-    //   }
-    // }
-
+  /**
+   * Publish a new notification. Routes by `category` to the appropriate
+   * underlying table. Public callers rarely need this — most events are
+   * created as side-effects of chat.post / media.new / hub.invite. This
+   * endpoint exists so future system integrations can inject notifications
+   * via the `activity.*` namespace.
+   * Endpoint: POST /activity.create
+   * Input: category (string), key_id (string), hub_id (string), payload (object)
+   */
+  async create() {
+    const category = String(this.input.need('category'));
+    const key_id = String(this.input.need('key_id'));
+    const hub_id = String(this.input.use('hub_id') || '');
+    const payload = this.input.use('payload') || {};
+    const result = await this.yp.await_proc(
+      'activity_publish',
+      category,
+      this.uid,
+      key_id,
+      hub_id,
+      JSON.stringify(payload)
+    );
+    const data = toArray(result)[0] || { status: 'ok', category, key_id };
+    this.output.data(data);
   }
 }
 

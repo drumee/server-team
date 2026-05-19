@@ -117,7 +117,7 @@ class __offline_media_zip extends Offline {
     this.data_dir = resolve(
       tmp_dir,
       DOWNLOAD_FOLDER,
-      this.hub_id,
+      this.uid,
       this.zipid
     );
     this.sender = await this.yp.await_proc('get_user', this.uid);
@@ -156,7 +156,7 @@ class __offline_media_zip extends Offline {
       for (let n of this.nodes) {
         let hub = await this.yp.await_proc('get_hub', n.hub_id);
         let db_name = hub.db_name;
-        var r = await this.yp.await_proc(`${db_name}.mfs_manifest`, n.nid, this.uid, 1);
+        var r = await this.yp.await_proc(`${db_name}.mfs_manifest`, { nid: n.nid, uid: this.uid, show_nodes: 1 });
         res = res.concat(r[0]);
         size = size + r[1].total_size;
       }
@@ -202,7 +202,7 @@ class __offline_media_zip extends Offline {
 
     const { spawn } = require('child_process');
     this.zipname = zname;
-    const sp = spawn(`${archive}`, [dest_dir, 'index']);
+    const sp = spawn(`${archive}`, [dest_dir, zname]);
     sp.on('exit', async (s) => {
       await this.send({
         exit: s,

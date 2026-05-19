@@ -1,21 +1,112 @@
 {
   "services": {
     "verbosity": {
+      "doc": "Get or set the global server verbosity level. When level is greater than 0, updates both the global.verbosity variable and the cached environment via Cache.setEnv. Always returns the current level value regardless of whether it was applied.",
       "scope": "plateform",
       "permission": {
         "src": "read"
+      },
+      "params": {
+        "level": {
+          "type": "number",
+          "required": false,
+          "doc": "New verbosity level to set. Must be greater than 0 to take effect. When absent or zero, the current verbosity is returned without modification."
+        }
+      },
+      "returns": {
+        "verbosity": {
+          "type": "number",
+          "doc": "The level value as received in the request. Reflects the requested level, not necessarily the active global.verbosity."
+        }
+      }
+    },
+    "test_email": {
+      "doc": "Test emaling system.",
+      "scope": "hub",
+      "permission": {
+        "src": "anonymous"
+      },
+      "params": {
+        "email": {
+          "type": "string",
+          "required": true,
+          "doc": "only for test pupose."
+        }
+      },
+      "returns": {
+        "verbosity": {
+          "type": "array",
+          "doc": "list of email sent"
+        }
       }
     },
     "instances": {
+      "doc": "List the available Drumee infrastructure instance names. Reads instance keys from /etc/drumee/infrastructure/instances.json when the file exists, otherwise returns a single-element list containing the current sysEnv instance name.",
       "scope": "domain",
       "permission": {
         "src": "read"
+      },
+      "params": {},
+      "returns": {
+        "items": {
+          "type": "array",
+          "doc": "Array of instance name strings derived from the keys of the instances configuration. Falls back to a single-element array containing the current instance name when the configuration file is absent.",
+          "items": {
+            "type": "string"
+          }
+        }
       }
     },
     "log_over_socket": {
+      "doc": "Get or set the global debug logging destination and flags for over-socket log streaming. When flags is provided and truthy, updates global.debug_flags and sets global.debug_dest to the current socket, server endpoint, user, and service. Always returns the current flags value and active debug destination.",
       "scope": "plateform",
       "permission": {
         "src": "read"
+      },
+      "params": {
+        "flags": {
+          "type": "number",
+          "required": false,
+          "doc": "Bitmask of debug flag levels to enable (e.g. 0b1111111 enables all: error, warn, info, http, verbose, debug, silly). When falsy, the current global.debug_dest is returned without modification."
+        },
+        "socket_id": {
+          "type": "string",
+          "required": false,
+          "doc": "Socket ID of the requesting client. Stored in global.debug_dest.socket_id when flags is set."
+        },
+        "service": {
+          "type": "string",
+          "required": false,
+          "doc": "Service name stored in global.debug_dest.service when flags is set."
+        }
+      },
+      "returns": {
+        "flags": {
+          "type": "number",
+          "doc": "The flags value as received in the request"
+        },
+        "dest": {
+          "type": "object",
+          "doc": "Active debug destination descriptor stored in global.debug_dest",
+          "properties": {
+            "socket_id": {
+              "type": "string",
+              "doc": "Socket ID of the log consumer"
+            },
+            "server": {
+              "type": "string",
+              "doc": "Endpoint address from Cache.getEnv(Attr.endpointAddress)"
+            },
+            "uid": {
+              "type": "string",
+              "doc": "User ID of the requestor"
+            },
+            "service": {
+              "type": "string",
+              "doc": "Service name associated with the log stream"
+            }
+          }
+        }
       }
     }
   },

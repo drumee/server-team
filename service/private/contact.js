@@ -14,6 +14,7 @@
  * limitations under the License.
  * =============================================================================
  */
+
 const { Attr, Constants, Messenger, utils, RedisStore, Cache, nullValue } = require("@drumee/server-essentials");
 const { EMAIL_CHECKER } = Constants;
 
@@ -45,6 +46,7 @@ class __private_contact extends Contact {
     this.delete_contact_email = this.delete_contact_email.bind(this);
     this.delete_contact_phone = this.delete_contact_phone.bind(this);
     this.get_contact = this.get_contact.bind(this);
+    this.email_in_use = this.email_in_use.bind(this);
 
     this.invite_refuse = this.invite_refuse.bind(this);
     this.invite_accept = this.invite_accept.bind(this);
@@ -565,16 +567,22 @@ class __private_contact extends Contact {
    */
   async delete_contact() {
     const contact_id = this.input.need(Attr.contact_id);
-    let res = {};
+    const service = this.input.get(Attr.service);
     let mycontact = await this.db.await_proc('my_contact_get_next', contact_id, null)
     mycontact.contact_id = mycontact.id
-    res = await this.db.await_proc('my_contact_delete', contact_id);
-    if (!isEmpty(res)) {
-      let sockets = await this.yp.await_proc('user_sockets', res.his_id);
-      await RedisStore.sendData(this.payload(res), sockets);
+    const res = await this.db.await_proc('my_contact_delete', contact_id);
+    // Notify the other party so their Contacts / Pending list refreshes —
+    // my_contact_delete now hard-deletes the relationship on both sides.
+    // `his_id` comes from the proc; fall back to the contact row in case the
+    // single-row proc result collapsed away. The WS message must carry an
+    // explicit `service` or the receiver's onWsMessage switch ignores it.
+    const his_id = (res && res.his_id) || mycontact.uid || mycontact.entity;
+    if (his_id) {
+      const peerSockets = await this.yp.await_proc('user_sockets', his_id);
+      await RedisStore.sendData(this.payload(mycontact, { service }), peerSockets);
     }
-    let sockets = await this.yp.await_proc('user_sockets', this.uid);
-    await RedisStore.sendData(this.payload(mycontact), sockets);
+    const ownSockets = await this.yp.await_proc('user_sockets', this.uid);
+    await RedisStore.sendData(this.payload(mycontact, { service }), ownSockets);
     this.output.data(res);
   }
 
@@ -624,34 +632,50 @@ class __private_contact extends Contact {
   }
 
   /**
+   * Reports whether `email` is already referenced by one of the caller's
+   * contacts — either as that contact's `entity` (default identifier) or
+   * as any row in `contact_email`. `contact_id`, when provided, is excluded
+   * so editing a contact does not flag its own existing emails as collisions.
+   * Returns `{}` when the email is free, or a minimal contact descriptor
+   * `{ id, firstname, lastname, entity, email }` when it is in use.
+   */
+  async email_in_use() {
+    const email = this.input.need(Attr.email);
+    const contact_id = this.input.use(Attr.contact_id) || '';
+    const data = await this.db.await_proc('my_contact_email_in_use', email, contact_id);
+    this.output.data(isEmpty(data) ? {} : data);
+  }
+
+  /**
    * 
    * @param {*} contact_id 
    * @returns 
    */
-  async _show(contact_id) {
+  async _show(contact_id, opts) {
+    const db = (opts && opts.db) || this.db;
     let res = {};
-    let data = await this.db.await_proc('my_contact_get_next', contact_id, null)
+    let data = await db.await_proc('my_contact_get_next', contact_id, null)
     if (!isEmpty(data)) {
       res = data;
     }
-    data = await this.db.await_proc('my_contact_mail_get', contact_id)
+    data = await db.await_proc('my_contact_mail_get', contact_id)
     data = toArray(data);
     if (data) {
       res.email = data;
     }
 
-    data = await this.db.await_proc('my_contact_address_get', contact_id)
+    data = await db.await_proc('my_contact_address_get', contact_id)
     data = toArray(data);
     if (data) {
       res.address = data;
     }
 
-    data = await this.db.await_proc('my_contact_phone_get', contact_id)
+    data = await db.await_proc('my_contact_phone_get', contact_id)
     data = toArray(data);
     if (data) {
       res.mobile = data;
     }
-    data = await this.db.await_proc('my_tag_get', contact_id)
+    data = await db.await_proc('my_tag_get', contact_id)
     data = toArray(data);
     if (data) {
       res.tag = data;
@@ -670,9 +694,9 @@ class __private_contact extends Contact {
    * @param {*} tag 
    */
   async _add(contact_id, email, mobile, address, tag) {
-    await this.db.await_proc('my_contact_mail_add', contact_id, stringify(email))
-    await this.db.await_proc('my_contact_phone_add', contact_id, stringify(mobile))
-    await this.db.await_proc('my_contact_address_add', contact_id, stringify(address))
+    await this.db.await_proc('my_contact_mail_add', contact_id, email)
+    await this.db.await_proc('my_contact_phone_add', contact_id, mobile)
+    await this.db.await_proc('my_contact_address_add', contact_id, address)
     await this.db.await_proc('my_tag_add', contact_id, stringify(tag))
   }
 
@@ -741,6 +765,9 @@ class __private_contact extends Contact {
   }
 
 
+  /**
+   * 
+   */
   async unblock() {
     let contact_id = this.input.need(Attr.contact_id);
     let res = {};
@@ -1029,7 +1056,7 @@ class __private_contact extends Contact {
 
     if (isEmpty(invitee_id) && isEmpty(email)) {
       res.status = 'INVALID_DATA';
-      return re1s;
+      return this.output.data(res)
     }
 
     if (!isEmpty(invitee_id)) {
@@ -1133,18 +1160,35 @@ class __private_contact extends Contact {
     this.output.data(res);
   }
 
-  //========================
-  //
-  //========================
-
+  /**
+   * 
+   * @returns 
+   */
   async invite() {
     let email = this.input.need(Attr.email);
     let message = this.input.use(Attr.message);
     let firstname = this.input.use(Attr.firstname);
     let lastname = this.input.use(Attr.lastname);
     let surname = this.input.use(Attr.surname);
-
     let fullname;
+
+    // Contact table lives in user (drumate) DB (a_*), not folder DB (f_*). When called from hub (folder) context
+    // with hub_id, this.db points to folder db. Resolve inviter's drumate db for contact ops.
+    let contactDbName = this.input.use("_contact_db_name");
+    if (!contactDbName && this.input.get('hub_id')) {
+      try {
+        const rows = await this.yp.await_query(
+          'SELECT db_name FROM yp.entity WHERE id = ? AND db_name IS NOT NULL AND db_name LIKE \'a_%\' LIMIT 1',
+          this.uid
+        );
+        if (rows && rows[0] && rows[0].db_name) contactDbName = rows[0].db_name;
+      } catch (e) {
+        this.warn("[contact.invite] resolve inviter drumate db failed", e && e.message);
+      }
+    }
+    const contactDb = contactDbName
+      ? { await_proc: (proc, ...args) => this.yp.await_proc(`${contactDbName}.${proc}`, ...args) }
+      : this.db;
 
     if (!isEmpty(firstname)) {
       if (!isEmpty(lastname)) {
@@ -1174,108 +1218,161 @@ class __private_contact extends Contact {
       return this.output.data(res);
     }
 
-    let a = email.split('@');
-    a[1] = a[0]
-    if (a[0].indexOf('.') !== -1) {
-      a = a[0].split('.');
-    }
-    firstname = a[0]
-    lastname = a[1]
-
-    drumate = await this.yp.await_proc('drumate_exists', email);
-    if (isEmpty(drumate)) {
-      entity = email;
-      metadata.source = email
-      metadata.is_auto = 1
-    } else {
-      entity = drumate.id
-      metadata.source = email
-      metadata.is_auto = 1
-    }
-
-
-    let contact = await this.db.await_proc('my_contact_exists', 'entity', entity, null, null);
-
-    if (!isEmpty(contact)) {
-      if (contact.status == 'active' || contact.status == 'informed') {
-        res.status = 'ALREADY_IN_CONTACT';
-        return this.output.data(res);
-      }
-      if (contact.status == 'received') {
-        res.status = 'INVITE_RECEIVED';
-        return this.output.data(res);
-      }
-    }
-    let sent = {};
-    if (isEmpty(drumate)) {
-      const token = this.randomString();
-      fullname = fullname || entity
-      let i = this.yp.await_proc('token_generate_next', entity, fullname, token, 'signup', this.uid);
-      sent = await this.send_mail(email, message, token);
-    } else {
-
-      let my_drumate = await this.yp.await_proc('drumate_exists', this.uid)
-      if ((drumate.domain_id == my_drumate.domain_id) && (my_drumate.domain_id > 1)) {
-        res.status = 'SAME_DOMAIN';
-        return this.output.data(res);
-      }
-      let vhost = await this.yp.await_proc('domain_exists', drumate.domain_id);
-      sent = await this.send_drumate_mail(email, message, vhost.name);
-    }
-
-    if (isEmpty(contact)) {
-      newcontact = await this.db.await_proc('my_contact_add_next',
-        entity, surname, firstname, lastname, 'independant', null, message, metadata
-      );
-    } else {
-      newcontact = await this.db.await_proc('my_contact_update_next',
-        contact.id, contact.surname, contact.firstname, contact.lastname,
-        contact.comment, message, contact.entity, contact.metadata
-      );
-    }
-
-    if (!isEmpty(drumate)) {
-      before = await this.yp.await_proc('forward_proc', drumate.id, 'contact_status_get', `'${this.uid}'`)
-      if (isEmpty(before)) { before.status = 'no' }
-
-      await this.db.await_proc('contact_invite', entity);
-      after = await this.yp.await_proc('forward_proc', drumate.id, 'contact_status_get', `'${this.uid}'`)
-
-      if ((after.status != before.status) && (after.status == 'invitation' || after.status == 'received' || after.status == 'informed')) {
-        data = await this.yp.await_proc('forward_proc', drumate.id, 'contact_notification_by_entity', `'${this.uid}'`)
-        let sockets = await this.yp.await_proc('user_sockets', drumate.id);
-        await RedisStore.sendData(this.payload(data), sockets);
-      }
-    }
-
-    if (isEmpty(drumate)) {
-      await this.db.await_proc('contact_invite', entity);
-    }
-
-    if (isEmpty(contact)) {
-      if (isEmpty(drumate)) {
-        let node = {}
-        node.email = entity;
-        node.category = 'priv';
-        node.is_default = '1';
-        await this.db.await_proc('my_contact_mail_add', newcontact.id, stringify([node]))
-      } else {
-        if (EMAIL_CHECKER.test(email)) {
-          let node = {}
-          node.email = email;
-          node.category = 'priv';
-          node.is_default = '1';
-          await this.db.await_proc('my_contact_mail_add', newcontact.id, stringify([node]))
+    try {
+      // Only synthesize names from email when the caller didn't supply them.
+      // Without this guard, a local-part with no dot ends up duplicated into
+      // both firstname and lastname.
+      if (isEmpty(firstname) && isEmpty(lastname)) {
+        const localPart = (email.split('@')[0] || '').trim();
+        if (localPart.indexOf('.') !== -1) {
+          const parts = localPart.split('.');
+          firstname = parts[0];
+          lastname = parts.slice(1).join(' ');
+        } else {
+          firstname = localPart;
+          lastname = null;
         }
       }
+
+      drumate = await this.yp.await_proc('drumate_exists', email);
+      if (isArray(drumate)) drumate = drumate[0];
+      const emailNotInSystem = isEmpty(drumate) || !drumate?.id;
+      if (emailNotInSystem) {
+        entity = email;
+        metadata.source = email
+        metadata.is_auto = 1
+      } else {
+        entity = drumate.id;
+        metadata.source = email
+        metadata.is_auto = 1
+      }
+
+      let contact = await contactDb.await_proc('my_contact_exists', 'entity', entity, null, null);
+
+      if (!isEmpty(contact)) {
+        if (contact.status == 'active' || contact.status == 'informed') {
+          res.status = 'ALREADY_IN_CONTACT';
+          return this.output.data(res);
+        }
+        if (contact.status == 'received') {
+          res.status = 'INVITE_RECEIVED';
+          return this.output.data(res);
+        }
+      }
+      let sent = {};
+      if (emailNotInSystem) {
+        const token = this.randomString();
+        fullname = fullname || entity
+        let i = this.yp.await_proc('token_generate_next', entity, fullname, token, 'signup', this.uid);
+        sent = await this.send_mail(email, message, token);
+      } else {
+        let my_drumate = await this.yp.await_proc('drumate_exists', this.uid)
+        if ((drumate.domain_id == my_drumate.domain_id) && (my_drumate.domain_id > 1)) {
+          res.status = 'SAME_DOMAIN';
+          return this.output.data(res);
+        }
+        let vhost = await this.yp.await_proc('domain_exists', drumate.domain_id);
+        sent = await this.send_drumate_mail(email, message, vhost.name);
+      }
+
+      if (isEmpty(contact)) {
+        newcontact = await contactDb.await_proc('my_contact_add_next',
+          entity, surname, firstname, lastname, 'independant', null, message, metadata
+        );
+      } else {
+        newcontact = await contactDb.await_proc('my_contact_update_next',
+          contact.id, contact.surname, contact.firstname, contact.lastname,
+          contact.comment, message, contact.entity, contact.metadata
+        );
+      }
+
+      if (isEmpty(newcontact)) {
+        this.warn("[contact.invite] my_contact_add_next/update returned empty for", email);
+        res.status = emailNotInSystem ? 'invited' : 'CONTACT_DB_ERROR';
+        res.input = email;
+        return this.output.data(res);
+      }
+
+      if (!isEmpty(drumate)) {
+        before = await this.yp.await_proc('forward_proc', drumate.id, 'contact_status_get', `'${this.uid}'`)
+        if (isEmpty(before)) { before.status = 'no' }
+
+        await contactDb.await_proc('contact_invite', entity);
+        after = await this.yp.await_proc('forward_proc', drumate.id, 'contact_status_get', `'${this.uid}'`)
+
+        if ((after.status != before.status) && (after.status == 'invitation' || after.status == 'received' || after.status == 'informed')) {
+          data = await this.yp.await_proc('forward_proc', drumate.id, 'contact_notification_by_entity', `'${this.uid}'`)
+          let sockets = await this.yp.await_proc('user_sockets', drumate.id);
+          const service = this.input.get(Attr.service);
+          await RedisStore.sendData(this.payload(data, { service }), sockets);
+        }
+      }
+
+      if (isEmpty(drumate)) {
+        await contactDb.await_proc('contact_invite', entity);
+      }
+
+      if (isEmpty(contact)) {
+        if (isEmpty(drumate)) {
+          let node = {}
+          node.email = entity;
+          node.category = 'priv';
+          node.is_default = '1';
+          await contactDb.await_proc('my_contact_mail_add', newcontact.id, stringify([node]))
+        } else {
+          if (EMAIL_CHECKER.test(email)) {
+            let node = {}
+            node.email = email;
+            node.category = 'priv';
+            node.is_default = '1';
+            await contactDb.await_proc('my_contact_mail_add', newcontact.id, stringify([node]))
+          }
+        }
+      }
+
+      res = await this._show(newcontact.id, contactDbName ? { db: contactDb } : {});
+      res.input = email;
+
+      // Log contact activities
+      if (!isEmpty(drumate) && res.status !== 'EMAIL_NOT_SENT') {
+        try {
+          await this.yp.await_proc(
+            'contact_log_activity',
+            this.uid,
+            drumate.id,
+            'invite_sent',
+            {
+              email: email,
+              message: message,
+              contact_id: newcontact.id
+            }
+          );
+          await this.yp.await_proc(
+            'contact_log_activity',
+            this.uid,
+            drumate.id,
+            'invite_received',
+            {
+              email: email,
+              message: message,
+              from_fullname: (this.user && this.user.get) ? this.user.get('fullname') : ''
+            }
+          );
+        } catch (error) {
+          this.warn('[CONTACT] Failed to log invite activity:', error.message);
+        }
+      }
+
+      this.output.data(res);
+    } catch (err) {
+      this.warn('[CONTACT] invite error', err && err.message ? err.message : err);
+      // Always return 200 with body so client does not get 400 SERVICE_FAILED
+      if (newcontact) {
+        this.output.data({ status: 'invited', input: email, contact_id: newcontact.id });
+      } else {
+        this.output.data({ status: 'SERVICE_ERROR', error: String(err && err.message || err), input: email });
+      }
     }
-    res = await this._show(newcontact.id);
-    res.input = email;
-    if (sent.error) {
-      res.status = 'EMAIL_NOT_SENT';
-      res.failed = sent.error;
-    }
-    this.output.data(res);
   }
 
   /**
@@ -1344,6 +1441,22 @@ class __private_contact extends Contact {
     let sockets = await this.yp.await_proc('user_sockets', drumate.id);
     await RedisStore.sendData(this.payload(res), sockets);
 
+    // Log invite_refused activity
+    try {
+      await this.yp.await_proc(
+        'contact_log_activity',
+        this.uid,              // Who refused
+        drumate.id,            // Who will see this notification
+        'invite_refused',
+        {
+          email: drumate.email,
+          refuser_fullname: this.user.get('fullname')
+        }
+      );
+    } catch (error) {
+      this.warn('[CONTACT] Failed to log refuse activity:', error.message);
+    }
+
     this.output.data(r);
 
   }
@@ -1372,9 +1485,9 @@ class __private_contact extends Contact {
     myinput = input
 
     myinput.entity_id = entity_id
-    mydata = await this.yp.await_proc('forward_proc', uid, 'channel_post_message_next', `'${stringify(myinput)}','${message}'`)
+    mydata = await this.yp.await_proc('forward_proc', uid, 'channel_post_message', `'${stringify(myinput)}','${message}'`)
     hisinput.entity_id = uid
-    hisdata = await this.yp.await_proc('forward_proc', entity_id, 'channel_post_message_next', `'${stringify(hisinput)}','${message}'`)
+    hisdata = await this.yp.await_proc('forward_proc', entity_id, 'channel_post_message', `'${stringify(hisinput)}','${message}'`)
 
     acknowledge.message_id = message_id
     acknowledge.entity_id = entity_id
@@ -1399,49 +1512,105 @@ class __private_contact extends Contact {
     let email = this.input.need(Attr.email);
 
     let res = {};
-    let drumate = await this.yp.await_proc('drumate_exists', email);
-    if (isEmpty(drumate)) {
+    let peer = await this.yp.await_proc('drumate_exists', email);
+    if (isEmpty(peer)) {
       return this.output.data({ status: 'NOT_A_DRUMATE' });
     }
 
-    let received = await this.db.await_proc('contact_invite_chk', drumate.id, "received");
-    let invitation = await this.db.await_proc('contact_invite_chk', drumate.id, "invitation");
+    let received = await this.db.await_proc('contact_invite_chk', peer.id, "received");
+    let invitation = await this.db.await_proc('contact_invite_chk', peer.id, "invitation");
     if (isEmpty(received)) {
       if (isEmpty(invitation)) {
         return this.output.data({ status: 'NO_INVITE' });
       }
     }
 
-    let data = await this.db.await_proc('contact_invite_accept', drumate.id);
+    let data = await this.db.await_proc('contact_invite_accept', peer.id);
 
     let node = {}
-    node.email = drumate.email;
+    node.email = peer.email;
     node.category = 'priv';
     node.is_default = '1';
     await this.db.await_proc('my_contact_mail_add', data.contact_id, stringify([node]))
 
     res = { ...res, ...data };
-    data = await this.yp.await_proc('forward_proc', drumate.id, 'contact_notification_by_entity', `'${this.uid}'`)
-    data.service = this.input.get(Attr.service)
+    data = await this.yp.await_proc('forward_proc', peer.id, 'contact_notification_by_entity', `'${this.uid}'`)
 
     const lang = this.user.language() || this.input.app_language();
     let msg_from = Cache.message('_contact_invite_chat_msg', lang)
     let msg_to = Cache.message('_contact_accept_chat_msg', lang)
-    await this.handshake(msg_from, drumate.id, this.uid)
-    await this.handshake(msg_to, this.uid, drumate.id)
+    await this.handshake(msg_from, peer.id, this.uid)
+    await this.handshake(msg_to, this.uid, peer.id)
 
-    let sockets = await this.yp.await_proc('user_sockets', drumate.id);
-    await RedisStore.sendData(this.payload(data), sockets);
-    this.output.data(res);
+    // Flip the inviter's contact record to 'informed' BEFORE pushing the
+    // WS — notification_center_next still includes 'informed' rows, so
+    // pushing first would leave the pending rollup on the inviter's panel.
+    try {
+      await this.yp.await_proc(`${peer.db_name}.contact_invite_informed`, this.uid);
+      await this.db.await_proc(`contact_invite_informed`, peer.id);
+    } catch (error) {
+      this.warn('[CONTACT] auto-informed failed:', error.message);
+    }
+
+    try {
+      await this.yp.await_proc(
+        'contact_log_activity',
+        this.uid,
+        peer.id,
+        'invite_accepted',
+        {
+          email: peer.email,
+          accepter_fullname: this.user.get('fullname')
+        }
+      );
+    } catch (error) {
+      this.warn('[CONTACT] Failed to log accept activity:', error.message);
+    }
+
+    let sockets = await this.yp.await_proc('user_sockets', peer.id);
+    await RedisStore.sendData(this.payload(data, { service: this.input.get(Attr.service) }), sockets);
+
     this.output.data(res);
   }
 
 
   /**
-   * 
+   * Returns contact invitations addressed to the current user.
+   * Each row is enriched with the latest matching `yp.contact_activity.id`
+   * so the activity-panel can dismiss it via `activity.dismiss_contact_event`.
    */
-  invite_get() {
-    this.db.call_proc('contact_notification_get', this.output.list);
+  async invite_get() {
+    const rows = await this.db.await_proc('contact_notification_get');
+    const list = toArray(rows);
+    if (list.length === 0) {
+      this.output.list(list);
+      return;
+    }
+    const inviterIds = list
+      .map((r) => r.drumate_id)
+      .filter((id) => typeof id === 'string' && id.length);
+    let activityMap = {};
+    if (inviterIds.length) {
+      const placeholders = inviterIds.map(() => '?').join(',');
+      const ids = await this.yp.await_query(
+        "SELECT a.id, a.uid " +
+        "  FROM yp.contact_activity a " +
+        " WHERE a.target_uid = ? " +
+        "   AND a.event = 'invite_received' " +
+        "   AND a.dismissed_at IS NULL " +
+        "   AND a.uid IN (" + placeholders + ") " +
+        " ORDER BY a.timestamp DESC",
+        this.uid, ...inviterIds
+      );
+      for (const row of toArray(ids)) {
+        if (!activityMap[row.uid]) activityMap[row.uid] = row.id;
+      }
+    }
+    const enriched = list.map((r) => ({
+      ...r,
+      activity_id: activityMap[r.drumate_id] || null,
+    }));
+    this.output.list(enriched);
   }
 
   /**
@@ -1465,18 +1634,18 @@ class __private_contact extends Contact {
   async accept_informed() {
     let email = this.input.need(Attr.email);
     let res = {};
-    let drumate = await this.yp.await_proc('drumate_exists', email);
-    if (isEmpty(drumate)) {
+    let source = await this.yp.await_proc('drumate_exists', email);
+    if (isEmpty(source)) {
       return this.output.data({ status: 'NOT_A_DRUMATE' });
     }
 
-    let data = await this.db.await_proc('contact_invite_chk', drumate.id, "informed");
+    let data = await this.db.await_proc('contact_invite_chk', source.id, "informed");
     if (isEmpty(data)) {
       return this.output.data({ status: 'NO_INVITE' });
     }
 
-    data = await this.db.await_proc('contact_invite_informed', drumate.id);
-    let sockets = await this.yp.await_proc('user_sockets', [drumate.id, this.uid]);
+    data = await this.db.await_proc('contact_invite_informed', source.id);
+    let sockets = await this.yp.await_proc('user_sockets', [source.id, this.uid]);
     await RedisStore.sendData(this.payload(data), sockets);
     res = { ...res, ...data };
     this.output.data(res);
@@ -1547,6 +1716,62 @@ class __private_contact extends Contact {
     }).catch(this.fallback);
   }
 
+  /**
+   * Get contact summary from contact table
+   * Permission: Owner only
+   * Input:
+   * - hub_id
+   * - nid
+   * 
+   * Output:
+   * - contact_count: Number of active contacts (from contact table)
+   * - last_updated: Most recent contact mtime
+   */
+  async summary() {
+    const hubId = this.input.need(Attr.hub_id);
+    const nid = this.input.need(Attr.nid);
+
+    this.debug(`[CONTACT] Getting summary for hub: ${hubId}, nid: ${nid}`);
+
+    // Verify user has access and is owner
+    const node = await this.yp.await_proc(
+      'forward_proc',
+      hubId,
+      'mfs_access_node',
+      `'${this.uid}', '${nid}'`
+    );
+
+    const nodeData = toArray(node)[0];
+
+    if (!nodeData) {
+      return this.output.data({
+        status: 'error',
+        message: 'Folder not found'
+      });
+    }
+
+    // Check if user is owner
+    if (nodeData.owner_id !== this.uid) {
+      return this.output.data({
+        status: 'error',
+        message: 'Permission denied: owner only'
+      });
+    }
+
+    // Get summary from hub database
+    const result = await this.db.await_proc('contact_summary', hubId, nid);
+
+    const data = toArray(result)[0];
+
+    if (data) {
+      this.output.data(data);
+    } else {
+      this.output.data({
+        contact_count: 0,
+        last_updated: 0
+      });
+    }
+  }
 }
 
 

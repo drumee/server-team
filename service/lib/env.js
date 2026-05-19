@@ -22,15 +22,18 @@ const {
   ID_NOBODY
 } = Constants;
 const { isEmpty, isString, isArray } = require("lodash");
-const { getPlugins, getServices } = require("../../router/rest");
-const { existsSync, readFileSync } = require("fs");
-const { resolve } = require("path");
-const { credential_dir } = sysEnv();
-let keyFile = resolve(credential_dir, `crypto/public.pem`);
-let publicKey;
-if (existsSync(keyFile)) {
-  let publicKey = readFileSync(keyFile);
-}
+const { getServices } = require("../../router/rest");
+const { main_domain } = sysEnv();
+
+// const { existsSync, readFileSync } = require("fs");
+// const { resolve } = require("path");
+// const { credential_dir } = sysEnv();
+// let keyFile = resolve(credential_dir, `crypto/public.pem`);
+// let publicKey;
+// if (existsSync(keyFile)) {
+//   let publicKey = readFileSync(keyFile);
+// }
+
 const TfaMethods = TFauth.Methods.map((e) => {
   return e.type
 });
@@ -54,6 +57,7 @@ async function get_env() {
   data.hub = { ...data.hub, ...hub };
   this.user.set(Attr.quota, {});
   data.user = await this.yp.await_proc("get_user", this.uid) || {};
+  data.user.onboarded = !!(data.user.profile && data.user.profile.onboarded);
   let { usage } = await this.yp.await_proc("disk_usage", this.uid) || {};
   data.user.disk_usage = usage;
   data.user.otp_key = this.session.get('secret');
@@ -102,11 +106,15 @@ function platform() {
   let platform = {};
   platform.fonts = [];
   platform.description = Cache.getSysConf('platform_intro_popup_title');
-  platform.termsandconditions = Cache.getSysConf('termsandconditions') || '{}';
   if (platform.description) {
     platform.description = JSON.parse(platform.description);
   }
-
+  platform.legals = Cache.getSysConf('legals');
+  if (platform.legals) {
+    platform.legals = JSON.parse(platform.legals);
+  } else {
+    platform.legals = {}
+  }
   let wp = Cache.getSysConf("wallpaper");
   if (isString(wp)) {
     platform.wallpaper = JSON.parse(wp);
@@ -125,11 +133,65 @@ function platform() {
   ) {
     platform.isPublic = 1;
   }
-
-  platform.plugins = Cache.getSysConf("plugins");
-  platform.services = getServices();    
+  if (Cache.getSysConf("plugins")) {
+    platform.plugins = JSON.parse(Cache.getSysConf("plugins"));
+  }
+  platform.services = getServices();
+  platform.doc_editor = Cache.getSysConf("doc_editor");
   platform.endpoint = this.input.basepath();
   return platform;
 }
+/**
+* 
+* @param {*} args 
+* @param {*} opt 
+*/
+async function createHub(args, opt = {}) {
+  let { owner_id, domain, area, filename, hostname, pid, user_db } = args;
+  if (!domain || !area) {
+    this.warn("MAL_FORMED_DATA", { args }, { domain, area });
+    return this.exception.user("MAL_FORMED_DATA");
+  }
 
-module.exports = { get_env, platform};
+  if (opt.is_wicket) {
+    hostname = uniqueId()
+    filename = hostname;
+  } else {
+    hostname = filename;
+    hostname = hostname.replace(/[ \.,;:!&~#'|@*\$><\?\(\)\[\]\{\}\"\/]/g, '');
+    hostname = await this.yp.await_func("strip_accents", hostname);
+    hostname = hostname.replace(/\-$/, '');
+    hostname = hostname.trim().toLowerCase();
+    hostname = new URL(`http://${hostname}`).hostname;
+  }
+
+  opt.lang = this.input.ua_language();
+  filename = await this.yp.await_func(`${user_db}.unique_filename`, pid, filename, "");
+  args = { hostname, area, filename, owner_id, domain };
+  const rows = await this.yp.await_proc(`${user_db}.desk_create_hub`, args, opt);
+  let hub_id, hub_db, home_id;
+  for (let r of rows) {
+    if (r && r.failed) {
+      this.debug("Rows returned", rows)
+      this.warn("Failed to create hub", { args, opt, rows });
+      return {};
+    }
+    if (r.db_name && r.filesize != null && r.actual_home_id) {
+      hub_db = r.db_name;
+      home_id = r.actual_home_id;
+    }
+    if (r.db_name && r.home_dir) {
+      hub_id = r.id;
+      hub_db = hub_db || r.db_name;
+    }
+  }
+
+  /** place the folder at the end on the user desk */
+  let { count } = await this.yp.await_query(`SELECT count(*) count FROM ${user_db}.media`);
+  await this.yp.await_query(`UPDATE ${user_db}.media media SET rank=? WHERE id=?`, count, hub_id);
+  return { filename, hostname, hub_id, hub_db, db_name: hub_db, home_id }
+
+}
+
+
+module.exports = { get_env, platform, createHub };

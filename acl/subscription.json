@@ -1,64 +1,302 @@
 {
   "services": {
     "invoice": {
+      "doc": "Get paginated invoice/renewal history for the current user. Calls renewal_history_get stored procedure with the user ID and page number.",
       "scope": "hub",
       "permission": {
         "src": "owner"
-      }
+      },
+      "params": {
+        "page": {
+          "type": "integer",
+          "required": false,
+          "default": 1,
+          "description": "Page number for paginated invoice history. Defaults to 1."
+        }
+      },
+      "returns": {
+        "type": "array",
+        "description": "Paginated list of renewal/invoice history records for the current user"
+      },
+      "errors": []
     },
+
     "get_plans": {
+      "doc": "Get available subscription plans and renewal status for the current user or their organisation. For non-domain users (domain_id=1) returns personal plans. For domain members checks that the user has at least dom_admin_member privilege, then retrieves plans for the organisation entity. Each plan has plan_detail and metadata parsed from JSON. Also returns the current renewal record, using a Stripe test clock frozen time if test clocks are enabled.",
       "scope": "hub",
       "permission": {
         "src": "owner"
-      }
+      },
+      "params": {},
+      "returns": {
+        "type": "object",
+        "description": "Plans and renewal data for the user or their organisation",
+        "properties": {
+          "plans": {
+            "type": "array",
+            "description": "List of available subscription plans with parsed plan_detail and metadata"
+          },
+          "renewal": {
+            "type": "object",
+            "description": "Current renewal record from renewal_get_next for the entity"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "NOT_ENOUGH_PRIVILEGE",
+          "message": "User does not have sufficient domain admin privilege to view organisation plans",
+          "condition": "domain_id != 1 and user privilege is less than dom_admin_member threshold"
+        }
+      ]
     },
+
     "new": {
+      "doc": "Create a new Stripe checkout session for a Pro subscription. Looks up or creates the Stripe customer for the current user, checks for an existing subscription (cancels incomplete ones, blocks active ones), finds or creates the Stripe product and price for the requested period, then creates a Stripe checkout session in subscription mode. Returns the session object for frontend redirect. Plan is always 'pro', recurring is always 1.",
       "scope": "hub",
       "permission": {
         "src": "owner"
-      }
+      },
+      "params": {
+        "period": {
+          "type": "string",
+          "required": true,
+          "description": "Billing period for the subscription (e.g. 'month', 'year')"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Stripe checkout session data for frontend redirect",
+        "properties": {
+          "session": {
+            "type": "object",
+            "description": "Stripe checkout session object including session URL and ID"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "ACTIVE_SUBSCRIPTION",
+          "message": "User already has an active subscription",
+          "condition": "Existing subscription record has status='active'"
+        }
+      ]
     },
+
     "update": {
+      "doc": "Update an existing Stripe subscription to a different billing period. Looks up the Stripe customer and their current subscription, finds or creates the Stripe price for the new period, then updates the subscription with proration behavior 'create_prorations'. Plan is always 'pro', recurring is always 1.",
       "scope": "hub",
       "permission": {
         "src": "owner"
-      }
+      },
+      "params": {
+        "period": {
+          "type": "string",
+          "required": true,
+          "description": "New billing period to switch to (e.g. 'month', 'year')"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Updated subscription period and status summary",
+        "properties": {
+          "current_period_end": {
+            "type": "integer",
+            "description": "Unix timestamp of the new period end date"
+          },
+          "current_period_start": {
+            "type": "integer",
+            "description": "Unix timestamp of the new period start date"
+          },
+          "status": {
+            "type": "string",
+            "description": "Updated subscription status"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "NO_SUBSCRIPTION",
+          "message": "No active Stripe subscription found for the current user",
+          "condition": "Stripe subscriptions list for the customer returns empty"
+        }
+      ]
     },
+
     "cancel": {
+      "doc": "Schedule cancellation of the current Stripe subscription at period end. Sets cancel_at_period_end=true on the Stripe subscription and updates the internal renewal record via renewal_cancel_next. Does not immediately cancel; subscription remains active until the current period ends. Returns the full invoice and subscription state plus the updated renewal record.",
       "scope": "hub",
       "permission": {
         "src": "owner"
-      }
+      },
+      "params": {},
+      "returns": {
+        "type": "object",
+        "description": "Cancellation result including subscription and invoice state",
+        "properties": {
+          "subscription_curr": {
+            "type": "object",
+            "description": "Current Stripe subscription object before cancellation"
+          },
+          "subscription": {
+            "type": "object",
+            "description": "Updated Stripe subscription object with cancel_at_period_end=true"
+          },
+          "invoice": {
+            "type": "object",
+            "description": "Latest Stripe invoice for the subscription"
+          },
+          "renewal": {
+            "type": "object",
+            "description": "Updated internal renewal record after cancel"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "NO_COUSTOMER",
+          "message": "No Stripe customer found for the current user",
+          "condition": "Stripe customer search returns empty"
+        },
+        {
+          "code": "NO_SUBSCRIPTION",
+          "message": "No Stripe subscription found for the customer",
+          "condition": "Stripe subscriptions list returns empty"
+        },
+        {
+          "code": "DARFT_INVOICE",
+          "message": "Cannot cancel while the latest invoice is in draft state",
+          "condition": "Latest invoice status is 'draft'"
+        }
+      ]
     },
+
     "init": {
+      "doc": "Initialize Stripe product and price records for all plans in the database. Fetches all products from product_get_stripe, ensures the 'pro' Stripe product exists (creates it if not), then for each product ensures a matching Stripe price exists with the correct unit_amount, period, recurring, and metadata. Returns the full list of products from the database.",
       "scope": "hub",
       "permission": {
         "src": "owner"
-      }
+      },
+      "params": {},
+      "returns": {
+        "type": "array",
+        "description": "Full list of product records from the database after Stripe sync"
+      },
+      "errors": []
     },
+
     "active": {
+      "doc": "Reactivate a subscription that was previously scheduled for cancellation. Sets cancel_at_period_end=false on the Stripe subscription and calls renewal_active to restore the internal renewal record. Returns the updated subscription and renewal state.",
       "scope": "hub",
       "permission": {
         "src": "owner"
-      }
+      },
+      "params": {},
+      "returns": {
+        "type": "object",
+        "description": "Reactivation result with updated subscription and renewal data",
+        "properties": {
+          "subscription_curr": {
+            "type": "object",
+            "description": "Current Stripe subscription object before reactivation"
+          },
+          "subscription": {
+            "type": "object",
+            "description": "Updated Stripe subscription with cancel_at_period_end=false"
+          },
+          "renewal": {
+            "type": "object",
+            "description": "Updated internal renewal record after reactivation"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "NO_COUSTOMER",
+          "message": "No Stripe customer found for the current user",
+          "condition": "Stripe customer search returns empty"
+        },
+        {
+          "code": "NO_SUBSCRIPTION",
+          "message": "No Stripe subscription found for the customer",
+          "condition": "Stripe subscriptions list returns empty"
+        }
+      ]
     },
+
     "proration": {
+      "doc": "Preview the proration cost of switching the current subscription to a different billing period. Retrieves an upcoming invoice from Stripe with the new price applied to calculate the proration charge. Returns both the invoiceitem (proration amount) and subscription line items from the upcoming invoice. Uses test clock frozen time if Stripe test clocks are enabled.",
       "scope": "hub",
       "permission": {
         "src": "owner"
-      }
+      },
+      "params": {
+        "period": {
+          "type": "string",
+          "required": true,
+          "description": "Target billing period to preview proration for (e.g. 'month', 'year')"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Proration preview from Stripe upcoming invoice",
+        "properties": {
+          "proration_item": {
+            "type": "object",
+            "description": "Stripe invoice line item of type 'invoiceitem' representing the proration charge amount"
+          },
+          "subscription_item": {
+            "type": "object",
+            "description": "Stripe invoice line item of type 'subscription' representing the next recurring charge"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "NO_CUSTOMER",
+          "message": "No Stripe customer found for the current user",
+          "condition": "Stripe customer search returns empty data array"
+        },
+        {
+          "code": "NO_SUBSCRIPTION",
+          "message": "No Stripe subscription found for the customer",
+          "condition": "Stripe subscriptions list returns empty data array"
+        }
+      ]
     },
+
     "payment_status": {
+      "doc": "Get the payment status of a specific subscription for the current user. Calls the payment_status stored procedure with the user ID and subscription ID.",
       "scope": "hub",
       "permission": {
         "src": "owner"
-      }
+      },
+      "params": {
+        "subscription_id": {
+          "type": "string",
+          "required": true,
+          "description": "Stripe subscription ID to retrieve payment status for"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Payment status record for the subscription from the payment_status stored procedure"
+      },
+      "errors": []
     },
+
     "update_clock": {
+      "doc": "Update a Stripe test clock state. Used for Stripe test clock management during development and testing. Calls update_stripe_clock stored procedure.",
       "scope": "hub",
       "permission": {
         "src": "owner"
-      }
+      },
+      "params": {},
+      "returns": {
+        "type": "object",
+        "description": "Updated Stripe test clock data"
+      },
+      "errors": []
     }
   },
   "modules": {

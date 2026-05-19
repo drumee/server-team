@@ -1,30 +1,147 @@
 {
   "services": {
     "accept_notification": {
+      "doc": "Accept a pending share notification and grant the shared node access to the current user. Calls yp_notification_accept to retrieve permission details, then calls sbx_accept to establish the MFS sharing relationship. Returns the accepted node attributes on success, or empty object if the notification has no status.",
       "scope": "hub",
       "permission": {
         "src": "anonymous"
-      }
+      },
+      "params": {
+        "nid": {
+          "type": "string",
+          "required": true,
+          "description": "Node ID of the share notification to accept"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "MFS node attributes of the accepted shared node, or empty object if notification has no status"
+      },
+      "errors": []
     },
+
     "assign_permission": {
+      "doc": "Assign sharing permissions to one or more users (drumates or guests) for source nodes. Runs pre_assign preprocessing to validate emails, resolve drumate accounts, create guest accounts for unknown emails, and build the srcgrantlst. Then calls assign_drumate_permission and assign_guest_permission. Guests receive an email notification with a shareable link.",
       "scope": "hub",
       "permission": {
         "src": "owner",
         "preproc": {
           "checker": "pre_assign"
         }
-      }
+      },
+      "params": {
+        "email": {
+          "type": "array",
+          "required": true,
+          "description": "One or more recipient email addresses. Single string is auto-wrapped in array. Guests (unknown emails) get a DMZ share link by email. Drumates get an in-app notification."
+        },
+        "privilege": {
+          "type": "integer",
+          "required": false,
+          "description": "Permission level to assign. Falls back to permission param if omitted."
+        },
+        "permission": {
+          "type": "integer",
+          "required": false,
+          "description": "Permission level to assign if privilege is not provided."
+        },
+        "message": {
+          "type": "string",
+          "required": false,
+          "default": "",
+          "description": "Optional message to include in the sharing notification or email"
+        },
+        "days": {
+          "type": "integer",
+          "required": false,
+          "default": 0,
+          "description": "Number of days for permission expiry. Combined with hours."
+        },
+        "hours": {
+          "type": "integer",
+          "required": false,
+          "default": 0,
+          "description": "Number of hours for permission expiry. Combined with days."
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Updated outbound node attributes after permissions have been assigned",
+        "properties": {
+          "nid": {
+            "type": "string",
+            "description": "Shared node ID"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "INVALID_DATA",
+          "message": "Source grant list is empty or no valid recipients found",
+          "condition": "srcgrantlst is empty or both drumates and guests lists are empty"
+        },
+        {
+          "code": "INVALID_EMAIL_FORMAT",
+          "message": "One or more email addresses are invalid",
+          "condition": "Email fails isEmail() validation; invalid emails returned in error payload"
+        },
+        {
+          "code": "FILE_NOT_FOUND",
+          "message": "One or more source nodes could not be found",
+          "condition": "Node in srclst is undefined or has no nid"
+        }
+      ]
     },
+
     "copy_link": {
+      "doc": "Copy (clone) a share link for a node granting permission to the nobody/public user. Calls permission_grant with scope 'link' and retrieves the resulting node link data. Runs pre_link preprocessing to validate source nodes.",
       "scope": "hub",
       "permission": {
         "src": "owner",
         "preproc": {
           "checker": "pre_link"
         }
-      }
+      },
+      "params": {
+        "nid": {
+          "type": "string",
+          "required": true,
+          "description": "Node ID (NODE_ID constant) to create a copy link for"
+        },
+        "permission": {
+          "type": "integer",
+          "required": false,
+          "default": 1,
+          "description": "Permission level to grant on the link"
+        },
+        "message": {
+          "type": "string",
+          "required": false,
+          "default": "",
+          "description": "Optional message stored on the permission record"
+        },
+        "days": {
+          "type": "integer",
+          "required": false,
+          "default": 0,
+          "description": "Number of days for link expiry. Combined with hours."
+        },
+        "hours": {
+          "type": "integer",
+          "required": false,
+          "default": 0,
+          "description": "Number of hours for link expiry. Combined with days."
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Node link data from get_node_link for the nobody access record"
+      },
+      "errors": []
     },
+
     "copy_to_sb": {
+      "doc": "Copy source nodes to a sharebox outbound folder. Renames nodes via rename_trash to the sharebox outbound path, then triggers mfs_copy_all transaction. Runs pre_transact preprocessing. Requires owner permission on both src and dest hubs.",
       "scope": "hub",
       "permission": {
         "src": "owner",
@@ -32,112 +149,529 @@
         "preproc": {
           "checker": "pre_transact"
         }
-      }
+      },
+      "params": {},
+      "returns": {
+        "type": "object",
+        "description": "Transaction result from mfs_copy_all"
+      },
+      "errors": []
     },
+
     "create_inbound_link": {
+      "doc": "Create an inbound drop link for specific recipient email addresses. Creates a subdirectory named after each email under the target node, sets up a DMZ share with upload permission for the nobody user, and sends an email to each recipient with the drop link. Runs pre_share_in preprocessing.",
       "scope": "hub",
       "permission": {
         "src": "owner",
         "preproc": {
           "checker": "pre_share_in"
         }
-      }
+      },
+      "params": {
+        "email": {
+          "type": "array",
+          "required": true,
+          "description": "One or more recipient email addresses who will receive the inbound drop link. Single string is auto-wrapped in array."
+        },
+        "nid": {
+          "type": "string",
+          "required": true,
+          "description": "Parent node ID under which the inbound drop folder is created"
+        },
+        "days": {
+          "type": "integer",
+          "required": false,
+          "default": 0,
+          "description": "Number of days for link expiry. Combined with hours."
+        },
+        "hours": {
+          "type": "integer",
+          "required": false,
+          "default": 0,
+          "description": "Number of hours for link expiry. Combined with days."
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Node data of the created inbound drop directory after email delivery"
+      },
+      "errors": [
+        {
+          "code": "Failed to create link",
+          "message": "MFS directory creation failed or DMZ share check returned empty",
+          "condition": "mfs_make_dir or dmz_check_share returns empty"
+        }
+      ]
     },
+
     "create_link": {
+      "doc": "Create an outbound share link for source nodes. Checks or creates a DMZ share token per node via dmz_check_share, grants permission with the given expiry and permission level, registers the link via dmz_add_link, and returns updated outbound node attributes. Runs pre_link preprocessing.",
       "scope": "hub",
       "permission": {
         "src": "owner",
         "preproc": {
           "checker": "pre_link"
         }
-      }
+      },
+      "params": {
+        "permission": {
+          "type": "integer",
+          "required": false,
+          "description": "Permission level to grant. Defaults to Permission.download if omitted."
+        },
+        "days": {
+          "type": "integer",
+          "required": false,
+          "default": 0,
+          "description": "Number of days for link expiry. Combined with hours."
+        },
+        "hours": {
+          "type": "integer",
+          "required": false,
+          "default": 0,
+          "description": "Number of hours for link expiry. Combined with days."
+        }
+      },
+      "returns": {
+        "type": "array",
+        "description": "Updated outbound node attributes for all linked nodes"
+      },
+      "errors": []
     },
+
     "create_private_box": {
+      "doc": "Create a private sharebox folder accessible only by a specific guest email. Verifies the email does not belong to an existing drumate, creates a guest account if needed, creates a named directory, sets metadata.sharebox='private', generates a DMZ share token, grants upload permission, and returns the box data with a shareable link.",
       "scope": "hub",
       "permission": {
         "src": "owner"
-      }
+      },
+      "params": {
+        "email": {
+          "type": "string",
+          "required": true,
+          "description": "Email address of the guest recipient. Must not be an existing drumate account."
+        },
+        "permission": {
+          "type": "integer",
+          "required": false,
+          "description": "Permission level to grant. Defaults to Privilege.upload if omitted."
+        },
+        "password": {
+          "type": "string",
+          "required": false,
+          "default": "",
+          "description": "Optional password to protect the private box link"
+        },
+        "days": {
+          "type": "integer",
+          "required": false,
+          "default": 10,
+          "description": "Number of days for link expiry. Default is 10 days."
+        },
+        "hours": {
+          "type": "integer",
+          "required": false,
+          "default": 0,
+          "description": "Number of hours for link expiry. Combined with days."
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Created private box share data with inbound link",
+        "properties": {
+          "link": {
+            "type": "string",
+            "description": "Shareable inbound URL with the DMZ token as path segment"
+          },
+          "share_id": {
+            "type": "string",
+            "description": "DMZ share token for the private box"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "DRUMATE_EMAIL",
+          "message": "Email belongs to an existing drumate account and cannot be used for a guest private box",
+          "condition": "drumate_exists returns non-empty result for the provided email"
+        },
+        {
+          "code": "LINK_FAILED",
+          "message": "Failed to create the sharebox directory",
+          "condition": "mfs_make_dir returns empty result"
+        },
+        {
+          "code": "INVALID_STATE",
+          "message": "DMZ share state mismatch; share exists in public state but private was expected",
+          "condition": "dmz_check_share returns state='public'"
+        }
+      ]
     },
+
     "create_public_box": {
+      "doc": "Create a public sharebox folder accessible to anyone with the link. Creates a named directory in the user home, sets metadata.sharebox='private', generates a DMZ share token, grants permission for the wildcard user, and returns the box data with a shareable inbound link.",
       "scope": "hub",
       "permission": {
         "src": "owner"
-      }
+      },
+      "params": {
+        "name": {
+          "type": "string",
+          "required": true,
+          "description": "Display name for the public sharebox folder"
+        },
+        "permission": {
+          "type": "integer",
+          "required": false,
+          "description": "Permission level to grant. Defaults to Privilege.download if omitted."
+        },
+        "password": {
+          "type": "string",
+          "required": false,
+          "default": "",
+          "description": "Optional password to protect the public box link"
+        },
+        "days": {
+          "type": "integer",
+          "required": false,
+          "default": 0,
+          "description": "Number of days for link expiry. Combined with hours."
+        },
+        "hours": {
+          "type": "integer",
+          "required": false,
+          "default": 0,
+          "description": "Number of hours for link expiry. Combined with days."
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Created public box share data with inbound link",
+        "properties": {
+          "link": {
+            "type": "string",
+            "description": "Shareable inbound URL with the DMZ token as path segment"
+          },
+          "share_id": {
+            "type": "string",
+            "description": "DMZ share token for the public box"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "LINK_FAILED",
+          "message": "Failed to create the sharebox directory",
+          "condition": "mfs_make_dir returns empty result"
+        },
+        {
+          "code": "INVALID_STATE",
+          "message": "DMZ share state mismatch; share exists in private state but public was expected",
+          "condition": "dmz_check_share returns state='private'"
+        }
+      ]
     },
+
     "get_box_attr": {
+      "doc": "Get attributes and link for a sharebox node. Retrieves DMZ share link content via dmz_show_link_content and constructs the full inbound access URL including the share token.",
       "scope": "hub",
       "permission": {
         "src": "owner"
-      }
+      },
+      "params": {
+        "nid": {
+          "type": "string",
+          "required": true,
+          "description": "Node ID (NODE_ID constant) of the sharebox to retrieve attributes for"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Sharebox link content with constructed inbound URL",
+        "properties": {
+          "link": {
+            "type": "string",
+            "description": "Full inbound shareable URL with the DMZ share token"
+          },
+          "share_id": {
+            "type": "string",
+            "description": "DMZ share token"
+          }
+        }
+      },
+      "errors": []
     },
+
     "get_inbound_node_attr": {
+      "doc": "Get inbound sharing attributes for one or more nodes. Returns sharing metadata for nodes shared inbound to the current user. Single nid string is auto-wrapped in array before the database call.",
       "scope": "hub",
       "permission": {
         "src": "read"
-      }
+      },
+      "params": {
+        "nid": {
+          "type": "string",
+          "required": true,
+          "description": "One or more node IDs (NODE_ID constant). Single string is auto-wrapped in array."
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Inbound node sharing attributes from get_inbound_node_attr stored procedure"
+      },
+      "errors": []
     },
+
     "get_node_share_attr": {
+      "doc": "Get sharing attributes for a specific node with a given option context. Queries the sharebox database (sb_db from visitor context) for node share attributes visible to the current user.",
       "scope": "hub",
       "permission": {
         "src": "owner"
-      }
+      },
+      "params": {
+        "nid": {
+          "type": "string",
+          "required": true,
+          "description": "Node ID (NODE_ID constant) to retrieve sharing attributes for"
+        },
+        "option": {
+          "type": "string",
+          "required": true,
+          "description": "Display option controlling which attributes are returned (e.g. view mode)"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Node sharing attributes from the sharebox database for the given node and option"
+      },
+      "errors": []
     },
+
     "get_outbound_node_attr": {
+      "doc": "Get outbound sharing attributes for one or more nodes. Returns sharing metadata for nodes the current user has shared outbound to others. Single nid string is auto-wrapped in array before the database call.",
       "scope": "hub",
       "permission": {
         "src": "owner"
-      }
+      },
+      "params": {
+        "nid": {
+          "type": "string",
+          "required": true,
+          "description": "One or more node IDs (NODE_ID constant). Single string is auto-wrapped in array."
+        }
+      },
+      "returns": {
+        "type": "array",
+        "description": "List of outbound node sharing attributes from get_outbound_node_attr stored procedure"
+      },
+      "errors": []
     },
+
     "notification_count": {
+      "doc": "Get count of pending sharebox notifications for the current user. The private implementation calls yp_notification_count; the public stub returns an empty object.",
       "scope": "hub",
       "permission": {
         "src": "owner"
-      }
+      },
+      "params": {},
+      "returns": {
+        "type": "object",
+        "description": "Notification count data from yp_notification_count, or empty object in public context"
+      },
+      "errors": []
     },
+
     "notification_list": {
+      "doc": "Get list of pending sharebox notifications for the current user. The private implementation calls yp_notification_receive_list; the public stub returns an empty object.",
       "scope": "hub",
       "permission": {
         "src": "owner"
-      }
+      },
+      "params": {},
+      "returns": {
+        "type": "array",
+        "description": "List of pending share notifications from yp_notification_receive_list, or empty object in public context"
+      },
+      "errors": []
     },
+
     "refuse_notification": {
+      "doc": "Refuse (decline) a pending share notification. Removes the notification via yp_notification_remove and returns the updated notification list for the current user.",
       "scope": "hub",
       "permission": {
         "src": "anonymous"
-      }
+      },
+      "params": {
+        "nid": {
+          "type": "string",
+          "required": true,
+          "description": "Node ID (NODE_ID constant) of the share notification to refuse"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Updated list of remaining pending notifications after refusal"
+      },
+      "errors": []
     },
+
     "remove_link": {
+      "doc": "Remove a share link for a node. Deletes the DMZ share record via dmz_delete_share using both the node ID and share ID, then returns updated outbound node attributes.",
       "scope": "hub",
       "permission": {
         "src": "owner"
-      }
+      },
+      "params": {
+        "nid": {
+          "type": "string",
+          "required": true,
+          "description": "Node ID of the shared node whose link is being removed"
+        },
+        "share_id": {
+          "type": "string",
+          "required": true,
+          "description": "Share token ID of the link to delete"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Updated outbound node attributes after link removal"
+      },
+      "errors": []
     },
+
     "remove_open_link": {
+      "doc": "Remove an open (public) share link. Reserved endpoint for removing publicly accessible share links.",
       "scope": "hub",
       "permission": {
         "src": "owner"
-      }
+      },
+      "params": {},
+      "returns": {
+        "type": "object",
+        "description": "Reserved"
+      },
+      "errors": []
     },
+
     "revoke_permission": {
+      "doc": "Revoke sharing permissions from one or more users for the preloaded source nodes. For each user and node combination: removes DMZ link if the user is a guest (not a drumate), removes the sharebox entry via sbx_remove if the user is a drumate, revokes the permission record, and removes any pending notification. Runs pre_revoke preprocessing to load source nodes.",
       "scope": "hub",
       "permission": {
         "src": "owner",
         "preproc": {
           "checker": "pre_revoke"
         }
-      }
+      },
+      "params": {
+        "user_id": {
+          "type": "string",
+          "required": true,
+          "description": "One or more user IDs whose permissions should be revoked. Single string is auto-wrapped in array."
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Drumate lookup result for the last processed user ID"
+      },
+      "errors": []
     },
+
     "update_box": {
+      "doc": "Update the permission and expiry settings of an existing sharebox. Looks up the existing share via dmz_check_share and updates the permission grant and DMZ share record. Returns the updated box data with a refreshed inbound link.",
       "scope": "hub",
       "permission": {
         "src": "owner"
-      }
+      },
+      "params": {
+        "nid": {
+          "type": "string",
+          "required": true,
+          "description": "Node ID (NODE_ID constant) of the sharebox to update"
+        },
+        "permission": {
+          "type": "integer",
+          "required": false,
+          "description": "Updated permission level. Defaults to Privilege.upload if omitted."
+        },
+        "password": {
+          "type": "string",
+          "required": false,
+          "default": "",
+          "description": "Updated password for the sharebox link"
+        },
+        "days": {
+          "type": "integer",
+          "required": false,
+          "default": 0,
+          "description": "Updated number of days for expiry. Combined with hours."
+        },
+        "hours": {
+          "type": "integer",
+          "required": false,
+          "default": 0,
+          "description": "Updated number of hours for expiry. Combined with days."
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Updated sharebox data with refreshed inbound link",
+        "properties": {
+          "link": {
+            "type": "string",
+            "description": "Refreshed inbound shareable URL with DMZ token"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "INVALID_NID",
+          "message": "Node ID does not match any existing sharebox share record",
+          "condition": "dmz_check_share returns a new share_id equal to the generated random one, indicating no existing share was found"
+        }
+      ]
     },
+
     "update_link": {
+      "doc": "Update permission and expiry for an existing share link identified by share ID. Accepts one or more node IDs, normalizes them, re-grants permission on each with the updated expiry and permission level using the existing share token, and returns updated outbound node attributes.",
       "scope": "hub",
       "permission": {
         "src": "owner"
-      }
+      },
+      "params": {
+        "nid": {
+          "type": "string",
+          "required": true,
+          "description": "One or more node IDs to update the link for. Normalized via normalize_ids."
+        },
+        "share_id": {
+          "type": "string",
+          "required": true,
+          "description": "Existing share token ID to update"
+        },
+        "permission": {
+          "type": "integer",
+          "required": false,
+          "description": "Updated permission level. Defaults to Permission.view if omitted."
+        },
+        "days": {
+          "type": "integer",
+          "required": false,
+          "default": 0,
+          "description": "Updated number of days for expiry. Combined with hours."
+        },
+        "hours": {
+          "type": "integer",
+          "required": false,
+          "default": 0,
+          "description": "Updated number of hours for expiry. Combined with days."
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Updated outbound node attributes after permission re-grant"
+      },
+      "errors": []
     }
   },
   "modules": {

@@ -146,14 +146,6 @@ class MainPage extends RuntimeEnv {
     if (sent) {
       return;
     }
-    let plugins = this.getCustomPlugins();
-    if (plugins) {
-      data.plugins = plugins;
-    } else if (data.plugins && data.plugins.location) {
-      data.plugins = toArray(data.plugins)
-    } else {
-      data.plugins = []
-    }
     data.keysel = this.refreshAuthorization(data);
     let db = this.hub.get(Attr.db_name);
     data.fonts_links = await this.yp.await_proc(`${db}.get_fonts_links`);
@@ -169,6 +161,22 @@ class MainPage extends RuntimeEnv {
     this.set({ data });
     if (this.input.get('debug-ui')) {
       data.debugUi = 1;
+    }
+    let bundles = {}
+    if (data.app.manifest) {
+      for (let m of ["runtime", "core",  "sprite", "locale", "main"]) {
+        bundles[m] = data.app.manifest[`${m}.js`]
+      }
+    } else {
+      for (let m of ["core", "sprite", "locale", "entry"]) {
+        bundles[m] = data.app[m]
+      }
+    }
+    data.bundles = bundles;
+    let xid = this.input.get("xid")
+    if (xid) {
+      let opt = { xid, source: xid, service: "page.index" };
+      this.session.log_service(opt);
     }
     const template_dir = resolve(__dirname, TPL_BASE);
     let content = this.getRender(template_dir, "index.tpl")(data);

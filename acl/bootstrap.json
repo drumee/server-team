@@ -1,60 +1,196 @@
 {
   "services": {
     "js": {
+      "doc": "Generate and return the JavaScript bootstrap bundle for the current hub. Merges runtime environment data with hub configuration, injects bundle paths (core, vendor, sprite, locale, entry), sets the Authorization header on the response, and renders the bootstrap.js.tpl template. Response is served as application/javascript.",
       "scope": "hub",
       "permission": {
         "src": "anonymous",
         "fast_check": "public-api"
-      }
+      },
+      "params": {
+        "Authorization": {
+          "type": "string",
+          "required": false,
+          "doc": "HTTP Authorization header. Read from the request header. Used to set keysel and propagate auth context to the rendered template."
+        }
+      },
+      "returns": {
+        "content": {
+          "type": "string",
+          "doc": "Rendered bootstrap JavaScript content served as application/javascript. Includes hub configuration, runtime environment, and asset bundle paths."
+        }
+      },
+      "errors": [
+        {
+          "code": "INTERNAL_ERROR",
+          "message": "Failed to resolve runtime environment or render the bootstrap template",
+          "http_status": 500
+        }
+      ]
     },
     "plugin": {
+      "doc": "Resolve the entry point path for a named UI plugin. Searches first under the endpoint-specific plugin base directory, then falls back to the runtime plugin directory. Returns the resolved endpoint path for the plugin entry file, or an empty path if the plugin is not found.",
       "scope": "hub",
       "permission": {
         "src": "anonymous",
         "fast_check": "public-api"
+      },
+      "params": {
+        "name": {
+          "type": "string",
+          "required": false,
+          "default": "",
+          "doc": "Plugin name. File extension is stripped automatically before lookup."
+        }
+      },
+      "returns": {
+        "path": {
+          "type": "string",
+          "doc": "Resolved endpoint path to the plugin entry file. Empty string when the plugin is not found."
+        }
       }
     },
     "css": {
+      "doc": "Generate and return the CSS font stylesheet for the current hub. Renders the fonts.tpl template and serves the result as text/css.",
       "scope": "hub",
       "permission": {
         "src": "anonymous",
         "fast_check": "public-api"
-      }
+      },
+      "params": {},
+      "returns": {
+        "content": {
+          "type": "string",
+          "doc": "Rendered font CSS content served as text/css"
+        }
+      },
+      "errors": [
+        {
+          "code": "INTERNAL_ERROR",
+          "message": "Failed to render the fonts template",
+          "http_status": 500
+        }
+      ]
     },
     "dom": {
+      "doc": "Generate and return the DOM bootstrap JavaScript for the current hub. Merges runtime environment data with hub configuration, injects the request host, sets the Authorization header on the response, and renders the bootstrap.dom.tpl template. Response is served as application/javascript.",
       "scope": "hub",
       "permission": {
         "src": "anonymous",
         "fast_check": "public-api"
-      }
+      },
+      "params": {
+        "Authorization": {
+          "type": "string",
+          "required": false,
+          "doc": "HTTP Authorization header. Read from the request header. Used to set keysel and propagate auth context to the rendered template."
+        }
+      },
+      "returns": {
+        "content": {
+          "type": "string",
+          "doc": "Rendered DOM bootstrap JavaScript content served as application/javascript. Includes hub configuration, runtime environment, and the resolved request host."
+        }
+      },
+      "errors": [
+        {
+          "code": "INTERNAL_ERROR",
+          "message": "Failed to resolve runtime environment or render the DOM bootstrap template",
+          "http_status": 500
+        }
+      ]
     },
     "report_error": {
+      "doc": "Accept and log a client-side error report. Reads the raw request payload for debug logging and responds with a plain text acknowledgement. No structured response body is returned.",
       "scope": "hub",
       "permission": {
         "src": "anonymous",
         "fast_check": "public-api"
+      },
+      "params": {
+        "data": {
+          "type": "object",
+          "required": false,
+          "doc": "Arbitrary client error payload. Logged server-side for diagnostics only; not processed or stored."
+        }
+      },
+      "returns": {
+        "content": {
+          "type": "string",
+          "doc": "Plain text response: OK"
+        }
       }
     },
     "publicKey": {
+      "doc": "Return the platform RSA public key in PEM format. Reads the key from /etc/drumee/credential/crypto/public.pem. Returns a fallback string if the key file does not exist.",
       "scope": "hub",
       "permission": {
         "src": "anonymous",
         "fast_check": "public-api"
+      },
+      "params": {},
+      "returns": {
+        "content": {
+          "type": "string",
+          "doc": "PEM-encoded RSA public key, or the literal string -----NO PUBLIC KEY----- when the key file is absent."
+        }
       }
     },
     "getSyncTimes": {
+      "doc": "Return a pair of timestamps used for client-server time synchronization. t2 is derived from the request timestamp (parsed from the incoming request), t3 is the server wall-clock time at the moment of processing.",
       "scope": "hub",
       "permission": {
         "src": "anonymous",
         "fast_check": "public-api"
+      },
+      "params": {},
+      "returns": {
+        "t2": {
+          "type": "number",
+          "doc": "Timestamp extracted from the incoming request via input.timestamp()"
+        },
+        "t3": {
+          "type": "number",
+          "doc": "Server-side wall-clock time in milliseconds since Unix epoch (Date.now()) at the moment of processing"
+        }
       }
     },
     "authn": {
+      "doc": "Exchange an HTTP Authorization header credential for a short-lived opaque token. Generates a 22-character token, stores it via the authn_store stored procedure, and optionally includes the user OTP key in the response. For DMZ or share hub areas, the auth type is forced to guest.",
       "scope": "hub",
       "permission": {
         "src": "anyone",
         "fast_check": "public-api"
-      }
+      },
+      "params": {
+        "Authorization": {
+          "type": "string",
+          "required": true,
+          "doc": "HTTP Authorization header. Read from the request header. The auth type is overridden to guest when the hub area is dmz or share."
+        }
+      },
+      "returns": {
+        "token": {
+          "type": "string",
+          "doc": "22-character opaque authentication token generated by uniqueId(22) and persisted via the authn_store stored procedure"
+        },
+        "otp_key": {
+          "type": "string",
+          "doc": "One-time-password key from the current user session. Included in the response only when the user has an otp_key set."
+        }
+      },
+      "errors": [
+        {
+          "code": "UNAUTHORIZED",
+          "message": "Authorization header is missing or malformed",
+          "http_status": 401
+        },
+        {
+          "code": "INTERNAL_ERROR",
+          "message": "Failed to persist token via authn_store procedure",
+          "http_status": 500
+        }
+      ]
     }
   },
   "modules": {

@@ -1,5 +1,5 @@
 
-const { Cache, RedisStore, Events} = require("@drumee/server-essentials");
+const { Cache, RedisStore, Events } = require("@drumee/server-essentials");
 const { Session, Input, Output } = require("@drumee/server-core");
 
 const { ERROR, START } = Events;
@@ -18,10 +18,10 @@ console.log(`Starting service server with verbosity = ${global.verbosity}`);
  * @param {*} request 
  * @param {*} response 
  */
-function handler (request, response) {
+function handler(request, response) {
   const input = new Input({ request, sourceName: "service" });
   const output = new Output({ response });
-  let session = new Session({ input, output, env});
+  let session = new Session({ input, output, env });
 
   session.once(ERROR, function (e) {
     console.error("SERVER_FAULT[47]", e);
@@ -93,4 +93,5 @@ res
 configs.handleSignals(async () => {
   console.log("Reloading plugin");
   await Acl.loadPlugins(true);
+  await Cache.load(env.yp, 1);
 });

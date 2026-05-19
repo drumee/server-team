@@ -1,35 +1,152 @@
 {
   "services": {
     "create": {
+      "doc": "Create a new reminder for the current user. Stores a reminder task object linked to the authenticated user via the reminder_create stored procedure.",
       "scope": "hub",
       "permission": {
         "src": "write"
-      }
+      },
+      "params": {
+        "task": {
+          "type": "object",
+          "required": true,
+          "description": "Reminder task data object containing the reminder details to store"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Created reminder record returned from the database",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Unique identifier of the created reminder"
+          }
+        }
+      },
+      "errors": []
     },
+
     "get": {
+      "doc": "Get a specific reminder by ID, node ID, or hub ID. Retrieves a single reminder record matching the provided lookup criteria for the authenticated user.",
       "scope": "hub",
       "permission": {
         "src": "read"
       },
-      "method": "read"
+      "method": "read",
+      "params": {
+        "reminder_id": {
+          "type": "string",
+          "required": false,
+          "description": "Reminder ID to look up"
+        },
+        "nid": {
+          "type": "string",
+          "required": false,
+          "description": "Node ID associated with the reminder"
+        },
+        "hub_id": {
+          "type": "string",
+          "required": false,
+          "description": "Hub ID associated with the reminder"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Reminder record matching the lookup criteria",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Reminder ID"
+          },
+          "nid": {
+            "type": "string",
+            "description": "Associated node ID"
+          },
+          "hub_id": {
+            "type": "string",
+            "description": "Associated hub ID"
+          },
+          "uid": {
+            "type": "string",
+            "description": "Owner user ID"
+          }
+        }
+      },
+      "errors": []
     },
+
     "list": {
+      "doc": "List all reminders for the current user. Returns the full list of reminder records owned by the authenticated user via the reminder_list stored procedure.",
       "scope": "hub",
       "permission": {
         "src": "read"
-      }
+      },
+      "params": {},
+      "returns": {
+        "type": "array",
+        "description": "List of reminder records for the authenticated user",
+        "items": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "Reminder ID"
+            }
+          }
+        }
+      },
+      "errors": []
     },
+
     "remove": {
+      "doc": "Remove a reminder by ID. Deletes the reminder record permanently via the reminder_remove stored procedure and returns the deleted record ID.",
       "scope": "hub",
       "permission": {
         "src": "write"
-      }
+      },
+      "params": {
+        "id": {
+          "type": "string",
+          "required": true,
+          "description": "ID of the reminder to delete"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Confirmation of deletion with the removed reminder ID",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "ID of the deleted reminder"
+          }
+        }
+      },
+      "errors": []
     },
+
     "update": {
+      "doc": "Update an existing reminder. Replaces the task data of an existing reminder identified by ID via the reminder_update stored procedure.",
       "scope": "hub",
       "permission": {
         "src": "write"
-      }
+      },
+      "params": {
+        "id": {
+          "type": "string",
+          "required": true,
+          "description": "ID of the reminder to update"
+        },
+        "task": {
+          "type": "object",
+          "required": true,
+          "description": "Updated reminder task data object to replace the existing task"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Updated reminder record returned from the database"
+      },
+      "errors": []
     }
   },
   "modules": {

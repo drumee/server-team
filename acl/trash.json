@@ -1,0 +1,264 @@
+{
+  "services": {
+    "get_config": {
+      "doc": "Get current trash expiry configuration. Calls the get_trash_config stored procedure on the YP database and returns the configuration record with last_run_time, ctime, and mtime formatted as ISO 8601 date strings. Returns null for date fields when the corresponding timestamp is 0.",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "params": {},
+      "returns": {
+        "type": "object",
+        "description": "Current trash expiry configuration with formatted date fields",
+        "properties": {
+          "expiry_days": {
+            "type": "integer",
+            "description": "Number of days after which trashed items are auto-deleted"
+          },
+          "auto_delete_enabled": {
+            "type": "integer",
+            "description": "Whether automatic deletion is enabled. 1 = enabled, 0 = disabled."
+          },
+          "last_run_time": {
+            "type": "integer",
+            "description": "Unix timestamp of the last time the expiry worker ran"
+          },
+          "last_run_date": {
+            "type": "string",
+            "description": "ISO 8601 formatted datetime of last_run_time, or null when last_run_time is 0"
+          },
+          "created_at": {
+            "type": "string",
+            "description": "ISO 8601 formatted datetime derived from the ctime field, or null when ctime is 0"
+          },
+          "updated_at": {
+            "type": "string",
+            "description": "ISO 8601 formatted datetime derived from the mtime field, or null when mtime is 0"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "TRASH_CONFIG_NOT_FOUND",
+          "message": "The get_trash_config stored procedure returned no result",
+          "returns": {
+            "status": "TRASH_CONFIG_NOT_FOUND"
+          }
+        },
+        {
+          "code": "FAILED_TO_GET_TRASH_CONFIG",
+          "message": "An unexpected server error occurred while retrieving trash configuration",
+          "returns": {
+            "status": "FAILED_TO_GET_TRASH_CONFIG"
+          }
+        }
+      ]
+    },
+
+    "update_config": {
+      "doc": "Update trash expiry configuration. Requires admin permission. Validates expiry_days (must be an integer between 1 and 365) and auto_delete_enabled (must be exactly 0 or 1) before calling the update_trash_config stored procedure. The stored procedure also performs its own validation. Returns the updated configuration with ISO 8601 formatted date fields.",
+      "scope": "hub",
+      "permission": {
+        "src": "admin"
+      },
+      "params": {
+        "expiry_days": {
+          "type": "integer",
+          "required": true,
+          "description": "Number of days before trashed items are automatically deleted. Must be between 1 and 365 inclusive."
+        },
+        "auto_delete_enabled": {
+          "type": "integer",
+          "required": true,
+          "description": "Enable or disable automatic deletion. Must be exactly 0 (disabled) or 1 (enabled)."
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Updated trash expiry configuration with formatted date fields",
+        "properties": {
+          "expiry_days": {
+            "type": "integer",
+            "description": "Updated number of days before auto-deletion"
+          },
+          "auto_delete_enabled": {
+            "type": "integer",
+            "description": "Updated auto-delete flag. 1 = enabled, 0 = disabled."
+          },
+          "last_run_time": {
+            "type": "integer",
+            "description": "Unix timestamp of the last expiry worker run"
+          },
+          "last_run_date": {
+            "type": "string",
+            "description": "ISO 8601 formatted datetime of last_run_time, or null when last_run_time is 0"
+          },
+          "created_at": {
+            "type": "string",
+            "description": "ISO 8601 formatted creation datetime, or null when ctime is 0"
+          },
+          "updated_at": {
+            "type": "string",
+            "description": "ISO 8601 formatted last-update datetime, or null when mtime is 0"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "INVALID_EXPIRY_DAYS",
+          "message": "expiry_days is not a number or is outside the 1-365 range. Also raised when the stored procedure itself rejects the value.",
+          "returns": {
+            "status": "INVALID_EXPIRY_DAYS"
+          }
+        },
+        {
+          "code": "INVALID_AUTO_DELETE_FLAG",
+          "message": "auto_delete_enabled is not exactly 0 or 1. Also raised when the stored procedure itself rejects the value.",
+          "returns": {
+            "status": "INVALID_AUTO_DELETE_FLAG"
+          }
+        },
+        {
+          "code": "TRASH_CONFIG_UPDATE_FAILED",
+          "message": "The update_trash_config stored procedure returned no result",
+          "returns": {
+            "status": "TRASH_CONFIG_UPDATE_FAILED"
+          }
+        },
+        {
+          "code": "FAILED_TO_UPDATE_TRASH_CONFIG",
+          "message": "An unexpected server error occurred while updating trash configuration",
+          "returns": {
+            "status": "FAILED_TO_UPDATE_TRASH_CONFIG"
+          }
+        }
+      ]
+    },
+
+    "get_stats": {
+      "doc": "Get trash statistics for the admin dashboard. Fetches the global trash configuration, then calls the find_all_expired_trash stored procedure to aggregate expired item counts across all hubs. When called in a hub context, also queries the current hub database for per-user trash totals and expired item counts. Returns a combined result with global config, system-wide aggregates, and optionally the current hub breakdown.",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "params": {},
+      "returns": {
+        "type": "object",
+        "description": "Combined trash statistics object",
+        "properties": {
+          "config": {
+            "type": "object",
+            "description": "Current global trash expiry configuration snapshot",
+            "properties": {
+              "expiry_days": {
+                "type": "integer",
+                "description": "Configured auto-delete threshold in days"
+              },
+              "auto_delete_enabled": {
+                "type": "integer",
+                "description": "Auto-delete enabled flag. 1 = enabled, 0 = disabled."
+              },
+              "last_run_time": {
+                "type": "integer",
+                "description": "Unix timestamp of the last expiry worker run"
+              },
+              "last_run_date": {
+                "type": "string",
+                "description": "ISO 8601 formatted datetime of last_run_time, or null when last_run_time is 0"
+              }
+            }
+          },
+          "system_wide": {
+            "type": "object",
+            "description": "Aggregate expired trash counts across all hubs in the system",
+            "properties": {
+              "hubs_with_expired": {
+                "type": "integer",
+                "description": "Number of hubs that have at least one expired trash item"
+              },
+              "total_expired_items": {
+                "type": "integer",
+                "description": "Total number of expired trash items across all hubs"
+              }
+            }
+          },
+          "current_hub": {
+            "type": "object",
+            "description": "Trash breakdown for the current hub and user. Null when not in a hub context or when hub_id equals uid.",
+            "properties": {
+              "hub_id": {
+                "type": "string",
+                "description": "Current hub ID"
+              },
+              "total_items": {
+                "type": "integer",
+                "description": "Total number of trashed items owned by the current user in this hub"
+              },
+              "expired_items": {
+                "type": "integer",
+                "description": "Number of trashed items that have exceeded the expiry_days threshold"
+              }
+            }
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "TRASH_CONFIG_NOT_FOUND",
+          "message": "The get_trash_config stored procedure returned no result",
+          "returns": {
+            "status": "TRASH_CONFIG_NOT_FOUND"
+          }
+        },
+        {
+          "code": "FAILED_TO_GET_TRASH_STATS",
+          "message": "An unexpected server error occurred while retrieving trash statistics",
+          "returns": {
+            "status": "FAILED_TO_GET_TRASH_STATS"
+          }
+        }
+      ]
+    },
+
+    "trigger_expiry": {
+      "doc": "Manually trigger an immediate trash expiry run. Intended for admin use and testing. The current implementation returns a success acknowledgement immediately. Actual signalling to the expiry worker process depends on the server process management configuration.",
+      "scope": "hub",
+      "permission": {
+        "src": "admin"
+      },
+      "params": {},
+      "returns": {
+        "type": "object",
+        "description": "Trigger acknowledgement",
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "Always 'triggered' on success",
+            "example": "triggered"
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable confirmation message",
+            "example": "Manual expiry run has been triggered"
+          },
+          "timestamp": {
+            "type": "integer",
+            "description": "Unix millisecond timestamp at the moment the trigger was acknowledged"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "FAILED_TO_TRIGGER_EXPIRY",
+          "message": "An unexpected server error occurred while attempting to trigger the expiry run",
+          "returns": {
+            "status": "FAILED_TO_TRIGGER_EXPIRY"
+          }
+        }
+      ]
+    }
+  },
+  "modules": {
+    "private": "service/private/trash"
+  }
+}

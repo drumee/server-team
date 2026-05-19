@@ -1,9 +1,520 @@
 {
   "services": {
-    "add_contributors": {
+    "get_settings": {
+      "doc": "Get comprehensive hub settings including owner, visitor privileges, and member list",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "returns": {
+        "owner": {
+          "type": "object",
+          "doc": "Hub owner information"
+        },
+        "visitor": {
+          "type": "object",
+          "doc": "Current user's privilege information",
+          "properties": {
+            "privilege": {
+              "type": "number",
+              "doc": "User's privilege level in this hub"
+            }
+          }
+        },
+        "users": {
+          "type": "array",
+          "doc": "List of hub members (excluding system users)",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "doc": "User ID"
+              },
+              "privilege": {
+                "type": "number",
+                "doc": "User privilege level"
+              }
+            }
+          }
+        },
+        "hubname": {
+          "type": "string",
+          "doc": "Hub name"
+        },
+        "default_privilege": {
+          "type": "number",
+          "doc": "Default privilege for new members"
+        }
+      }
+    },
+    "get_attributes": {
+      "doc": "Get hub's complete attributes as JSON",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "returns": {
+        "id": {
+          "type": "string",
+          "doc": "Hub ID"
+        },
+        "name": {
+          "type": "string",
+          "doc": "Hub name"
+        },
+        "area": {
+          "type": "string",
+          "doc": "Hub area (private, public, share)"
+        },
+        "owner_id": {
+          "type": "string",
+          "doc": "Owner user ID"
+        },
+        "settings": {
+          "type": "object",
+          "doc": "Hub settings object"
+        }
+      }
+    },
+    "get_contributors": {
+      "doc": "Get paginated list of hub contributors/members",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "params": {
+        "page": {
+          "type": "number",
+          "required": false,
+          "default": 1,
+          "min": 1,
+          "doc": "Page number for pagination"
+        },
+        "privilege": {
+          "type": "number",
+          "required": false,
+          "default": 0,
+          "doc": "Filter by privilege level (0 for all)"
+        }
+      },
+      "returns": {
+        "contributors": {
+          "type": "array",
+          "doc": "Array of contributor objects",
+          "items": {
+            "type": "object"
+          }
+        }
+      }
+    },
+    "show_contributors": {
+      "doc": "Show paginated list of hub contributors (alias for get_contributors)",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "params": {
+        "page": {
+          "type": "number",
+          "required": false,
+          "default": 1,
+          "min": 1,
+          "doc": "Page number for pagination"
+        }
+      },
+      "returns": {
+        "contributors": {
+          "type": "array",
+          "doc": "Array of contributor objects"
+        }
+      }
+    },
+    "invite_received_get": {
+      "doc": "Return workspace invitations addressed to the current user. Reads yp.contact_activity rows logged by add_contributors.",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "params": {},
+      "returns": {
+        "type": "array",
+        "doc": "List of workspace invitations",
+        "items": {
+          "id":            { "type": "integer", "doc": "Activity row id" },
+          "ctime":         { "type": "integer", "doc": "Unix timestamp when invite was logged" },
+          "author_id":     { "type": "string",  "doc": "Inviter uid" },
+          "target_uid":    { "type": "string",  "doc": "Recipient uid (current user)" },
+          "event":         { "type": "string",  "doc": "Always 'hub_invite_received'" },
+          "hub_id":        { "type": "string",  "doc": "Workspace id" },
+          "hub_name":      { "type": "string",  "doc": "Workspace name at the time of the invite" },
+          "from_fullname": { "type": "string",  "doc": "Inviter's full name" },
+          "message":       { "type": "string",  "doc": "Optional invite message" },
+          "privilege":     { "type": "number",  "doc": "Privilege bitmask granted" }
+        }
+      },
+      "errors": []
+    },
+
+    "invite": {
+      "doc": "Invite one or more emails into this workspace, branching on area (share-link vs restricted) and drumate status.",
       "scope": "hub",
       "permission": {
         "src": "admin"
+      },
+      "params": {
+        "invitees": {
+          "type": "array",
+          "required": true,
+          "minItems": 1,
+          "doc": "Array of email addresses to invite",
+          "items": { "type": "string" }
+        },
+        "privilege": {
+          "type": "number",
+          "required": false,
+          "doc": "Privilege level to grant (defaults to hub's default_privilege)"
+        },
+        "message": {
+          "type": "string",
+          "required": false,
+          "doc": "Optional invitation message"
+        }
+      },
+      "returns": {
+        "results": {
+          "type": "array",
+          "doc": "Per-invitee result: { email, branch (A/B/C), status (ok/failed), reason? }"
+        }
+      }
+    },
+    "add_contributors": {
+      "doc": "Add members to hub with privilege and expiry settings (sends notifications)",
+      "scope": "hub",
+      "permission": {
+        "src": "admin"
+      },
+      "params": {
+        "users": {
+          "type": "array",
+          "required": true,
+          "minItems": 1,
+          "doc": "Array of user IDs or emails to add",
+          "items": {
+            "type": "string"
+          }
+        },
+        "privilege": {
+          "type": "number",
+          "required": false,
+          "doc": "Privilege level to grant (defaults to hub's default_privilege)"
+        },
+        "hours": {
+          "type": "number",
+          "required": false,
+          "default": 0,
+          "doc": "Hours until membership expires"
+        },
+        "days": {
+          "type": "number",
+          "required": false,
+          "default": 0,
+          "doc": "Days until membership expires"
+        },
+        "message": {
+          "type": "string",
+          "required": false,
+          "doc": "Optional message to send to new members"
+        }
+      },
+      "returns": {
+        "members": {
+          "type": "array",
+          "doc": "Updated list of hub members (not_owner type)"
+        }
+      }
+    },
+    "invite_with_roles": {
+      "doc": "Invite users to multiple workspaces with per-workspace privilege. Called from the Home page Invite button. Accepts an array of emails/user IDs and an array of {hub_id, privilege} assignments.",
+      "scope": "hub",
+      "permission": {
+        "src": "admin"
+      },
+      "log": true,
+      "params": {
+        "users": {
+          "type": "array",
+          "required": true,
+          "minItems": 1,
+          "doc": "Array of user IDs or email addresses to invite",
+          "items": { "type": "string" }
+        },
+        "assignments": {
+          "type": "array",
+          "required": true,
+          "minItems": 1,
+          "doc": "Array of workspace-role pairs. Each item specifies a target hub and the privilege bitmask to grant.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "hub_id": {
+                "type": "string",
+                "doc": "Target workspace (hub) ID"
+              },
+              "privilege": {
+                "type": "number",
+                "doc": "Privilege bitmask to grant in this workspace. E.g. Chat=2, Edit=4, Edit+Chat=6, Admin=15"
+              }
+            }
+          }
+        }
+      },
+      "returns": {
+        "success": {
+          "type": "boolean",
+          "doc": "True if the operation completed without fatal errors"
+        },
+        "results": {
+          "type": "array",
+          "doc": "Per-workspace result summary",
+          "items": {
+            "type": "object",
+            "properties": {
+              "hub_id": { "type": "string", "doc": "Workspace ID" },
+              "added":  { "type": "number", "doc": "Number of users immediately added as members" }
+            }
+          }
+        }
+      }
+    },
+    "delete_contributor": {
+      "doc": "Remove members from hub (broadcasts removal notification)",
+      "scope": "hub",
+      "permission": {
+        "src": "admin"
+      },
+      "params": {
+        "users": {
+          "type": "array",
+          "required": true,
+          "minItems": 1,
+          "doc": "Array of user IDs to remove (cannot remove self)",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "returns": {
+        "members": {
+          "type": "array",
+          "doc": "Updated list of remaining hub members"
+        }
+      }
+    },
+    "set_privilege": {
+      "doc": "Set privilege level for multiple users (batch operation)",
+      "scope": "hub",
+      "permission": {
+        "src": "admin"
+      },
+      "params": {
+        "users": {
+          "type": "array",
+          "required": true,
+          "minItems": 1,
+          "doc": "Array of user IDs",
+          "items": {
+            "type": "string"
+          }
+        },
+        "privilege": {
+          "type": "number",
+          "required": false,
+          "doc": "Privilege level to set (defaults to hub's default_privilege)"
+        },
+        "permission": {
+          "type": "number",
+          "required": false,
+          "doc": "Alias for privilege parameter"
+        }
+      },
+      "returns": {
+        "users": {
+          "type": "array",
+          "doc": "Array of user IDs that were updated"
+        }
+      }
+    },
+    "set_member_privilege": {
+      "doc": "Set privilege level for a single member with optional expiry",
+      "scope": "hub",
+      "permission": {
+        "src": "admin"
+      },
+      "params": {
+        "uid": {
+          "type": "string",
+          "required": true,
+          "doc": "User ID to update"
+        },
+        "privilege": {
+          "type": "number",
+          "required": false,
+          "doc": "Privilege level to grant"
+        },
+        "permission": {
+          "type": "number",
+          "required": false,
+          "doc": "Alias for privilege parameter"
+        },
+        "days": {
+          "type": "number",
+          "required": false,
+          "default": 0,
+          "doc": "Days until privilege expires"
+        },
+        "hours": {
+          "type": "number",
+          "required": false,
+          "default": 0,
+          "doc": "Hours until privilege expires"
+        }
+      },
+      "returns": {
+        "members": {
+          "type": "array",
+          "doc": "Updated list of hub members (not_owner type)"
+        }
+      }
+    },
+    "get_space_usage": {
+      "doc": "Get hub's disk space usage statistics",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "returns": {
+        "total": {
+          "type": "number",
+          "doc": "Total storage quota in bytes"
+        },
+        "selected": {
+          "type": "number",
+          "doc": "Space used by this hub in bytes"
+        },
+        "others": {
+          "type": "number",
+          "doc": "Space used by other hubs and user data in bytes"
+        },
+        "free": {
+          "type": "number",
+          "doc": "Free space available in bytes"
+        }
+      }
+    },
+    "update_name": {
+      "doc": "Update hub name (must be unique, broadcasts change to members)",
+      "scope": "hub",
+      "permission": {
+        "src": "admin"
+      },
+      "params": {
+        "name": {
+          "type": "string",
+          "required": true,
+          "minLength": 1,
+          "doc": "New hub name"
+        }
+      },
+      "returns": {
+        "id": {
+          "type": "string",
+          "doc": "Hub ID"
+        },
+        "hubname": {
+          "type": "string",
+          "doc": "Updated hub name"
+        },
+        "name": {
+          "type": "string",
+          "doc": "Updated hub name"
+        },
+        "fieldName": {
+          "type": "string",
+          "doc": "hubname"
+        },
+        "error": {
+          "type": "string",
+          "doc": "ALREADY_EXISTS if name is taken"
+        }
+      },
+      "errors": [
+        {
+          "code": "ALREADY_EXISTS",
+          "message": "Hub name is already in use",
+          "http_status": 409
+        }
+      ]
+    },
+    "poke": {
+      "doc": "Send notification to a user about activity in this hub",
+      "scope": "hub",
+      "permission": {
+        "src": "read",
+        "fast_check": "user_permission"
+      },
+      "params": {
+        "uid": {
+          "type": "string",
+          "required": true,
+          "doc": "User ID to notify"
+        },
+        "nid": {
+          "type": "string",
+          "required": true,
+          "doc": "Node ID related to notification"
+        },
+        "kind": {
+          "type": "string",
+          "required": true,
+          "doc": "Type of notification"
+        }
+      },
+      "returns": {
+        "sender": {
+          "type": "string",
+          "doc": "Sender user ID (current user)"
+        },
+        "recipient": {
+          "type": "string",
+          "doc": "Recipient user ID"
+        }
+      }
+    },
+    "logo": {
+      "doc": "Get hub logo URL (public API, no authentication required)",
+      "scope": "hub",
+      "permission": {
+        "src": "anonymous",
+        "fast_check": "public-api"
+      },
+      "params": {
+        "protocol": {
+          "type": "string",
+          "required": false,
+          "doc": "Protocol (http or https)"
+        },
+        "localhost": {
+          "type": "string",
+          "required": false,
+          "doc": "Localhost flag for local development"
+        }
+      },
+      "returns": {
+        "url": {
+          "type": "string",
+          "doc": "Full URL to hub logo image"
+        }
       }
     },
     "add_external_member": {
@@ -42,12 +553,6 @@
         "src": "admin"
       }
     },
-    "delete_contributor": {
-      "scope": "hub",
-      "permission": {
-        "src": "admin"
-      }
-    },
     "delete_external_member": {
       "scope": "hub",
       "permission": {
@@ -66,19 +571,7 @@
         "src": "read"
       }
     },
-    "get_contributors": {
-      "scope": "hub",
-      "permission": {
-        "src": "read"
-      }
-    },
     "get_members_by_type": {
-      "scope": "hub",
-      "permission": {
-        "src": "read"
-      }
-    },
-    "get_attributes": {
       "scope": "hub",
       "permission": {
         "src": "read"
@@ -88,18 +581,6 @@
       "scope": "hub",
       "permission": {
         "src": "admin"
-      }
-    },
-    "get_settings": {
-      "scope": "hub",
-      "permission": {
-        "src": "read"
-      }
-    },
-    "get_space_usage": {
-      "scope": "hub",
-      "permission": {
-        "src": "read"
       }
     },
     "get_statistics": {
@@ -121,48 +602,16 @@
         "fast_check": "public-api"
       }
     },
-    "logo": {
-      "scope": "hub",
-      "permission": {
-        "src": "anonymous",
-        "fast_check": "public-api"
-      }
-    },
     "lookup_hubers": {
       "scope": "hub",
       "permission": {
         "src": "read"
       }
     },
-    "poke": {
-      "scope": "hub",
-      "permission": {
-        "src": "read",
-        "fast_check": "user_permission"
-      }
-    },
-    "set_members_privilege": {
-      "scope": "hub",
-      "permission": {
-        "src": "admin"
-      }
-    },
     "set_node_permission": {
       "scope": "hub",
       "permission": {
         "src": "admin"
-      }
-    },
-    "set_privilege": {
-      "scope": "hub",
-      "permission": {
-        "src": "admin"
-      }
-    },
-    "show_contributors": {
-      "scope": "hub",
-      "permission": {
-        "src": "read"
       }
     },
     "show_privilege": {
@@ -184,12 +633,6 @@
       }
     },
     "update_ident": {
-      "scope": "hub",
-      "permission": {
-        "src": "admin"
-      }
-    },
-    "update_name": {
       "scope": "hub",
       "permission": {
         "src": "admin"

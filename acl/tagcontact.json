@@ -1,57 +1,369 @@
 {
   "services": {
     "add": {
+      "doc": "Create a new contact tag. Adds a named tag to the user's hub for categorising contacts. The tag is created with an empty description by default. Returns the newly created tag record.",
       "scope": "hub",
       "permission": {
         "src": "owner"
       },
-      "method": "tag_add"
+      "method": "tag_add",
+      "params": {
+        "name": {
+          "type": "string",
+          "required": true,
+          "description": "Display name for the new tag"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Newly created tag record",
+        "properties": {
+          "tag_id": {
+            "type": "string",
+            "description": "Unique identifier for the created tag"
+          },
+          "name": {
+            "type": "string",
+            "description": "Name of the created tag"
+          },
+          "description": {
+            "type": "string",
+            "description": "Tag description, empty string by default"
+          }
+        }
+      },
+      "errors": []
     },
+
     "entity_assign": {
+      "doc": "Assign one or more tags to a contact entity or shared hub. Replaces all existing tag assignments for the entity with the supplied list. Validates every tag_id before applying and verifies the entity is a known contact or a hub-type shared room. Sends a WebSocket notification to the owner's sockets when the entity is a shared hub rather than a direct contact.",
       "scope": "hub",
       "permission": {
         "src": "owner"
-      }
+      },
+      "params": {
+        "entity_id": {
+          "type": "string",
+          "required": true,
+          "description": "ID of the contact entity or shared hub node to tag"
+        },
+        "tag": {
+          "type": "array",
+          "required": false,
+          "description": "Tag ID or array of tag IDs to assign. Accepts a single tag_id string or an array. Falls back to the list parameter if omitted. Defaults to empty array.",
+          "items": {
+            "type": "string",
+            "description": "Tag ID"
+          }
+        },
+        "list": {
+          "type": "array",
+          "required": false,
+          "description": "Alternative parameter for tag IDs array when tag parameter is not provided",
+          "items": {
+            "type": "string",
+            "description": "Tag ID"
+          }
+        }
+      },
+      "returns": {
+        "type": "array",
+        "description": "Updated list of tag assignments for the entity",
+        "items": {
+          "type": "object",
+          "properties": {
+            "tag_id": {
+              "type": "string",
+              "description": "Tag ID"
+            },
+            "name": {
+              "type": "string",
+              "description": "Tag name"
+            },
+            "entity_id": {
+              "type": "string",
+              "description": "Entity ID this tag is assigned to"
+            }
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "TAG_NOT_FOUND",
+          "message": "One or more of the supplied tag IDs do not exist in the hub",
+          "returns": {
+            "status": "TAG_NOT_FOUND"
+          }
+        },
+        {
+          "code": "INVALID_ENTITY",
+          "message": "entity_id does not correspond to a known contact or a hub-type shared room",
+          "returns": {
+            "status": "INVALID_ENTITY"
+          }
+        }
+      ]
     },
+
     "entity_assign_get": {
+      "doc": "Get all tags currently assigned to a contact entity. Queries the calling user's personal database via forward_proc to retrieve tag assignments for the given entity. Returns an empty list when no tags are assigned.",
       "scope": "hub",
       "permission": {
         "src": "owner"
-      }
+      },
+      "params": {
+        "entity_id": {
+          "type": "string",
+          "required": true,
+          "description": "ID of the contact entity whose tag assignments are to be retrieved"
+        }
+      },
+      "returns": {
+        "type": "array",
+        "description": "List of tag records assigned to the entity",
+        "items": {
+          "type": "object",
+          "properties": {
+            "tag_id": {
+              "type": "string",
+              "description": "Tag ID"
+            },
+            "name": {
+              "type": "string",
+              "description": "Tag name"
+            },
+            "entity_id": {
+              "type": "string",
+              "description": "Entity ID this tag is assigned to"
+            }
+          }
+        }
+      },
+      "errors": []
     },
+
     "tag_assign": {
+      "doc": "Set a parent-child relationship between two tags. Validates that both tag and parent tag exist, then checks that assigning the parent would not create a circular hierarchy. Raises CANT_ASSIGN when the target tag is already an ancestor of the proposed parent.",
       "scope": "hub",
       "permission": {
         "src": "owner"
-      }
+      },
+      "params": {
+        "tag_id": {
+          "type": "string",
+          "required": true,
+          "description": "ID of the child tag to be assigned under a parent"
+        },
+        "parent_id": {
+          "type": "string",
+          "required": true,
+          "description": "ID of the parent tag"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Updated tag relationship record from the tag_assign stored procedure"
+      },
+      "errors": [
+        {
+          "code": "TAG_NOT_FOUND",
+          "message": "The child tag identified by tag_id does not exist",
+          "returns": {
+            "status": "TAG_NOT_FOUND"
+          }
+        },
+        {
+          "code": "PARENT_TAG_NOT_FOUND",
+          "message": "The parent tag identified by parent_id does not exist",
+          "returns": {
+            "status": "PARENT_TAG_NOT_FOUND"
+          }
+        },
+        {
+          "code": "CANT_ASSIGN",
+          "message": "Assigning this parent would create a circular tag hierarchy",
+          "returns": {
+            "status": "CANT_ASSIGN"
+          }
+        }
+      ]
     },
+
     "reposition": {
+      "doc": "Reorder the display position of tags. Accepts an ordered list of tag position entries and persists the new order via the tag_reposition stored procedure. Returns the updated ordered tag list.",
       "scope": "hub",
       "permission": {
         "src": "owner"
       },
-      "method": "tag_reposition"
+      "method": "tag_reposition",
+      "params": {
+        "content": {
+          "type": "array",
+          "required": false,
+          "description": "Ordered array of tag position objects defining the new sort order. Passed as JSON string to the tag_reposition stored procedure.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "tag_id": {
+                "type": "string",
+                "description": "Tag ID"
+              },
+              "position": {
+                "type": "integer",
+                "description": "New position index for the tag"
+              }
+            }
+          }
+        }
+      },
+      "returns": {
+        "type": "array",
+        "description": "Updated tag list reflecting the new positions",
+        "items": {
+          "type": "object",
+          "properties": {
+            "tag_id": {
+              "type": "string",
+              "description": "Tag ID"
+            },
+            "name": {
+              "type": "string",
+              "description": "Tag name"
+            },
+            "position": {
+              "type": "integer",
+              "description": "Updated position index"
+            }
+          }
+        }
+      },
+      "errors": []
     },
+
     "remove": {
+      "doc": "Delete a contact tag by ID. Removes the tag record via the tag_remove stored procedure. All entity assignments referencing this tag are also removed by the stored procedure via cascade.",
       "scope": "hub",
       "permission": {
         "src": "owner"
       },
-      "method": "tag_remove"
+      "method": "tag_remove",
+      "params": {
+        "tag_id": {
+          "type": "string",
+          "required": true,
+          "description": "ID of the tag to delete"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Result from the tag_remove stored procedure"
+      },
+      "errors": []
     },
+
     "rename": {
+      "doc": "Rename an existing contact tag. Verifies the tag exists before applying the new name. Returns the updated tag record after renaming.",
       "scope": "hub",
       "permission": {
         "src": "owner"
       },
-      "method": "tag_rename"
+      "method": "tag_rename",
+      "params": {
+        "tag_id": {
+          "type": "string",
+          "required": true,
+          "description": "ID of the tag to rename"
+        },
+        "name": {
+          "type": "string",
+          "required": true,
+          "description": "New display name for the tag"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Updated tag record after rename",
+        "properties": {
+          "tag_id": {
+            "type": "string",
+            "description": "Tag ID"
+          },
+          "name": {
+            "type": "string",
+            "description": "Updated tag name"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "TAG_NOT_FOUND",
+          "message": "No tag found for the given tag_id",
+          "returns": {
+            "status": "TAG_NOT_FOUND"
+          }
+        }
+      ]
     },
+
     "show_tag_by": {
+      "doc": "List tags with optional filtering and pagination. Wraps the tag_get_next stored procedure. Can filter by a parent tag_id, search by keyword, control sort order, and paginate results. When tag_id is empty all top-level tags are returned.",
       "scope": "hub",
       "permission": {
         "src": "owner"
       },
-      "method": "tag_get_next"
+      "method": "tag_get_next",
+      "params": {
+        "tag_id": {
+          "type": "string",
+          "required": false,
+          "default": "",
+          "description": "Parent tag ID to filter by. Empty string returns all top-level tags."
+        },
+        "search": {
+          "type": "string",
+          "required": false,
+          "default": "",
+          "description": "Keyword to filter tags by name"
+        },
+        "order": {
+          "type": "string",
+          "required": false,
+          "default": "desc",
+          "description": "Sort order for results. Accepted values: asc, desc."
+        },
+        "page": {
+          "type": "integer",
+          "required": false,
+          "default": 1,
+          "description": "Page number for pagination, 1-based"
+        }
+      },
+      "returns": {
+        "type": "array",
+        "description": "Paginated list of tag records matching the filter criteria",
+        "items": {
+          "type": "object",
+          "properties": {
+            "tag_id": {
+              "type": "string",
+              "description": "Tag ID"
+            },
+            "name": {
+              "type": "string",
+              "description": "Tag name"
+            },
+            "parent_id": {
+              "type": "string",
+              "description": "Parent tag ID if this tag is nested"
+            },
+            "position": {
+              "type": "integer",
+              "description": "Display position index"
+            }
+          }
+        }
+      },
+      "errors": []
     }
   },
   "modules": {

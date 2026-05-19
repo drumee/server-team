@@ -16,8 +16,8 @@
  */
 
 const { isArray, after, union, filter, isEmpty } = require('lodash');
-const { toASCII } = require('punycode/');
 const Media = require('../media');
+const { writeAudit } = require('./_audit');
 
 const {
   Attr, Privilege, toArray,
@@ -32,17 +32,18 @@ class __private_desk extends Media {
    */
   constructor(...args) {
     super(...args);
-    this.pre_create = this.pre_create.bind(this);
+    this.check_quota = this.check_quota.bind(this);
     this.pre_copy = this.pre_copy.bind(this);
     this.get_env = this.get_env.bind(this);
     this.home = this.home.bind(this);
     this.create_hub = this.create_hub.bind(this);
-    this.create_website = this.create_website.bind(this);
+    // this.create_website = this.create_website.bind(this);
     this.leave_hub = this.leave_hub.bind(this);
     this.create_account = this.create_account.bind(this);
     this.get_workers = this.get_workers.bind(this);
     this.get_alternate_account = this.get_alternate_account.bind(this);
     this.reorder = this.reorder.bind(this);
+    this.recent_files = this.recent_files.bind(this);
   }
 
   /**
@@ -82,7 +83,7 @@ class __private_desk extends Media {
   async _createHub(args, opt = {}) {
     const domain = this.user.get(Attr.domain);
     const owner_id = this.uid;
-    let { area, filename, hostname } = args;
+    let { area, filename, hostname, pid } = args;
     if (!domain || !area) {
       this.warn("MAL_FORMED_DATA", { args }, { domain, area });
       return this.exception.user("MAL_FORMED_DATA");
@@ -92,17 +93,17 @@ class __private_desk extends Media {
       hostname = uniqueId()
       filename = hostname;
     } else {
-      hostname = hostname || filename;
-      hostname = hostname.replace(/[ \.,;:!&~#'|@*\$><\?]/, '');
+      hostname = filename;
+      hostname = hostname.replace(/[ \.,;:!&~#'|@*\$><\?\(\)\[\]\{\}\"\/]/g, '');
       hostname = await this.yp.await_func("strip_accents", hostname);
       hostname = hostname.replace(/\-$/, '');
       hostname = hostname.trim().toLowerCase();
-      hostname = toASCII(hostname);
+      hostname = new URL(`http://${hostname}`).hostname;
     }
 
-    opt.lang = this.input.use(Attr.lang) || "en";
+    opt.lang = this.input.ua_language();
+    filename = await this.db.await_func("unique_filename", pid, filename, "");
     args = { hostname, area, filename, owner_id, domain };
-    this.debug("AAA:102", JSON.stringify(args), JSON.stringify(opt))
     const rows = await this.db.await_proc(`desk_create_hub`, args, opt);
     let hub_id, hub_db, home_id;
     for (let r of rows) {
@@ -120,7 +121,11 @@ class __private_desk extends Media {
         hub_db = hub_db || r.db_name;
       }
     }
-    return { hub_id, hub_db, home_id }
+
+    /** place the folder at the end on the user desk */
+    let { count } = await this.db.await_query("SELECT count(*) count FROM media");
+    await this.db.await_query("UPDATE media media SET rank=? WHERE id=?", count, hub_id);
+    return { filename, hostname, hub_id, hub_db, home_id }
 
   }
 
@@ -128,7 +133,7 @@ class __private_desk extends Media {
    * 
    * @returns 
    */
-  async pre_create() {
+  async check_quota() {
     const area = this.input.need(Attr.area, Attr.private);
     const folders = [];
     if (isArray(this.input.use('folders'))) {
@@ -137,9 +142,8 @@ class __private_desk extends Media {
       }
     }
 
-
     let remain = 0
-    let { private_hub, share_hub, public_hub } = await this.yp.await_proc("get_quota", this.uid) || {};
+    let { private_hub, share_hub, public_hub } = await this.yp.await_func("get_quota", this.uid) || {};
     let used = await this.yp.await_func("hub_usage", this.uid, area) || 0;
     let message = '_private_hub_limit_reached'
     switch (area) {
@@ -157,8 +161,9 @@ class __private_desk extends Media {
         break;
     }
     if (remain <= 0) {
-      this.warn("HUB LIMIT REACHED", hub_limit);
-      this.exception.user(message);
+      this.output.data({
+        error: "QUOTA_EXCEEDED"
+      })
       return;
     }
     this._done();
@@ -201,7 +206,7 @@ class __private_desk extends Media {
     let data = await this.db.await_proc("desk_env");
     data.filenames = await this.db.await_proc('mfs_get_filenames', this.home_id);
     data.privilege = Privilege.OWNER;
-    data.quota = await this.yp.await_proc("get_quota", this.uid) || { storage: 0, real: 0 };
+    data.quota = await this.yp.await_func("get_quota", this.uid) || { storage: 0, real: 0 };
     this.output.data(data);
   }
 
@@ -210,8 +215,17 @@ class __private_desk extends Media {
    */
   async home() {
     const page = this.input.use(Attr.page, 1);
-    let res = await this.db.call_proc("mfs_show_node_by",
-      this.home_id, this.uid, 'rank', 'asc', page)
+    const VALID_TYPES = ['all', 'node', 'file', 'hub', 'docs', 'pdf', 'image', 'other'];
+    let type = this.input.use(Attr.type, 'all');
+    if (!VALID_TYPES.includes(type)) {
+      type = 'all';
+    }
+    let res = await this.db.await_proc(
+      "mfs_show_node_by",
+      this.home_id,
+      this.uid,
+      { sort_by: 'rank', order: 'asc', page, type }
+    );
     this.output.list(res);
   }
 
@@ -286,88 +300,98 @@ class __private_desk extends Media {
   }
 
   /**
-   * 
+   * Search files/folders (via desk_search SP + media_index)
+   * AND messages (via channel_search SP, cross-hub).
    */
   async search() {
     const string = this.input.safe_string(Attr.string);
-    const page = this.input.use(Attr.page, 1);
+    const page   = this.input.use(Attr.page, 1);
+ 
     if (isEmpty(string)) {
-      this.output.list([]);
+      const data = await this.db.await_proc(
+        "mfs_show_node_by",
+        this.home_id,
+        this.uid,
+        { sort_by: 'rank', order: 'asc', page, type: 'hub' }
+      );
+      this.output.list(data);
       return;
     }
-    let pattern = string.trim().replace(/ +/g, '.+');
-    let res = await this.db.await_proc("desk_search", { pattern, page });
-    this.output.list(res)
+
+    const pattern = string.trim();
+ 
+    // File / folder search (existing behaviour, cross-hub via media_index)
+    let fileResults = await this.db.await_proc('desk_search', { pattern, page });
+    fileResults = toArray(fileResults).map(r => ({ ...r, result_type: 'file' }));
+ 
+    // Message search across all active hubs owned by the current user
+    let messageResults = [];
+    try {
+      const hubs = toArray(
+        await this.yp.await_query(
+          `SELECT id, db_name FROM entity
+           WHERE owner_id = ? AND type = 'hub' AND status = 'active'`,
+          this.uid
+        )
+      );
+ 
+      for (const hub of hubs) {
+        if (!hub.db_name) continue;
+        try {
+          const rows = toArray(
+            await this.yp.await_proc(`${hub.db_name}.channel_search`, pattern)
+          );
+          for (const row of rows) {
+            row.hub_id      = hub.id;
+            row.result_type = 'message';
+            messageResults.push(row);
+          }
+        } catch (e) {
+          // One hub failing must not abort the entire search
+          this.warn(
+            `[desk.search] channel_search failed for hub ${hub.id}:`,
+            e && e.message
+          );
+        }
+      }
+ 
+      // Sort merged message results newest-first
+      messageResults.sort((a, b) => b.ctime - a.ctime);
+ 
+    } catch (e) {
+      this.warn('[desk.search] message search stage failed:', e && e.message);
+    }
+ 
+    this.output.list([...fileResults, ...messageResults]);
+  }
+
+  /**
+   * Get combined list of user + system wallpapers
+   * 
+   * Returns paginated array of wallpaper objects:
+   * - User wallpapers first (from folders tagged with folder_type='wallpapers')
+   * - System wallpapers second (from System hub Wallpapers folder)
+   * 
+   */
+  async my_wallpapers() {
+    const page = this.input.use(Attr.page, 1);
+    const data = await this.db.await_proc('desk_my_wallpapers', this.uid, page);
+    this.output.list(data);
   }
 
 
   /**
    * 
-   * @returns 
    */
-  async create_external_room() {
-    let emails = this.input.need(Attr.email);
-    const filename = this.input.need(Attr.filename);
-    const permission = this.input.get(Attr.permission) || Privilege.UPLOAD;
-    const pw = this.input.get(Attr.password) || '';
-    const days = this.input.get(Attr.days) || 10;
-    const hours = this.input.get(Attr.hours) || 0;
-    const expiry = days * 24 + hours;
-
-    let drumate;
-    let email;
-    let guest;
-    let res = {};
-    let home;
-    let share_id = this.randomString();
-
-    if (!isArray(emails)) {
-      emails = [emails];
+  async disk_usage() {
+    const page = this.input.use(Attr.page, 1);
+    const category = this.input.use(Attr.category) || '*';
+    const list = this.input.use(Attr.list);
+    const data = await this.db.await_proc('desk_disk_usage', this.uid, category, page) || [];
+    if (list) {
+      return this.output.list(data[2]);
     }
-
-    for (email of emails) {
-      drumate = await this.yp.await_proc('drumate_exists', email);
-      if (!isEmpty(drumate)) {
-        res.status = 'DRUMATE_EMAIL';
-        return this.output.data(res)
-      }
-    }
-
-    const args = { area: 'dmz', filename };
-    let { home_id, hub_id } = await this._createHub(args);
-    if (!hub_id) {
-      res.status = 'CREATION_FAILED';
-      return this.output.data(res)
-    }
-
-    const hub = await this.yp.await_proc("get_hub", hub_id);
-
-    if (isEmpty(hub)) {
-      res.status = 'CORRUPTED_HUB';
-      return this.output.data(res);
-    }
-
-    await this.db.await_proc("mfs_move", hub.id, this.get(Attr.home_id))
-    home = await this.yp.await_proc('forward_proc', hub.id, 'mfs_home', ``)
-
-    let p = await this.yp.await_proc('forward_proc', hub.id, 'permission_grant',
-      `'${home.home_id}', '*', ${expiry}, ${permission}, 'link', '${share_id}'`);
-
-    res = await this.yp.await_proc('forward_proc', hub.id, 'dmz_add_share',
-      `'${share_id}', '${p.id}','${this.uid}','${hub.id}','${pw}'`);
-
-    for (email of emails) {
-      guest = await this.yp.await_proc('yp_add_guest', email, '', '', 0);
-      await this.yp.await_proc('forward_proc', hub.id, 'dmz_add_map_share',
-        `'${hub.id}', '${guest.id}'`);
-    }
-    let media = await this.db.await_proc("mfs_access_node", this.uid, hub.id);
-    media.hub_id = media.id;
-    media.privilege = media.permission;
-    media.actual_home_id = home_id;
-    await this.notify_user(this.uid, media);
-    res.link = `${this.input.homepath(hub.vhost)}/#/dmz/inbound/token=${share_id}`;
-    this.output.data(res)
+    this.output.list(data);
   }
 
   /**
@@ -396,45 +420,6 @@ class __private_desk extends Media {
     this.output.data({ ...media, wicket_id: hub_id });
   }
 
-  /**
-   * 
-   * @returns 
-   */
-  async create_website() {
-    const pid = this.input.use(Attr.pid) || this.home_id;
-    const filename = this.input.need(Attr.filename);
-    const hostname = this.user.get(Attr.hostname);
-    let hubname = this.input.get(Attr.hubname) || filename || uniqueId();
-
-    const args = { hostname, area: Attr.public, filename };
-    let { home_id, hub_id } = await this._createHub(args);
-    if (!hub_id) {
-      return this.output.data({ status: 'CREATION_FAILED' })
-    }
-
-    const hub = await this.yp.await_proc("get_hub", hub_id);
-    if (isEmpty(hub)) {
-      this.exception.server("Corrupted hub");
-      return;
-    }
-
-    if (pid && pid != this.get(Attr.home_id)) {
-      await this.db.await_proc("mfs_move", hub.id, pid)
-    }
-    let media = await this.db.await_proc("mfs_access_node", this.uid, hub.id);
-    media.hub_id = media.id;
-    media.hubname = hubname;
-    media.filename = filename;
-    media.privilege = media.permission;
-    media.actual_home_id = home_id;
-    media.isalink = 1;
-    let service = "media.new";
-    let keys = { pid: Attr.nid, vhost: 'vhost' };
-    let sockets = await this.yp.await_proc('entity_sockets', media.hub_id);
-    await RedisStore.sendData(this.payload(media, { service, keys }), sockets);
-    await this.changelog_write({ src: media, event: "media.new" });
-    this.output.data(media);
-  }
 
 
   /**
@@ -442,13 +427,11 @@ class __private_desk extends Media {
    * @returns 
    */
   async create_hub() {
-    const pid = this.input.use(Attr.pid);
+    const pid = this.input.use(Attr.pid) || this.home_id;
     const filename = this.input.need(Attr.filename);
     const area = this.input.need(Attr.area, Attr.private);
-    let hubname = this.input.get(Attr.hubname) || filename || uniqueId();
-    const args = { hubname, area, filename };
 
-    let { home_id, hub_id } = await this._createHub(args);
+    let { filename: actual_filename, hub_id } = await this._createHub({ area, filename, pid });
     if (!hub_id) {
       return this.output.data({ status: 'CREATION_FAILED' })
     }
@@ -457,31 +440,52 @@ class __private_desk extends Media {
       this.exception.server("Corrupted hub");
       return;
     }
-
     if (pid && pid != this.get(Attr.home_id)) {
       await this.db.await_proc("mfs_move", hub.id, pid)
     }
-    //await this.yp.await_proc('hub_update_name', hub.id, filename);
-    let media = await this.db.await_proc("mfs_access_node", this.uid, hub.id);
+    let media = await this.db.await_proc("mfs_access_node", this.uid, hub_id);
     media.hub_id = hub_id;
-    media.vhost = hub.vhost;
-    media.filename = filename;
-    media.hubname = hubname;
+    media.area = area;
+    media.filename = actual_filename;
     media.privilege = media.permission;
-    media.actual_home_id = hub.home_id;
+    media.home_id = media.actual_home_id;
     media.isalink = 1;
     media.ownpath = '/';
     let sockets = await this.yp.await_proc('entity_sockets', media.hub_id);
     await RedisStore.sendData(this.payload(media), sockets);
     await this.changelog_write({ src: media, event: "media.new" });
+
+    // Mirror to creator's drumate so the trail survives a later delete.
+    const hub_db = await this.yp.await_func('get_db_name', hub_id);
+    if (hub_db) {
+      await writeAudit(this, {
+        db: hub_db,
+        uid: this.uid,
+        action: 'create_workspace',
+        category: 'admin',
+        notify_to: 'admin',
+        entity_id: hub_id,
+        log: `Workspace '${actual_filename}' created (area=${area})`,
+      });
+    }
+    await writeAudit(this, {
+      db: this.user.get(Attr.db_name),
+      uid: this.uid,
+      action: 'create_workspace',
+      category: 'admin',
+      notify_to: 'admin',
+      entity_id: hub_id,
+      log: `Workspace '${actual_filename}' created (area=${area})`,
+    });
+
     this.output.data(media);
   }
 
   /**
-   * 
-   * @param {*} s 
-   * @param {*} status 
-   * @returns 
+   *
+   * @param {*} s
+   * @param {*} status
+   * @returns
    */
   async set_online_status() {
     let r = await this.pushUserOnlineStatus();
@@ -507,6 +511,30 @@ class __private_desk extends Media {
       return
     }
     await this.db.await_proc('leave_hub', hub_id);
+
+    // Mirror to leaver's drumate in case they later lose hub visibility.
+    const hub_db = await this.yp.await_func('get_db_name', hub_id);
+    if (hub_db) {
+      await writeAudit(this, {
+        db: hub_db,
+        uid: this.uid,
+        action: 'left',
+        category: 'member',
+        notify_to: 'admin',
+        entity_id: this.uid,
+        log: `Member left workspace`,
+      });
+    }
+    await writeAudit(this, {
+      db: this.user.get(Attr.db_name),
+      uid: this.uid,
+      action: 'left',
+      category: 'member',
+      notify_to: 'admin',
+      entity_id: hub_id,
+      log: `Left workspace`,
+    });
+
     this.output.data({ uid: this.uid, hub_id });
   }
 
@@ -541,6 +569,35 @@ class __private_desk extends Media {
   }
 
 
+  /**
+ *
+ * @returns
+ */
+  async set_mfa() {
+    const secret = this.input.need(Attr.secret);
+    const code = this.input.need(Attr.code);
+    const mfa = this.input.get("mfa");
+    const otp = await this.yp.await_proc("secret_check", this.uid, secret, code);
+    if (!otp || otp.code != code) {
+      return this.output.data({ error: "INVALID_CODE" });
+    }
+
+    // profile.otp is the OTP delivery method consumed by
+    // session.selectOtpMethod (server-core), which expects a name
+    // ("email"/"sms"/"passkey"), not the on/off bit. Storing the bit
+    // here triggers INVALID_OTP_METHOD on next sign-in. Email is the
+    // only fully-wired method today, so default to that when MFA is on.
+    const profile = {
+      mfa,
+      otp: parseInt(mfa) ? Attr.email : 0,
+    };
+    await this.yp.call_proc("drumate_update_profile", this.uid, profile);
+    await this.yp.await_proc("secret_clear", this.uid, "all");
+
+    const user = await this.yp.await_proc("get_user", this.uid);
+    this.output.data(user);
+  }
+
 
   /**
    * 
@@ -569,6 +626,17 @@ class __private_desk extends Media {
       }
       return result;
     })();
+  }
+
+  /**
+   * Return recently modified files across all user hubs,
+   * sorted by mtime DESC. Uses media_index (cross-hub, built by desk_search).
+   * Hub nodes (workspaces) are excluded — shown separately by desk.home().
+   */
+  async recent_files() {
+    const page = this.input.use(Attr.page, 1);
+    const res = await this.db.await_proc('desk_recent_files', { page });
+    this.output.list(res);
   }
 }
 

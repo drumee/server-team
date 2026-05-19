@@ -1,90 +1,526 @@
 {
   "services": {
     "accept": {
+      "doc": "Accept an incoming call from a caller. Notifies the caller and all other connections of the current user (excluding the accepting socket) via RedisStore. Returns the caller object.",
       "scope": "hub",
       "permission": {
         "src": "read",
         "fast_check": "user_permission"
-      }
+      },
+      "params": {
+        "caller": {
+          "type": "object",
+          "required": true,
+          "doc": "Caller descriptor object. Must contain caller_id which is used as the target socket_id for the notification."
+        },
+        "socket_id": {
+          "type": "string",
+          "required": true,
+          "doc": "Socket ID of the accepting client. Used to exclude the accepting connection from the broadcast and to identify the accepted socket."
+        },
+        "service": {
+          "type": "string",
+          "required": false,
+          "doc": "Live notification service name forwarded to the inform call via input.get(Attr.service)."
+        }
+      },
+      "returns": {
+        "caller": {
+          "type": "object",
+          "doc": "The caller descriptor object as received in the request"
+        }
+      },
+      "errors": [
+        {
+          "code": "MISSING_PARAM",
+          "message": "caller or socket_id is required",
+          "http_status": 400
+        }
+      ]
     },
     "attendee": {
+      "doc": "Retrieve attendee information for a conference participant. Calls the conference_attendee stored procedure with the given participant ID.",
       "scope": "hub",
       "permission": {
         "src": "anonymous",
         "fast_check": "user_permission"
-      }
+      },
+      "params": {
+        "participant_id": {
+          "type": "string",
+          "required": true,
+          "doc": "ID of the conference participant to look up"
+        }
+      },
+      "returns": {
+        "data": {
+          "type": "object",
+          "doc": "Attendee record returned by the conference_attendee stored procedure"
+        }
+      },
+      "errors": [
+        {
+          "code": "MISSING_PARAM",
+          "message": "participant_id is required",
+          "http_status": 400
+        }
+      ]
     },
     "broadcast": {
+      "doc": "Broadcast an event payload to all socket connections on the current hub, excluding the sender socket. Uses RedisStore to push the data to all entity sockets retrieved via entity_sockets stored procedure.",
       "scope": "hub",
       "permission": {
         "src": "read",
         "fast_check": "user_permission"
-      }
+      },
+      "params": {
+        "socket_id": {
+          "type": "string",
+          "required": true,
+          "doc": "Socket ID of the broadcasting client. Excluded from the recipient list."
+        },
+        "event": {
+          "type": "string",
+          "required": true,
+          "doc": "Event name to broadcast to all other connected sockets on the hub"
+        },
+        "payload": {
+          "type": "object",
+          "required": true,
+          "doc": "Arbitrary event payload object to broadcast to all other sockets"
+        },
+        "service": {
+          "type": "string",
+          "required": false,
+          "doc": "Service name attached to the RedisStore message envelope via input.get(Attr.service)."
+        }
+      },
+      "returns": {
+        "payload": {
+          "type": "object",
+          "doc": "The payload object as received in the request, echoed back to the caller"
+        }
+      },
+      "errors": [
+        {
+          "code": "MISSING_PARAM",
+          "message": "socket_id, event, or payload is required",
+          "http_status": 400
+        }
+      ]
     },
     "cancel": {
+      "doc": "Cancel a conference room and notify all participants. Calls conference_cancel to retrieve the current room participants, then broadcasts a cancellation notification to all of them via RedisStore. Pushes the caller online status update after cancellation.",
       "scope": "hub",
       "permission": {
         "src": "owner",
         "fast_check": "user_permission"
-      }
+      },
+      "params": {
+        "room_id": {
+          "type": "string",
+          "required": true,
+          "doc": "ID of the conference room to cancel"
+        },
+        "socket_id": {
+          "type": "string",
+          "required": true,
+          "doc": "Socket ID of the cancelling client"
+        },
+        "service": {
+          "type": "string",
+          "required": false,
+          "doc": "Live notification service name forwarded to the inform call via input.get(Attr.service)."
+        }
+      },
+      "returns": {
+        "data": {
+          "type": "object",
+          "doc": "Empty response. Side-effects (cancellation notifications) are the primary outcome."
+        }
+      },
+      "errors": [
+        {
+          "code": "MISSING_PARAM",
+          "message": "room_id or socket_id is required",
+          "http_status": 400
+        }
+      ]
     },
     "decline": {
+      "doc": "Decline an incoming call. Notifies the caller via RedisStore using the caller_id as the target socket. Pushes the current user online status after declining.",
       "scope": "hub",
       "permission": {
         "src": "read",
         "fast_check": "user_permission"
-      }
+      },
+      "params": {
+        "caller": {
+          "type": "object",
+          "required": true,
+          "doc": "Caller descriptor object. Must contain caller_id which is used as the target socket_id for the decline notification."
+        },
+        "service": {
+          "type": "string",
+          "required": false,
+          "doc": "Live notification service name forwarded to the inform call via input.get(Attr.service)."
+        }
+      },
+      "returns": {
+        "caller": {
+          "type": "object",
+          "doc": "The caller descriptor object as received in the request"
+        }
+      },
+      "errors": [
+        {
+          "code": "MISSING_PARAM",
+          "message": "caller is required",
+          "http_status": 400
+        }
+      ]
     },
     "get_caller": {
+      "doc": "Retrieve the active caller information for the current user from a specific guest. Calls the conference_get_caller stored procedure using the current user as the callee and the provided guest_id as the caller. Returns an empty object if no active call is found.",
       "scope": "hub",
       "permission": {
         "src": "owner",
         "fast_check": "user_permission"
-      }
+      },
+      "params": {
+        "guest_id": {
+          "type": "string",
+          "required": true,
+          "doc": "ID of the guest/caller to look up. Used as the caller_id in the conference_get_caller procedure call."
+        }
+      },
+      "returns": {
+        "data": {
+          "type": "object",
+          "doc": "Caller record including room_id when an active call is found, or an empty object when no active call exists"
+        }
+      },
+      "errors": [
+        {
+          "code": "MISSING_PARAM",
+          "message": "guest_id is required",
+          "http_status": 400
+        }
+      ]
     },
     "invite": {
+      "doc": "Invite a guest user to join a conference room. Checks for a pending cross-call scenario first, then calls conference_invite to create or retrieve the room. Joins the caller into the room via conference_join and notifies all target sockets via RedisStore. Returns the room_id and nid on success, or an offline indicator if the guest has no active sockets.",
       "scope": "hub",
       "permission": {
         "src": "owner",
         "fast_check": "user_permission"
       },
-      "log": true
+      "log": true,
+      "params": {
+        "hub_id": {
+          "type": "string",
+          "required": true,
+          "doc": "Hub ID used as the conference context"
+        },
+        "guest_id": {
+          "type": "string",
+          "required": true,
+          "doc": "ID of the user being invited to the conference"
+        },
+        "room_id": {
+          "type": "string",
+          "required": false,
+          "doc": "Existing room ID to invite into. When absent, a new room is created via conference_invite."
+        },
+        "socket_id": {
+          "type": "string",
+          "required": true,
+          "doc": "Socket ID of the inviting client. Used as the caller_id in notifications."
+        },
+        "metadata": {
+          "type": "object",
+          "required": true,
+          "doc": "Conference metadata object. The uid field is overridden with the current user ID before the procedure call."
+        },
+        "service": {
+          "type": "string",
+          "required": false,
+          "doc": "Live notification service name forwarded to the inform call via input.get(Attr.service)."
+        }
+      },
+      "returns": {
+        "room_id": {
+          "type": "string",
+          "doc": "ID of the conference room. Returned on successful invite."
+        },
+        "nid": {
+          "type": "string",
+          "doc": "Node ID of the conference room (same as room_id). Returned on successful invite."
+        },
+        "offline": {
+          "type": "number",
+          "doc": "Set to 1 when the invited guest has no active socket connections. Mutually exclusive with room_id."
+        }
+      },
+      "errors": [
+        {
+          "code": "WEAK_PRIVILEGE",
+          "message": "Conference join failed due to insufficient permissions after invite",
+          "http_status": 403
+        },
+        {
+          "code": "MISSING_PARAM",
+          "message": "hub_id, guest_id, socket_id, or metadata is required",
+          "http_status": 400
+        }
+      ]
     },
     "join": {
+      "doc": "Join a conference room as an attendee or host. Calls conference_join with the provided args and metadata, retrying once for guest users if permission is initially missing. On success, sends room info and attendee list to all existing room participants via RedisStore (conference.start for host, conference.join or conference.accept for attendees). Returns room details, permission, configs, and the full attendee list.",
       "scope": "hub",
       "permission": {
         "src": "anonymous",
         "fast_check": "user_permission"
       },
-      "log": true
+      "log": true,
+      "params": {
+        "socket_id": {
+          "type": "string",
+          "required": true,
+          "doc": "Socket ID of the joining client"
+        },
+        "metadata": {
+          "type": "object",
+          "required": true,
+          "doc": "Conference metadata object. The uid field is injected automatically. The type field must be present in the object or provided separately via the type param."
+        },
+        "hub_id": {
+          "type": "string",
+          "required": true,
+          "doc": "Hub ID of the conference room to join"
+        },
+        "room_id": {
+          "type": "string",
+          "required": false,
+          "doc": "ID of the specific room to join. Optional; resolved by the conference_join procedure when absent."
+        },
+        "type": {
+          "type": "string",
+          "required": false,
+          "doc": "Conference type (e.g. meeting, connect). Required when metadata.type is not already set."
+        },
+        "guest_name": {
+          "type": "string",
+          "required": false,
+          "doc": "Display name for guest users. Applied to metadata and persisted via cookie_touch when the caller is a guest."
+        }
+      },
+      "returns": {
+        "permission": {
+          "type": "string",
+          "doc": "Permission level granted to the joining user in this room"
+        },
+        "details": {
+          "type": "object",
+          "doc": "MFS node attributes for the conference room node, fetched via mfs_node_attr"
+        },
+        "configs": {
+          "type": "object",
+          "doc": "Platform conference configuration object from myDrumee.conference"
+        },
+        "attendees": {
+          "type": "array",
+          "doc": "List of other participants currently in the room (excluding the joining client)",
+          "items": {
+            "type": "object"
+          }
+        },
+        "user": {
+          "type": "object",
+          "doc": "The joining user record as returned by conference_join"
+        }
+      },
+      "errors": [
+        {
+          "code": "WEAK_PRIVILEGE",
+          "message": "Conference join failed due to insufficient permissions",
+          "http_status": 403
+        },
+        {
+          "code": "MISSING_PARAM",
+          "message": "socket_id, metadata, or hub_id is required",
+          "http_status": 400
+        }
+      ]
     },
     "leave": {
+      "doc": "Leave a conference room. Calls conference_leave to remove the socket from the room, then pushes the updated online status of the current user to all connected peers. Returns the updated peer list.",
       "scope": "hub",
       "permission": {
         "src": "anonymous",
         "fast_check": "public-api"
-      }
+      },
+      "params": {
+        "room_id": {
+          "type": "string",
+          "required": true,
+          "doc": "ID of the conference room to leave"
+        },
+        "socket_id": {
+          "type": "string",
+          "required": true,
+          "doc": "Socket ID of the leaving client"
+        }
+      },
+      "returns": {
+        "peers": {
+          "type": "object",
+          "doc": "Updated peer list returned by pushUserOnlineStatus after the leave operation"
+        }
+      },
+      "errors": [
+        {
+          "code": "MISSING_PARAM",
+          "message": "room_id or socket_id is required",
+          "http_status": 400
+        }
+      ]
     },
     "logCall": {
+      "doc": "Log a completed or terminated call as a chat message in both the caller and callee channel databases. Only logs when the event is cancel, leave, reject, or decline. Writes a call-type channel message to both the author and peer databases with the appropriate role metadata, then pushes the chat.post notification to both parties via RedisStore.",
       "scope": "hub",
       "permission": {
         "src": "owner",
         "fast_check": "user_permission"
-      }
+      },
+      "params": {
+        "callee": {
+          "type": "object",
+          "required": true,
+          "doc": "Callee descriptor object. Must contain entity_id and contact_id fields used to identify the peer and log the call message."
+        },
+        "event": {
+          "type": "string",
+          "required": true,
+          "doc": "Call termination event. Must be one of: cancel, leave, reject, decline. Other values are silently ignored and no log is written.",
+          "enum": ["cancel", "leave", "reject", "decline"]
+        },
+        "duration": {
+          "type": "number",
+          "required": false,
+          "default": 0,
+          "doc": "Call duration in seconds. Stored in the message metadata. Defaults to 0 when not provided."
+        }
+      },
+      "returns": {
+        "callee": {
+          "type": "object",
+          "doc": "The callee descriptor object as received in the request"
+        }
+      },
+      "errors": [
+        {
+          "code": "MISSING_PARAM",
+          "message": "callee or event is required",
+          "http_status": 400
+        }
+      ]
     },
     "revoke": {
+      "doc": "Revoke a conference invitation for a specific callee. Calls conference_revoke to remove the callee from the room, then notifies all affected socket connections via RedisStore. Writes a call log entry via writeLog for the callee with a cancel event.",
       "scope": "hub",
       "permission": {
         "src": "owner",
         "fast_check": "user_permission"
-      }
+      },
+      "params": {
+        "hub_id": {
+          "type": "string",
+          "required": true,
+          "doc": "Hub ID of the conference room context"
+        },
+        "callee": {
+          "type": "object",
+          "required": true,
+          "doc": "Callee descriptor object. Must contain drumate_id used to identify the participant to revoke, and entity_id and contact_id used for the call log."
+        },
+        "socket_id": {
+          "type": "string",
+          "required": true,
+          "doc": "Socket ID of the revoking client. Used as the caller_id in the notification payload."
+        },
+        "room_id": {
+          "type": "string",
+          "required": false,
+          "doc": "ID of the conference room. Optional; resolved from the conference_revoke procedure result when absent."
+        },
+        "service": {
+          "type": "string",
+          "required": false,
+          "doc": "Live notification service name forwarded to the inform call via input.get(Attr.service)."
+        }
+      },
+      "returns": {
+        "room_id": {
+          "type": "string",
+          "doc": "ID of the conference room from which the callee was revoked"
+        }
+      },
+      "errors": [
+        {
+          "code": "MISSING_PARAM",
+          "message": "hub_id, callee, or socket_id is required",
+          "http_status": 400
+        }
+      ]
     },
     "update": {
+      "doc": "Update conference room metadata for the current socket and broadcast the updated metadata to all other sockets in the hub. Calls conference_update only when the socket owner matches the current user. Broadcasts the updated metadata with a timestamp to all other hub sockets via RedisStore.",
       "scope": "hub",
       "permission": {
         "src": "anonymous",
         "fast_check": "public-api"
-      }
+      },
+      "params": {
+        "room_id": {
+          "type": "string",
+          "required": true,
+          "doc": "ID of the conference room to update"
+        },
+        "socket_id": {
+          "type": "string",
+          "required": true,
+          "doc": "Socket ID of the updating client. Used to verify ownership and to exclude from the broadcast recipient list."
+        },
+        "metadata": {
+          "type": "object",
+          "required": true,
+          "doc": "Updated conference metadata object. The uid field is set to the current user ID before persisting."
+        },
+        "event": {
+          "type": "string",
+          "required": false,
+          "doc": "Event name attached to the RedisStore broadcast message via input.get(event)."
+        },
+        "service": {
+          "type": "string",
+          "required": false,
+          "doc": "Service name attached to the RedisStore broadcast message via input.get(Attr.service)."
+        }
+      },
+      "returns": {
+        "data": {
+          "type": "object",
+          "doc": "Result of conference_update when the socket owner matches the current user, otherwise empty response"
+        }
+      },
+      "errors": [
+        {
+          "code": "MISSING_PARAM",
+          "message": "room_id, socket_id, or metadata is required",
+          "http_status": 400
+        }
+      ]
     }
   },
   "modules": {

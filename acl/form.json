@@ -1,29 +1,176 @@
 {
   "services": {
     "submit": {
+      "doc": "Submit a form response as an anonymous user. Reads the form schema from the node configuration file, inserts the submission into the form-specific database table (named form_NODE_ID), sends an email notification to configured backoffice recipients (owner or admin hub members), and sends an acknowledgement email to the submitter. Automatically enriches data with submission timestamp, user-agent, and geolocation if configured in the form schema.",
       "scope": "hub",
       "permission": {
         "src": "anonymous"
       },
-      "log": true
+      "log": true,
+      "params": {
+        "data": {
+          "type": "object",
+          "required": false,
+          "description": "Form submission payload. Field names and validation are governed by the form schema defined in the node configuration file. May include fields such as email, contact_name, and any custom fields defined by the form creator. The schema also controls automatic enrichment of ctime (timestamp), ua (user agent), and geoloc (geolocation) fields."
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "The MFS node object representing the form file after successful submission",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Node ID of the form file"
+          },
+          "file_name": {
+            "type": "string",
+            "description": "Name of the form node file"
+          },
+          "mfs_root": {
+            "type": "string",
+            "description": "Root MFS path where the form node resides"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "INTERNAL_ERROR",
+          "message": "Failed to read form configuration file or insert submission into database",
+          "returns": {
+            "status": "INTERNAL_ERROR"
+          }
+        },
+        {
+          "code": "INTERNAL_ERROR",
+          "message": "Failed to send backoffice notification or acknowledgement email",
+          "returns": {
+            "status": "INTERNAL_ERROR"
+          }
+        }
+      ]
     },
     "browse": {
+      "doc": "Retrieve paginated form submissions from the form-specific database table (named form_NODE_ID). Results are ordered by creation time descending, with a fixed page size of 20 records. Requires write permission on the hub.",
       "scope": "hub",
       "permission": {
         "src": "write"
-      }
+      },
+      "params": {
+        "page": {
+          "type": "integer",
+          "required": false,
+          "description": "Page number for pagination. Each page returns up to 20 records ordered by ctime descending. Defaults to 1 if not provided.",
+          "default": 1
+        }
+      },
+      "returns": {
+        "type": "array",
+        "description": "Array of form submission records from the form-specific table, ordered by ctime descending. Page size is fixed at 20.",
+        "properties": {
+          "ctime": {
+            "type": "integer",
+            "description": "Unix timestamp of when the submission was created"
+          },
+          "ua": {
+            "type": "string",
+            "description": "User agent string of the submitter (if captured by schema), e.g. vendor/model/type or os/browser/version"
+          },
+          "geoloc": {
+            "type": "string",
+            "description": "Geolocation of the submitter (if captured by schema), e.g. City, Region, Country"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "INTERNAL_ERROR",
+          "message": "Failed to query form submissions table",
+          "returns": {
+            "status": "INTERNAL_ERROR"
+          }
+        }
+      ]
     },
     "update": {
+      "doc": "Update a single configuration field in the form node JSON file. Reads the current configuration, sets conf[name]=value if both name and value are provided, then writes the updated configuration back to the file. Requires owner permission on the hub.",
       "scope": "hub",
       "permission": {
         "src": "owner"
-      }
+      },
+      "params": {
+        "name": {
+          "type": "string",
+          "required": false,
+          "description": "Name of the configuration field to update (e.g. recipients, schema, keys). If not provided, no field is modified and the current configuration is returned as-is."
+        },
+        "value": {
+          "type": "any",
+          "required": false,
+          "description": "New value to assign to the configuration field identified by name. The value type depends on the specific field being updated."
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "The complete updated form configuration object as written to the node JSON file",
+        "properties": {
+          "schema": {
+            "type": "object",
+            "description": "Form field schema definitions controlling data capture and enrichment"
+          },
+          "recipients": {
+            "type": "any",
+            "description": "Email notification recipients configuration (array of emails or role strings such as owner or admin)"
+          },
+          "keys": {
+            "type": "object",
+            "description": "Key configuration for the form, including the primary key field name"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "INTERNAL_ERROR",
+          "message": "Failed to read or write the form configuration file",
+          "returns": {
+            "status": "INTERNAL_ERROR"
+          }
+        }
+      ]
     },
     "info": {
+      "doc": "Retrieve the form configuration from the node JSON file. Returns the complete configuration object including schema, recipients, and key settings. Requires admin permission on the hub.",
       "scope": "hub",
       "permission": {
         "src": "admin"
-      }
+      },
+      "params": {},
+      "returns": {
+        "type": "object",
+        "description": "The complete form configuration object read from the node JSON file",
+        "properties": {
+          "schema": {
+            "type": "object",
+            "description": "Form field schema definitions controlling which fields are captured and enriched (e.g. ctime, ua, geoloc)"
+          },
+          "recipients": {
+            "type": "any",
+            "description": "Email notification recipients configuration (array of emails or role strings such as owner or admin)"
+          },
+          "keys": {
+            "type": "object",
+            "description": "Key configuration for the form, including the primary key field name"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "INTERNAL_ERROR",
+          "message": "Failed to read the form configuration file from the node MFS path",
+          "returns": {
+            "status": "INTERNAL_ERROR"
+          }
+        }
+      ]
     }
   },
   "modules": {

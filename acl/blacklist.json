@@ -1,22 +1,106 @@
 {
   "services": {
     "add": {
+      "doc": "Add one or more email addresses to the hub blacklist. A single email string is automatically normalized to an array before being JSON-serialized and passed to the blacklist_add stored procedure.",
       "scope": "hub",
       "permission": {
         "src": "owner"
-      }
+      },
+      "params": {
+        "email": {
+          "type": "string|array",
+          "required": true,
+          "doc": "Email address or array of email addresses to blacklist. A single string value is automatically wrapped in an array.",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "returns": {
+        "data": {
+          "type": "object",
+          "doc": "Result returned by the blacklist_add stored procedure"
+        }
+      },
+      "errors": [
+        {
+          "code": "MISSING_PARAM",
+          "message": "email is required",
+          "http_status": 400
+        },
+        {
+          "code": "PERMISSION_DENIED",
+          "message": "Caller does not have owner permission on this hub",
+          "http_status": 403
+        }
+      ]
     },
     "delete": {
+      "doc": "Remove one or more email addresses from the hub blacklist. A single email string is automatically normalized to an array before being passed to the blacklist_delete stored procedure.",
       "scope": "hub",
       "permission": {
         "src": "owner"
-      }
+      },
+      "params": {
+        "email": {
+          "type": "string|array",
+          "required": true,
+          "doc": "Email address or array of email addresses to remove from the blacklist. A single string value is automatically wrapped in an array.",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "returns": {
+        "data": {
+          "type": "object",
+          "doc": "Result returned by the blacklist_delete stored procedure"
+        }
+      },
+      "errors": [
+        {
+          "code": "MISSING_PARAM",
+          "message": "email is required",
+          "http_status": 400
+        },
+        {
+          "code": "PERMISSION_DENIED",
+          "message": "Caller does not have owner permission on this hub",
+          "http_status": 403
+        }
+      ]
     },
     "show": {
+      "doc": "List all blacklisted email addresses for the current hub, paginated via the blacklist_show stored procedure.",
       "scope": "hub",
       "permission": {
         "src": "owner"
-      }
+      },
+      "params": {
+        "page": {
+          "type": "number",
+          "required": false,
+          "default": 1,
+          "min": 1,
+          "doc": "Page number for pagination. Defaults to 1 when not provided."
+        }
+      },
+      "returns": {
+        "data": {
+          "type": "array",
+          "doc": "Paginated list of blacklisted email records returned by the blacklist_show stored procedure",
+          "items": {
+            "type": "object"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "PERMISSION_DENIED",
+          "message": "Caller does not have owner permission on this hub",
+          "http_status": 403
+        }
+      ]
     }
   },
   "modules": {

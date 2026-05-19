@@ -1,28 +1,198 @@
 {
   "services": {
     "get_cities": {
+      "doc": "Get a paginated list of cities for a given country. Calls the yp_get_cities stored procedure on the YP database using the supplied country ID and page number.",
       "scope": "hub",
       "permission": {
         "src": "anonymous"
-      }
+      },
+      "params": {
+        "id": {
+          "type": "string",
+          "required": true,
+          "description": "Country ID used to filter the city list"
+        },
+        "page": {
+          "type": "integer",
+          "required": false,
+          "default": 1,
+          "description": "Page number for pagination, 1-based"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Paginated city list result from the yp_get_cities stored procedure",
+        "properties": {
+          "data": {
+            "type": "array",
+            "description": "Array of city records for the specified country",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "description": "City ID"
+                },
+                "name": {
+                  "type": "string",
+                  "description": "City name"
+                }
+              }
+            }
+          }
+        }
+      },
+      "errors": []
     },
+
     "get_countries": {
+      "doc": "Get a paginated list of all countries. Calls the utils_get_countries stored procedure on the YP database. Supports pagination via page and length parameters.",
       "scope": "hub",
       "permission": {
         "src": "anonymous"
-      }
+      },
+      "params": {
+        "page": {
+          "type": "integer",
+          "required": false,
+          "default": 1,
+          "description": "Page number for pagination, 1-based"
+        },
+        "length": {
+          "type": "integer",
+          "required": false,
+          "default": 10,
+          "description": "Number of records to return per page"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Paginated country list result from the utils_get_countries stored procedure",
+        "properties": {
+          "data": {
+            "type": "array",
+            "description": "Array of country records",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "description": "Country ID"
+                },
+                "name": {
+                  "type": "string",
+                  "description": "Country name"
+                }
+              }
+            }
+          }
+        }
+      },
+      "errors": []
     },
+
     "search_cities": {
+      "doc": "Search cities by name keyword. Calls the utils_search_cities stored procedure on the YP database. Accepts the search term via either the value or name parameter, falling back to an empty string when both are absent.",
       "scope": "hub",
       "permission": {
         "src": "anonymous"
-      }
+      },
+      "params": {
+        "value": {
+          "type": "string",
+          "required": false,
+          "default": "",
+          "description": "Search keyword for city name. Takes priority over the name parameter when both are supplied."
+        },
+        "name": {
+          "type": "string",
+          "required": false,
+          "default": "",
+          "description": "Alternative search keyword for city name. Used when value is not provided."
+        },
+        "page": {
+          "type": "integer",
+          "required": false,
+          "default": 1,
+          "description": "Page number for pagination, 1-based"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Paginated city search result from the utils_search_cities stored procedure",
+        "properties": {
+          "data": {
+            "type": "array",
+            "description": "Array of city records matching the search keyword",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "description": "City ID"
+                },
+                "name": {
+                  "type": "string",
+                  "description": "City name"
+                }
+              }
+            }
+          }
+        }
+      },
+      "errors": []
     },
+
     "search_countries": {
+      "doc": "Search countries by name keyword. Calls the utils_search_countries stored procedure on the YP database. Accepts the search term via either the value or name parameter, falling back to an empty string when both are absent.",
       "scope": "hub",
       "permission": {
         "src": "anonymous"
-      }
+      },
+      "params": {
+        "value": {
+          "type": "string",
+          "required": false,
+          "default": "",
+          "description": "Search keyword for country name. Takes priority over the name parameter when both are supplied."
+        },
+        "name": {
+          "type": "string",
+          "required": false,
+          "default": "",
+          "description": "Alternative search keyword for country name. Used when value is not provided."
+        },
+        "page": {
+          "type": "integer",
+          "required": false,
+          "default": 1,
+          "description": "Page number for pagination, 1-based"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Paginated country search result from the utils_search_countries stored procedure",
+        "properties": {
+          "data": {
+            "type": "array",
+            "description": "Array of country records matching the search keyword",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "description": "Country ID"
+                },
+                "name": {
+                  "type": "string",
+                  "description": "Country name"
+                }
+              }
+            }
+          }
+        }
+      },
+      "errors": []
     }
   },
   "modules": {

@@ -378,15 +378,8 @@ class __private_adminpanel extends Mfs {
     if (isEmpty(his_privilege)) return this.output.status('INCORRECT_DOMAIN');
     if (my_privilege.privilege < his_privilege.privilege) return this.output.status('NOT_ENOUGH_PRIVILEGE');
 
-    let data = await this.yp.await_proc('forward_proc', user_id, 'show_login_log', `${page}`)
-    if (!isArray(data)) {
-      data = [data];
-    }
-    for (let rec of data) {
-      rec.metadata = this.parseJSON(rec.metadata)
-      res.push(rec);
-    }
-    this.output.list(res);
+    let data = await this.yp.await_proc('show_login_log', user_id, page);
+    this.output.list(data);
   }
 
   /**
@@ -659,7 +652,7 @@ class __private_adminpanel extends Mfs {
       },
       handler: this.exception.email
     });
-    let body = msg.send();
+    let body = await msg.send();
     if (_.isString(body)) {
       return {
         subject,
@@ -707,7 +700,7 @@ class __private_adminpanel extends Mfs {
       },
       handler: this.exception.email
     });
-    let body = msg.send();
+    let body = await msg.send();
     if (_.isString(body)) {
       return {
         subject,
@@ -745,7 +738,7 @@ class __private_adminpanel extends Mfs {
       },
       handler: this.exception.email
     });
-    let body = msg.send();
+    let body = await msg.send();
     if (_.isString(body)) {
       return {
         subject,

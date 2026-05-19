@@ -2,22 +2,31 @@
 
 <%= renderer.include('scripts.tpl') %>
 
-document.onreadystatechange = () => {
-  if (document.readyState === 'complete') {
-    console.log(`Loading LETC engine `, bootstrap());
-    const router = document.getElementById('--router');
-    if(!router){
-      const el = document.createElement('div');
-      el.setAttribute('id', "--router");
-      document.body.appendChild(el);
+let count = 0;
+function load_bundle(id, src){
+  let el = document.createElement('script');
+  let type= 'text/javascript';
+  el.setAttribute('text', type);
+  el.type = type;
+  el.setAttribute('async', "true");
+  el.setAttribute('charset', "utf-8");
+  el.setAttribute('crossorigin', "true");
+  el.setAttribute('id', id);
+  el.onload = (e) => {
+    count++;
+    let el = document.getElementById("warmup-progess")
+    console.log("Loading app bundles", e.target?.id)
+    let w = 100 * (count / 4) + '%';
+    if (el) {
+      el.style.width = w;
     }
+  };
+  el.setAttribute('src', src);
+  document.head.appendChild(el);
+}
 
-    const el = document.createElement('script');
-    el.setAttribute('text', 'text/javascript');
-    el.type = '<%= type %>';
-    el.setAttribute('charset', "utf-8");
-    el.setAttribute('async', "");
-    el.setAttribute('src', "<%= app.location %>/app/<%= app.entry %>");
-    document.head.appendChild(el);
-  }
-};
+<% _.each(bundles, function(m, k) { %>
+  load_bundle("bundles-<%= k %>", "<%= m %>")
+<% }); %>
+
+

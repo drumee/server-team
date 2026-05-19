@@ -1,6 +1,492 @@
 {
   "services": {
+    "home": {
+      "doc": "Get paginated list of files and folders from user's home directory",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "log": true,
+      "params": {
+        "page": {
+          "type": "number",
+          "required": false,
+          "default": 1,
+          "min": 1,
+          "doc": "Page number for pagination"
+        }
+      },
+      "returns": {
+        "items": {
+          "type": "array",
+          "doc": "Array of media items (files and folders)",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "doc": "Node ID"
+              },
+              "filename": {
+                "type": "string",
+                "doc": "File or folder name"
+              },
+              "category": {
+                "type": "string",
+                "doc": "Node type: file, folder, hub"
+              },
+              "filesize": {
+                "type": "number",
+                "doc": "Size in bytes"
+              },
+              "rank": {
+                "type": "number",
+                "doc": "Sort order position"
+              }
+            }
+          }
+        }
+      }
+    },
+    "get_env": {
+      "doc": "Get complete desk environment including filenames, privilege, and quota information",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "returns": {
+        "filenames": {
+          "type": "array",
+          "doc": "List of all filenames in user's workspace"
+        },
+        "privilege": {
+          "type": "number",
+          "doc": "User privilege level (always 7 for owner)"
+        },
+        "quota": {
+          "type": "object",
+          "doc": "User quota limits",
+          "properties": {
+            "storage": {
+              "type": "number",
+              "doc": "Available storage in bytes"
+            },
+            "real": {
+              "type": "number",
+              "doc": "Real disk space available"
+            }
+          }
+        }
+      }
+    },
+    "search": {
+      "doc": "Search files and folders by name pattern across user's workspace",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "params": {
+        "string": {
+          "type": "string",
+          "required": true,
+          "minLength": 1,
+          "doc": "Search pattern (filename substring)"
+        },
+        "page": {
+          "type": "number",
+          "required": false,
+          "default": 1,
+          "min": 1,
+          "doc": "Page number for pagination"
+        }
+      },
+      "returns": {
+        "results": {
+          "type": "array",
+          "doc": "Array of matching media items",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "doc": "Node ID"
+              },
+              "filename": {
+                "type": "string",
+                "doc": "Matched filename"
+              },
+              "file_path": {
+                "type": "string",
+                "doc": "Full path to file"
+              },
+              "category": {
+                "type": "string",
+                "doc": "Node type"
+              }
+            }
+          }
+        }
+      }
+    },
+    "my_wallpapers": {
+      "doc": "Get combined list of user and system wallpapers with pagination",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "params": {
+        "page": {
+          "type": "number",
+          "required": false,
+          "default": 1,
+          "min": 1,
+          "doc": "Page number for pagination"
+        }
+      },
+      "returns": {
+        "wallpapers": {
+          "type": "array",
+          "doc": "Combined list of user wallpapers (first) and system wallpapers (second)",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "doc": "Wallpaper node ID"
+              },
+              "filename": {
+                "type": "string",
+                "doc": "Wallpaper filename"
+              },
+              "category": {
+                "type": "string",
+                "doc": "image"
+              },
+              "source": {
+                "type": "string",
+                "doc": "user or system"
+              }
+            }
+          }
+        }
+      }
+    },
+    "disk_usage": {
+      "doc": "Get disk usage statistics for user (owned files + owned hubs) with optional category filter",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "params": {
+        "page": {
+          "type": "number",
+          "required": false,
+          "default": 1,
+          "min": 1,
+          "doc": "Page number for pagination"
+        },
+        "category": {
+          "type": "string",
+          "required": false,
+          "default": "*",
+          "doc": "Filter by category: video, image, audio, document, or * for all"
+        },
+        "list": {
+          "type": "boolean",
+          "required": false,
+          "doc": "If true, return detailed file list instead of summary"
+        }
+      },
+      "returns": {
+        "summary": {
+          "type": "object",
+          "doc": "Usage summary by category (if list=false)",
+          "properties": {
+            "total_size": {
+              "type": "number",
+              "doc": "Total bytes used"
+            },
+            "file_count": {
+              "type": "number",
+              "doc": "Total number of files"
+            }
+          }
+        },
+        "files": {
+          "type": "array",
+          "doc": "Detailed file list (if list=true)",
+          "items": {
+            "type": "object"
+          }
+        }
+      }
+    },
+    "create_hub": {
+      "doc": "Create a new hub (private, public, or share workspace)",
+      "scope": "hub",
+      "permission": {
+        "src": "owner",
+        "preproc": "check_quota"
+      },
+      "log": true,
+      "params": {
+        "filename": {
+          "type": "string",
+          "required": true,
+          "minLength": 1,
+          "maxLength": 255,
+          "doc": "Hub name (will be sanitized for hostname)"
+        },
+        "area": {
+          "type": "string",
+          "required": false,
+          "default": "private",
+          "enum": ["private", "public", "share"],
+          "doc": "Hub visibility area"
+        },
+        "pid": {
+          "type": "string",
+          "required": false,
+          "doc": "Parent folder ID (defaults to home_id)"
+        }
+      },
+      "returns": {
+        "hub_id": {
+          "type": "string",
+          "doc": "New hub ID"
+        },
+        "filename": {
+          "type": "string",
+          "doc": "Actual filename used (may differ from input)"
+        },
+        "hostname": {
+          "type": "string",
+          "doc": "Hub hostname"
+        },
+        "area": {
+          "type": "string",
+          "doc": "Hub area"
+        },
+        "home_id": {
+          "type": "string",
+          "doc": "Hub's home directory node ID"
+        },
+        "privilege": {
+          "type": "number",
+          "doc": "User's privilege level (7 for owner)"
+        }
+      },
+      "errors": [
+        {
+          "code": "QUOTA_EXCEEDED",
+          "message": "Hub creation quota exceeded for this area",
+          "http_status": 507
+        },
+        {
+          "code": "INVALID_FILENAME",
+          "message": "Filename contains invalid characters",
+          "http_status": 400
+        },
+        {
+          "code": "CREATION_FAILED",
+          "message": "Hub creation failed",
+          "http_status": 500
+        }
+      ]
+    },
+    "limit": {
+      "doc": "Get current quota limits and available storage space",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "returns": {
+        "storage": {
+          "type": "number",
+          "doc": "Available storage in bytes"
+        },
+        "real": {
+          "type": "number",
+          "doc": "Real disk space available (or infinity if unlimited)"
+        }
+      }
+    },
+    "create_wicket": {
+      "doc": "Create or retrieve wicket hub for external meeting handling (one per user)",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "returns": {
+        "wicket_id": {
+          "type": "string",
+          "doc": "Wicket hub ID"
+        },
+        "id": {
+          "type": "string",
+          "doc": "Home directory node ID"
+        },
+        "filename": {
+          "type": "string",
+          "doc": "Wicket folder name"
+        },
+        "category": {
+          "type": "string",
+          "doc": "hub"
+        }
+      }
+    },
+    "set_mfa": {
+      "doc": "Set multi-factor authentication (MFA) for user account",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "params": {
+        "secret": {
+          "type": "string",
+          "required": true,
+          "doc": "MFA secret key (from QR code setup)"
+        },
+        "code": {
+          "type": "string",
+          "required": true,
+          "minLength": 6,
+          "maxLength": 6,
+          "doc": "TOTP verification code from authenticator app"
+        },
+        "mfa": {
+          "type": "number",
+          "required": false,
+          "enum": [0, 1],
+          "doc": "Enable (1) or disable (0) MFA"
+        }
+      },
+      "returns": {
+        "user": {
+          "type": "object",
+          "doc": "Updated user profile with MFA status",
+          "properties": {
+            "id": {
+              "type": "string",
+              "doc": "User ID"
+            },
+            "mfa": {
+              "type": "number",
+              "doc": "MFA status (0=disabled, 1=enabled)"
+            },
+            "otp": {
+              "type": "number",
+              "doc": "One-time password status"
+            }
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "INVALID_CODE",
+          "message": "TOTP code verification failed",
+          "http_status": 401
+        },
+        {
+          "code": "SECRET_NOT_FOUND",
+          "message": "MFA secret not found or expired",
+          "http_status": 404
+        }
+      ]
+    },
+    "leave_hub": {
+      "doc": "Leave a shared hub (remove user membership from hub)",
+      "scope": "hub",
+      "permission": {
+        "src": "anonymous"
+      },
+      "params": {
+        "nid": {
+          "type": "string",
+          "required": false,
+          "doc": "Hub ID to leave (optional, uses context hub if not provided)"
+        }
+      },
+      "returns": {
+        "uid": {
+          "type": "string",
+          "doc": "User ID who left"
+        },
+        "hub_id": {
+          "type": "string",
+          "doc": "Hub ID that was left"
+        }
+      },
+      "errors": [
+        {
+          "code": "HUB_ID_NOT_ALLOWED",
+          "message": "Cannot leave your own hub",
+          "http_status": 403
+        }
+      ]
+    },
+    "reorder": {
+      "doc": "Reorder items in user's workspace by updating rank positions",
+      "scope": "hub",
+      "permission": {
+        "src": "delete"
+      },
+      "params": {
+        "list": {
+          "type": "array",
+          "required": true,
+          "minItems": 1,
+          "doc": "Array of items to reorder",
+          "items": {
+            "type": "object",
+            "properties": {
+              "nid": {
+                "type": "string",
+                "doc": "Node ID to reorder"
+              },
+              "index": {
+                "type": "number",
+                "doc": "New rank position (0-based index)"
+              }
+            }
+          }
+        }
+      },
+      "returns": {
+        "list": {
+          "type": "array",
+          "doc": "Same list that was sent (confirmation)",
+          "items": {
+            "type": "object"
+          }
+        }
+      }
+    },
+    "set_online_status": {
+      "doc": "Set user's online/offline status and broadcast to connected clients",
+      "scope": "hub",
+      "permission": {
+        "fast_check": "user_permission"
+      },
+      "params": {},
+      "returns": {
+        "hub_id": {
+          "type": "string",
+          "doc": "User's hub ID"
+        },
+        "user_id": {
+          "type": "string",
+          "doc": "User ID"
+        },
+        "status": {
+          "type": "number",
+          "doc": "Online status (0=offline, 1=online)"
+        }
+      }
+    },
     "backup": {
+      "doc": "Export contacts as VCF (vCard) file",
       "scope": "hub",
       "permission": {
         "src": "owner"
@@ -12,39 +498,7 @@
         "src": "owner"
       }
     },
-    "create_hub": {
-      "scope": "hub",
-      "permission": {
-        "src": "owner",
-        "preproc": "pre_create"
-      },
-      "log": true
-    },
-    "create_website": {
-      "scope": "domain",
-      "permission": {
-        "src": "admin"
-      }
-    },
-    "create_wicket": {
-      "scope": "hub",
-      "permission": {
-        "src": "owner"
-      }
-    },
     "get_alternate_account": {
-      "scope": "hub",
-      "permission": {
-        "src": "owner"
-      }
-    },
-    "get_env": {
-      "scope": "hub",
-      "permission": {
-        "src": "owner"
-      }
-    },
-    "search": {
       "scope": "hub",
       "permission": {
         "src": "owner"
@@ -56,41 +510,47 @@
         "src": "owner"
       }
     },
-    "home": {
-      "scope": "hub",
-      "permission": {
-        "src": "read"
-      },
-      "log": true
-    },
-    "leave_hub": {
-      "scope": "hub",
-      "permission": {
-        "src": "anonymous"
-      }
-    },
     "quick_share": {
       "scope": "hub",
       "permission": {
         "src": "owner"
       }
     },
-    "reorder": {
-      "scope": "hub",
-      "permission": {
-        "src": "delete"
-      }
-    },
-    "set_online_status": {
-      "scope": "hub",
-      "permission": {
-        "fast_check": "user_permission"
-      }
-    },
-    "limit": {
+    "recent_files": {
+      "doc": "Get recently modified files across all user hubs, sorted by modification time DESC",
       "scope": "hub",
       "permission": {
         "src": "owner"
+      },
+      "log": false,
+      "params": {
+        "page": {
+          "type": "number",
+          "required": false,
+          "default": 1,
+          "min": 1,
+          "doc": "Page number for pagination"
+        }
+      },
+      "returns": {
+        "items": {
+          "type": "array",
+          "doc": "Recent files across all accessible hubs, sorted by mtime DESC",
+          "items": {
+            "type": "object",
+            "properties": {
+              "nid": { "type": "string", "doc": "Node ID" },
+              "hub_id": { "type": "string", "doc": "Hub the file belongs to" },
+              "filename": { "type": "string", "doc": "File name" },
+              "filetype": { "type": "string", "doc": "Node type (file, folder, etc.)" },
+              "filesize": { "type": "number", "doc": "File size in bytes" },
+              "mtime": { "type": "number", "doc": "Last modified timestamp (unix)" },
+              "ctime": { "type": "number", "doc": "Created timestamp (unix)" },
+              "vhost": { "type": "string", "doc": "Hub virtual hostname" },
+              "ownpath": { "type": "string", "doc": "File path within hub" }
+            }
+          }
+        }
       }
     }
   },

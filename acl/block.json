@@ -1,100 +1,669 @@
 {
   "services": {
     "assembly": {
+      "doc": "Assemble and return a composed block structure for the current hub. Implementation details are resolved at runtime by the platform.",
       "scope": "hub",
       "permission": {
         "src": "anonymous"
       }
     },
     "content": {
+      "doc": "Retrieve block content for a given hashtag, device, and language. Resolves the correct JSON file (published, draft, or versioned) and delivers it via an nginx internal redirect (X-Accel-Redirect). Falls back across languages and devices when the exact file is not found.",
       "scope": "hub",
       "permission": {
         "src": "anonymous"
-      }
+      },
+      "params": {
+        "name": {
+          "type": "string",
+          "required": false,
+          "doc": "Block identifier. Resolved in order: name, then hashtag, then id."
+        },
+        "hashtag": {
+          "type": "string",
+          "required": false,
+          "doc": "Block hashtag identifier. Used when name is not provided."
+        },
+        "id": {
+          "type": "string",
+          "required": false,
+          "doc": "Block ID. Used as fallback when neither name nor hashtag is provided. At least one of name, hashtag, or id must be present."
+        },
+        "status": {
+          "type": "string",
+          "required": false,
+          "default": "",
+          "doc": "Content status filter. Use published to retrieve the online version or draft to retrieve the current draft.",
+          "enum": ["published", "draft", ""]
+        },
+        "serial": {
+          "type": "number",
+          "required": false,
+          "default": 0,
+          "doc": "History version serial number. When greater than 0, retrieves the specific versioned JSON file."
+        }
+      },
+      "returns": {
+        "file": {
+          "type": "binary",
+          "doc": "Block JSON content delivered as text/plain via nginx X-Accel-Redirect. Response includes Content-Disposition, Cache-Control, and Content-Length headers."
+        }
+      },
+      "errors": [
+        {
+          "code": "BLOCK_NOT_FOUND",
+          "message": "No content file found for the requested hashtag, device, and language combination",
+          "http_status": 404
+        }
+      ]
     },
     "copy": {
+      "doc": "Copy a versioned block history entry to a new page or as a new revision. Writes the copied JSON file to the filesystem under the destination locale and device path, updating all meta fields accordingly.",
       "scope": "hub",
       "permission": {
         "src": "admin"
-      }
+      },
+      "params": {
+        "history_id": {
+          "type": "string",
+          "required": true,
+          "doc": "ID of the source history entry to copy from"
+        },
+        "locale": {
+          "type": "string",
+          "required": true,
+          "doc": "Target locale code for the copied content (e.g. fr, en)"
+        },
+        "hashtag": {
+          "type": "string",
+          "required": false,
+          "default": "",
+          "doc": "Hashtag for the destination block. If empty, the source block hashtag is reused."
+        },
+        "option": {
+          "type": "number",
+          "required": false,
+          "default": 0,
+          "doc": "Copy mode: 0 = default, 1 = copy as new page, 2 = copy as new revision history",
+          "enum": [0, 1, 2]
+        }
+      },
+      "returns": {
+        "id": {
+          "type": "string",
+          "doc": "ID of the destination block"
+        },
+        "serial": {
+          "type": "string",
+          "doc": "Serial number assigned to the copied version"
+        },
+        "device": {
+          "type": "string",
+          "doc": "Device type of the copied entry"
+        },
+        "lang": {
+          "type": "string",
+          "doc": "Language of the copied entry"
+        }
+      },
+      "errors": [
+        {
+          "code": "BLOCK_NAME_EXIST",
+          "message": "A block with the given hashtag already exists",
+          "http_status": 409
+        },
+        {
+          "code": "CONFIRM_COPY_AS_NEW_PAGE",
+          "message": "Confirmation required to copy as a new page",
+          "http_status": 409
+        },
+        {
+          "code": "INTERNAL_ERROR",
+          "message": "Copy operation failed due to an internal error",
+          "http_status": 500
+        }
+      ]
     },
     "delete": {
+      "doc": "Delete a block entry for a specific device and locale. The block must not be in published state; call unpublish first if needed. On success, removes the corresponding filesystem directory for the given device and locale.",
       "scope": "hub",
       "permission": {
         "src": "delete"
-      }
+      },
+      "params": {
+        "id": {
+          "type": "string",
+          "required": true,
+          "doc": "Block ID to delete"
+        },
+        "locale": {
+          "type": "string",
+          "required": true,
+          "doc": "Locale code of the block version to delete (e.g. fr, en)"
+        },
+        "device": {
+          "type": "string",
+          "required": false,
+          "default": "desktop",
+          "doc": "Device type of the block version to delete",
+          "enum": ["desktop", "mobile"]
+        }
+      },
+      "returns": {
+        "id": {
+          "type": "string",
+          "doc": "ID of the deleted block"
+        },
+        "device": {
+          "type": "string",
+          "doc": "Device type that was deleted"
+        },
+        "lang": {
+          "type": "string",
+          "doc": "Locale of the deleted block version"
+        }
+      },
+      "errors": [
+        {
+          "code": "UNPUBLISH_TO_DELETE",
+          "message": "Block must be unpublished before it can be deleted",
+          "http_status": 409
+        }
+      ]
     },
     "exists": {
+      "doc": "Check whether a block identified by a string value exists. Uses the block_exists stored procedure and returns the result directly.",
       "scope": "hub",
       "permission": {
         "src": "anonymous"
+      },
+      "params": {
+        "value": {
+          "type": "string",
+          "required": false,
+          "default": "*",
+          "doc": "Primary lookup value. Falls back to string if not provided."
+        },
+        "string": {
+          "type": "string",
+          "required": false,
+          "doc": "String to check for existence. Defaults to value when not provided."
+        }
+      },
+      "returns": {
+        "data": {
+          "type": "object",
+          "doc": "Result from the block_exists stored procedure indicating whether the block exists"
+        }
       }
     },
     "filter": {
+      "doc": "List platform block models from the yellow-page database, paginated. Calls the yp.plf_list_models stored procedure.",
       "scope": "hub",
       "permission": {
         "src": "delete"
+      },
+      "params": {
+        "page": {
+          "type": "number",
+          "required": false,
+          "default": 1,
+          "min": 1,
+          "doc": "Page number for pagination"
+        }
+      },
+      "returns": {
+        "data": {
+          "type": "array",
+          "doc": "Paginated list of platform block models",
+          "items": {
+            "type": "object"
+          }
+        }
       }
     },
     "history": {
+      "doc": "Retrieve the edit history log for a block, optionally filtered by device, language, month, and year. Calls the block_history_log stored procedure.",
       "scope": "hub",
       "permission": {
         "src": "delete"
-      }
+      },
+      "params": {
+        "id": {
+          "type": "string",
+          "required": true,
+          "doc": "Block ID to retrieve history for"
+        },
+        "page": {
+          "type": "number",
+          "required": false,
+          "default": 1,
+          "min": 1,
+          "doc": "Page number for pagination"
+        },
+        "month": {
+          "type": "number",
+          "required": false,
+          "default": 0,
+          "doc": "Month filter (1-12). When non-zero, year becomes required."
+        },
+        "year": {
+          "type": "number",
+          "required": false,
+          "default": 0,
+          "doc": "Year filter. Required when month is non-zero."
+        },
+        "device": {
+          "type": "string",
+          "required": false,
+          "default": "desktop",
+          "doc": "Device type filter",
+          "enum": ["desktop", "mobile"]
+        },
+        "lang": {
+          "type": "string",
+          "required": false,
+          "doc": "Language code filter. Defaults to the hub default language."
+        }
+      },
+      "returns": {
+        "data": {
+          "type": "array",
+          "doc": "Paginated history log entries for the block",
+          "items": {
+            "type": "object"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "MISSING_PARAM",
+          "message": "year is required when month is non-zero",
+          "http_status": 400
+        }
+      ]
     },
     "info": {
+      "doc": "Get metadata information for a block identified by its hashtag. Calls the block_info stored procedure.",
       "scope": "hub",
       "permission": {
         "src": "read"
-      }
+      },
+      "params": {
+        "hashtag": {
+          "type": "string",
+          "required": true,
+          "doc": "Hashtag identifier of the block to retrieve info for"
+        }
+      },
+      "returns": {
+        "data": {
+          "type": "object",
+          "doc": "Block metadata record returned by the block_info stored procedure"
+        }
+      },
+      "errors": [
+        {
+          "code": "MISSING_PARAM",
+          "message": "hashtag is required",
+          "http_status": 400
+        }
+      ]
     },
     "list": {
+      "doc": "List blocks filtered by editor type, with pagination and sort order. Calls the block_list stored procedure.",
       "scope": "hub",
       "permission": {
         "src": "delete"
+      },
+      "params": {
+        "editor": {
+          "type": "string",
+          "required": false,
+          "default": "creator",
+          "doc": "Editor type filter (e.g. creator)"
+        },
+        "page": {
+          "type": "number",
+          "required": false,
+          "default": 1,
+          "min": 1,
+          "doc": "Page number for pagination"
+        },
+        "order": {
+          "type": "string",
+          "required": false,
+          "default": "D",
+          "doc": "Sort order: D for descending, A for ascending",
+          "enum": ["D", "A"]
+        }
+      },
+      "returns": {
+        "data": {
+          "type": "array",
+          "doc": "Paginated list of block records",
+          "items": {
+            "type": "object"
+          }
+        }
       }
     },
     "list_by": {
+      "doc": "List blocks by locale and published state, with optional name filter, sort field, sort direction, and pagination. Calls the block_get_draft_publish stored procedure.",
       "scope": "hub",
       "permission": {
         "src": "delete"
+      },
+      "params": {
+        "locale": {
+          "type": "string",
+          "required": false,
+          "doc": "Locale code to filter blocks by (e.g. fr, en). Falls back to request language."
+        },
+        "published": {
+          "type": "string",
+          "required": true,
+          "doc": "Publication state filter. Passed directly to the stored procedure."
+        },
+        "name": {
+          "type": "string",
+          "required": false,
+          "default": "",
+          "doc": "Optional name substring filter"
+        },
+        "sort_by": {
+          "type": "string",
+          "required": false,
+          "default": "date",
+          "doc": "Field to sort results by"
+        },
+        "sort": {
+          "type": "string",
+          "required": true,
+          "doc": "Sort direction (e.g. ASC or DESC)"
+        },
+        "page": {
+          "type": "number",
+          "required": false,
+          "default": 1,
+          "min": 1,
+          "doc": "Page number for pagination"
+        }
+      },
+      "returns": {
+        "data": {
+          "type": "array",
+          "doc": "Filtered and paginated list of block records",
+          "items": {
+            "type": "object"
+          }
+        }
       }
     },
     "log": {
+      "doc": "Retrieve the global block activity log, paginated and sorted. Calls the block_log stored procedure.",
       "scope": "hub",
       "permission": {
         "src": "delete"
+      },
+      "params": {
+        "page": {
+          "type": "number",
+          "required": false,
+          "default": 1,
+          "min": 1,
+          "doc": "Page number for pagination"
+        },
+        "order": {
+          "type": "string",
+          "required": false,
+          "default": "D",
+          "doc": "Sort order: D for descending, A for ascending",
+          "enum": ["D", "A"]
+        }
+      },
+      "returns": {
+        "data": {
+          "type": "array",
+          "doc": "Paginated block activity log entries",
+          "items": {
+            "type": "object"
+          }
+        }
       }
     },
     "purge": {
+      "doc": "Permanently delete a block and remove its entire filesystem directory. Calls the block_purge stored procedure, then removes the block root directory via fsx.remove.",
       "scope": "hub",
       "permission": {
         "src": "delete"
-      }
+      },
+      "params": {
+        "id": {
+          "type": "string",
+          "required": true,
+          "doc": "Block ID or hashtag to purge"
+        }
+      },
+      "returns": {
+        "data": {
+          "type": "object",
+          "doc": "Result data returned by the block_purge stored procedure after filesystem cleanup"
+        }
+      },
+      "errors": [
+        {
+          "code": "FAILED",
+          "message": "Purge failed because the block record has no ID",
+          "http_status": 500
+        }
+      ]
     },
     "rename": {
+      "doc": "Rename a block by updating its hashtag in the database and rewriting the hashtag field in all existing JSON content files on the filesystem. Calls the block_rename_new stored procedure.",
       "scope": "hub",
       "permission": {
         "src": "delete"
-      }
+      },
+      "params": {
+        "id": {
+          "type": "string",
+          "required": true,
+          "doc": "Block ID to rename"
+        },
+        "name": {
+          "type": "string",
+          "required": false,
+          "doc": "New hashtag value. Takes precedence over hashtag when provided."
+        },
+        "hashtag": {
+          "type": "string",
+          "required": false,
+          "doc": "New hashtag value. Required when name is not provided."
+        }
+      },
+      "returns": {
+        "data": {
+          "type": "object",
+          "doc": "Updated block record with the new hashtag"
+        }
+      },
+      "errors": [
+        {
+          "code": "BLOCK_NAME_EXIST",
+          "message": "A block with the requested hashtag already exists",
+          "http_status": 409
+        },
+        {
+          "code": "INVALID_DATA",
+          "message": "Block record returned by the procedure is empty or invalid",
+          "http_status": 422
+        }
+      ]
     },
     "search": {
+      "doc": "Full-text search over blocks. Hyphens in the search string are replaced with spaces before calling the block_search stored procedure.",
       "scope": "hub",
       "permission": {
         "src": "anonymous"
+      },
+      "params": {
+        "string": {
+          "type": "string",
+          "required": false,
+          "default": "*",
+          "doc": "Search string. Hyphens are replaced with spaces before the query. Defaults to wildcard."
+        },
+        "page": {
+          "type": "number",
+          "required": false,
+          "default": 1,
+          "min": 1,
+          "doc": "Page number for pagination"
+        }
+      },
+      "returns": {
+        "data": {
+          "type": "array",
+          "doc": "Paginated search results from the block_search stored procedure",
+          "items": {
+            "type": "object"
+          }
+        }
       }
     },
     "store": {
+      "doc": "Create or update a block content version. Writes the letc JSON content object to the filesystem under the resolved device and language path, creates symlinks for current and optionally online versions, updates the full-text search index via block_index, and dispatches to block_save_int or block_update_new depending on the status flag.",
       "scope": "hub",
       "permission": {
         "src": "delete"
-      }
+      },
+      "params": {
+        "id": {
+          "type": "string",
+          "required": false,
+          "default": "0",
+          "doc": "Block ID. When 0 or absent, a new block is created."
+        },
+        "hashtag": {
+          "type": "string",
+          "required": false,
+          "doc": "Block hashtag. Takes precedence from name; required when name is not provided and id is 0."
+        },
+        "name": {
+          "type": "string",
+          "required": false,
+          "doc": "Block name used as the hashtag. Takes precedence over hashtag."
+        },
+        "letc": {
+          "type": "object",
+          "required": true,
+          "doc": "Block content object to persist. Written to the filesystem as a JSON file. Meta fields (device, lang, serial, id, hashtag) are injected automatically."
+        },
+        "device": {
+          "type": "string",
+          "required": false,
+          "default": "desktop",
+          "doc": "Target device type",
+          "enum": ["desktop", "mobile"]
+        },
+        "lang": {
+          "type": "string",
+          "required": false,
+          "doc": "Target language code. Defaults to the hub default language."
+        },
+        "serial": {
+          "type": "number",
+          "required": false,
+          "doc": "Version serial number. Required when id is non-zero."
+        },
+        "status": {
+          "type": "string",
+          "required": false,
+          "doc": "Publication status controlling which stored procedure branch is executed.",
+          "enum": ["publish_with_history", "publish_without_history", "draft_without_history", ""]
+        },
+        "editor": {
+          "type": "string",
+          "required": false,
+          "doc": "Editor identifier (e.g. creator)"
+        },
+        "type": {
+          "type": "string",
+          "required": false,
+          "doc": "Block type identifier"
+        },
+        "version": {
+          "type": "string",
+          "required": false,
+          "doc": "Schema version of the letc format. Defaults to the platform LETC version constant."
+        },
+        "comment": {
+          "type": "string",
+          "required": false,
+          "doc": "Optional change comment for the version"
+        }
+      },
+      "returns": {
+        "id": {
+          "type": "string",
+          "doc": "Block ID"
+        },
+        "active": {
+          "type": "string",
+          "doc": "Serial number of the saved version, used as the JSON filename"
+        },
+        "hashtag": {
+          "type": "string",
+          "doc": "Canonical hashtag of the block"
+        }
+      },
+      "errors": [
+        {
+          "code": "BLOCK_NAME_EXIST",
+          "message": "A block with the requested hashtag already exists",
+          "http_status": 409
+        }
+      ]
     },
     "unpublish": {
+      "doc": "Unpublish a block for a specific device and locale. Verifies the block is currently published, removes the online.json symlink, and re-links the current.json to the previous history entry via the block_unpublish stored procedure.",
       "scope": "hub",
       "permission": {
         "src": "admin"
-      }
+      },
+      "params": {
+        "id": {
+          "type": "string",
+          "required": true,
+          "doc": "Block ID to unpublish"
+        },
+        "locale": {
+          "type": "string",
+          "required": true,
+          "doc": "Locale code of the block version to unpublish (e.g. fr, en)"
+        },
+        "device": {
+          "type": "string",
+          "required": false,
+          "default": "desktop",
+          "doc": "Device type of the block version to unpublish",
+          "enum": ["desktop", "mobile"]
+        }
+      },
+      "returns": {
+        "data": {
+          "type": "object",
+          "doc": "Updated block record returned by the block_unpublish stored procedure"
+        }
+      },
+      "errors": [
+        {
+          "code": "NOT_PUBLISHED",
+          "message": "Block is not currently in published state and cannot be unpublished",
+          "http_status": 409
+        }
+      ]
     }
   }
 }

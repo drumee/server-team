@@ -200,6 +200,9 @@ class __butler extends Mfs {
       return this.output.data({ status: "DRUMATE_NOT_EXISTS" });
     }
     drumate = await this.yp.await_proc("set_password", id, pw);
+    // Forgot-password recovery is a real password set — flag the
+    // account as password-backed even if it was previously OAuth-only.
+    await this.yp.call_proc("drumate_update_profile", id, { password_set: 1 });
     let connection = "offline";
     if ([1, "1", "sms"].includes(drumate.otp)) {
       metadata.step = "otpverify";

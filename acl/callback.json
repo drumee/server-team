@@ -1,24 +1,79 @@
 {
   "services": {
     "stripe": {
+      "doc": "Stripe webhook receiver. Validates the incoming request signature using the stripe-signature header and the configured endpoint secret, then dispatches to the appropriate handler based on the Stripe event type. Handles: invoice.paid (triggers renewal_update, quota update, success email, and live notification), invoice.payment_failed (triggers renewal_update, subscription cleanup if incomplete, failure email, and live notification), customer.subscription.created (triggers subscription_update), customer.subscription.updated (triggers subscription_update, and subscription cleanup if status is incomplete_expired), customer.subscription.deleted (triggers subscription removal, quota reset to advanced plan, live notification, invoice void if open, and expiry email).",
       "scope": "hub",
       "permission": {
         "src": "read",
         "fast_check": "public-api"
-      }
+      },
+      "params": {
+        "stripe-signature": {
+          "type": "string",
+          "required": true,
+          "doc": "Stripe webhook signature. Read from the stripe-signature HTTP request header. Used by stripe.webhooks.constructEvent to verify the payload authenticity."
+        },
+        "raw_body": {
+          "type": "string",
+          "required": true,
+          "doc": "Raw unparsed request body read via input.raw(). Required by the Stripe SDK for signature verification; must not be pre-parsed as JSON."
+        }
+      },
+      "returns": {
+        "data": {
+          "type": "object",
+          "doc": "Empty object. The mysession variable is initialized as an empty object and is not populated before output. Side-effects (database updates, emails, live notifications) are the primary outcome of this endpoint."
+        }
+      },
+      "errors": [
+        {
+          "code": "WEBHOOK_ERROR",
+          "message": "Stripe signature verification failed or event construction failed",
+          "http_status": 400
+        }
+      ]
     },
     "check_out_success": {
+      "doc": "Stripe checkout success callback. Retrieves the completed checkout session from Stripe using the session_id query parameter and redirects the browser to the desk payment success route with the resulting subscription_id. Response is an HTML page containing a JavaScript redirect.",
       "scope": "hub",
       "permission": {
         "src": "read",
         "fast_check": "public-api"
-      }
+      },
+      "params": {
+        "session_id": {
+          "type": "string",
+          "required": true,
+          "doc": "Stripe checkout session ID passed by Stripe as a query parameter on redirect. Used to retrieve the full session object including the subscription ID."
+        }
+      },
+      "returns": {
+        "content": {
+          "type": "string",
+          "doc": "HTML page with an inline JavaScript redirect to the desk route: #/desk/?payment=true&success=true&subscription_id=VALUE where VALUE is the subscription ID retrieved from the Stripe checkout session"
+        }
+      },
+      "errors": [
+        {
+          "code": "INTERNAL_ERROR",
+          "message": "Failed to retrieve the Stripe checkout session",
+          "http_status": 500
+        }
+      ]
     },
     "check_out_cancel": {
+      "doc": "Stripe checkout cancellation callback. Redirects the browser to the desk payment cancelled route. Response is an HTML page containing a JavaScript redirect. No input parameters are required.",
       "scope": "hub",
       "permission": {
         "src": "read",
         "fast_check": "public-api"
+      },
+      "params": {},
+      "returns": {
+        "content": {
+          "type": "string",
+          "doc": "HTML page with an inline JavaScript redirect to the desk route: #/desk/?payment=false&cancel=true"
+        }
       }
     }
   },

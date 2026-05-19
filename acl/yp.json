@@ -1,152 +1,689 @@
 {
   "services": {
     "authenticate": {
+      "doc": "Verify an OTP (one-time password) for two-factor authentication. For anonymous sessions, authenticates using secret and code. For existing sessions, checks whether the OTP belongs to the current user and returns appropriate status.",
       "scope": "hub",
       "permission": {
         "src": "anonymous",
         "fast_check": "public-api"
-      }
+      },
+      "params": {
+        "secret": {
+          "type": "string",
+          "required": true,
+          "doc": "OTP secret identifier"
+        },
+        "code": {
+          "type": "string",
+          "required": true,
+          "doc": "One-time password code to verify"
+        },
+        "vars": {
+          "type": "object",
+          "required": false,
+          "doc": "Optional context object. May contain ident for cross-session detection."
+        }
+      },
+      "returns": {
+        "type": "object",
+        "doc": "Authentication result",
+        "properties": {
+          "status": {
+            "type": "string",
+            "doc": "ALREADY_SIGNED_IN if the OTP belongs to the current user; CROSS_SIGNED_IN if it belongs to a different user; ALREADY_ONLINE if no OTP was found"
+          },
+          "current": {
+            "type": "string",
+            "doc": "Email of the currently signed-in user (only present when status is CROSS_SIGNED_IN)"
+          },
+          "uid": {
+            "type": "string",
+            "doc": "ID of the currently signed-in user (only present when status is CROSS_SIGNED_IN)"
+          },
+          "input": {
+            "type": "string",
+            "doc": "The ident that was attempted (only present when status is CROSS_SIGNED_IN)"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "INVALID_DATA",
+          "message": "secret or code parameter is missing",
+          "http_status": 400
+        }
+      ]
     },
     "avatar": {
+      "doc": "Retrieve a user's avatar image file (PNG or SVG). Serves the raw image content directly. Returns an empty object if the user is not found or no avatar file exists on disk.",
       "scope": "hub",
       "permission": {
         "src": "anonymous",
         "fast_check": "public-api"
-      }
+      },
+      "params": {
+        "id": {
+          "type": "string",
+          "required": false,
+          "doc": "ID of the user whose avatar to retrieve. Defaults to the current session user."
+        },
+        "type": {
+          "type": "string",
+          "required": false,
+          "doc": "Avatar variant type (e.g. vignette). Defaults to the VIGNETTE constant."
+        }
+      },
+      "returns": {
+        "type": "file",
+        "doc": "Raw image file content (PNG or SVG). Returns empty object if avatar does not exist."
+      },
+      "errors": []
     },
     "check_drumate_exist": {
+      "doc": "Check whether a Drumee user exists by their ID or email address.",
       "scope": "hub",
       "permission": {
         "src": "anonymous",
         "fast_check": "public-api"
-      }
+      },
+      "params": {
+        "id": {
+          "type": "string",
+          "required": true,
+          "doc": "User ID or email address to check"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "doc": "User existence record from drumate_exists procedure. Empty object if not found."
+      },
+      "errors": [
+        {
+          "code": "INVALID_DATA",
+          "message": "id parameter is required",
+          "http_status": 400
+        }
+      ]
     },
     "check_password": {
+      "doc": "Verify the current authenticated user's password against the stored hash. Used to confirm identity before performing sensitive account operations.",
       "scope": "hub",
       "permission": {
         "src": "owner",
         "fast_check": "public-api"
-      }
+      },
+      "params": {
+        "password": {
+          "type": "string",
+          "required": true,
+          "doc": "Plain-text password to verify against the stored hash for the current user"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "doc": "Result from check_password_next procedure indicating whether the password matches"
+      },
+      "errors": []
     },
     "device_registration": {
+      "doc": "Register a mobile device for push notifications. Associates the device push token with the current user account and sets its status to active.",
       "scope": "hub",
       "permission": {
         "src": "anonymous",
         "fast_check": "public-api"
-      }
+      },
+      "params": {
+        "device_id": {
+          "type": "string",
+          "required": true,
+          "doc": "Unique identifier for the device"
+        },
+        "device_type": {
+          "type": "string",
+          "required": true,
+          "doc": "Device platform type (e.g. ios, android)"
+        },
+        "push_token": {
+          "type": "string",
+          "required": true,
+          "doc": "Push notification token issued by the device platform (APNs or FCM)"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "doc": "Device registration result from device_registration procedure"
+      },
+      "errors": [
+        {
+          "code": "INVALID_DATA",
+          "message": "device_id, device_type, or push_token is missing",
+          "http_status": 400
+        }
+      ]
     },
     "email_exists": {
+      "doc": "Check whether an email address is already registered in the system.",
       "scope": "hub",
       "permission": {
         "src": "owner",
         "fast_check": "public-api"
-      }
+      },
+      "params": {
+        "value": {
+          "type": "string",
+          "required": true,
+          "doc": "Email address to check for existence"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "doc": "Result from email_exists procedure indicating whether the email is already registered"
+      },
+      "errors": []
     },
     "files_formats": {
+      "doc": "Retrieve the complete list of supported file formats with their extension, category, MIME type, and capability flags.",
       "scope": "hub",
       "permission": {
         "src": "anonymous",
         "fast_check": "public-api"
-      }
+      },
+      "params": {},
+      "returns": {
+        "type": "array",
+        "doc": "Array of file format records from the filecap table",
+        "items": {
+          "type": "object",
+          "properties": {
+            "extension": {
+              "type": "string",
+              "doc": "File extension (e.g. pdf, png, mp4)"
+            },
+            "category": {
+              "type": "string",
+              "doc": "File category group (e.g. image, video, document)"
+            },
+            "mimetype": {
+              "type": "string",
+              "doc": "MIME type string (e.g. image/png)"
+            },
+            "capability": {
+              "type": "string",
+              "doc": "Capability flags indicating supported operations for this file type"
+            }
+          }
+        }
+      },
+      "errors": []
     },
     "get_env": {
+      "doc": "Retrieve platform environment configuration for the current hub, including branding, feature flags, and platform-specific settings.",
       "scope": "hub",
       "permission": {
         "src": "anonymous",
         "fast_check": "public-api"
-      }
+      },
+      "params": {},
+      "returns": {
+        "type": "object",
+        "doc": "Platform environment configuration object from the env library"
+      },
+      "errors": []
     },
     "get_external_share": {
+      "doc": "Retrieve metadata about a publicly shared file or folder by its share ID.",
       "scope": "hub",
       "permission": {
         "src": "anonymous",
         "fast_check": "public-api"
-      }
+      },
+      "params": {
+        "share_id": {
+          "type": "string",
+          "required": true,
+          "doc": "Unique identifier of the external share link"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "doc": "Share metadata from get_external_share procedure"
+      },
+      "errors": [
+        {
+          "code": "INVALID_DATA",
+          "message": "share_id is required",
+          "http_status": 400
+        }
+      ]
     },
     "get_hub": {
+      "doc": "Retrieve full hub configuration for the current domain, including custom stylesheets, font links, and font face declarations. Returns 404 if the hub hostname is not found.",
       "scope": "hub",
       "permission": {
         "src": "anonymous",
         "fast_check": "public-api"
-      }
+      },
+      "params": {},
+      "returns": {
+        "type": "object",
+        "doc": "Hub configuration object",
+        "properties": {
+          "hostname": {
+            "type": "string",
+            "doc": "Hub hostname"
+          },
+          "stylesheets": {
+            "type": "array",
+            "doc": "List of custom stylesheet file records from style_get_files procedure"
+          },
+          "fonts_links": {
+            "type": "array",
+            "doc": "List of font link records from get_fonts_links procedure"
+          },
+          "fonts_faces": {
+            "type": "array",
+            "doc": "List of font face CSS records from get_fonts_faces procedure"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "HUB_NOT_FOUND",
+          "message": "Hub hostname is null or not configured",
+          "http_status": 404
+        }
+      ]
     },
     "get_ident_availablility": {
+      "doc": "Check whether a username (ident) is available for new user registration. Note: method name preserves intentional legacy spelling.",
       "scope": "hub",
       "permission": {
         "src": "anonymous",
         "fast_check": "public-api"
-      }
+      },
+      "params": {
+        "ident": {
+          "type": "string",
+          "required": true,
+          "doc": "Username or ident string to check for availability"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "doc": "Availability result from available_ident procedure"
+      },
+      "errors": [
+        {
+          "code": "INVALID_DATA",
+          "message": "ident is required",
+          "http_status": 400
+        }
+      ]
     },
     "get_laguages": {
+      "doc": "Retrieve a paginated list of supported languages, optionally filtered by name. Note: method name preserves intentional legacy spelling.",
       "scope": "hub",
       "permission": {
         "src": "anonymous",
         "fast_check": "public-api"
-      }
+      },
+      "params": {
+        "value": {
+          "type": "string",
+          "required": false,
+          "doc": "Language name filter string. Mutually usable with name parameter."
+        },
+        "name": {
+          "type": "string",
+          "required": false,
+          "doc": "Language name filter string. Mutually usable with value parameter."
+        },
+        "page": {
+          "type": "number",
+          "required": false,
+          "doc": "Page number for pagination (default: 1)"
+        }
+      },
+      "returns": {
+        "type": "array",
+        "doc": "Paginated list of language records from get_laguages procedure"
+      },
+      "errors": []
     },
     "guest_login": {
+      "doc": "Authenticate a guest user via a DMZ (public share) token. Handles password-protected shares, named guest access, and public room sessions. Returns combined session state and share metadata.",
       "scope": "hub",
       "permission": {
         "src": "anonymous",
         "fast_check": "public-api"
-      }
+      },
+      "params": {
+        "token": {
+          "type": "string",
+          "required": true,
+          "doc": "DMZ share token identifying the public share to access"
+        },
+        "password": {
+          "type": "string",
+          "required": false,
+          "doc": "Password for password-protected shares"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "doc": "Combined guest session and share metadata",
+        "properties": {
+          "validity": {
+            "type": "string",
+            "doc": "REQUIRED_PASSWORD if a password is needed but was not provided"
+          },
+          "require_name": {
+            "type": "number",
+            "doc": "1 if the public room requires the guest to provide a display name"
+          },
+          "require_password": {
+            "type": "number",
+            "doc": "1 if the share is protected by a password"
+          },
+          "is_public": {
+            "type": "number",
+            "doc": "1 if the share is publicly accessible without prior authentication"
+          },
+          "hours": {
+            "type": "number",
+            "doc": "Share expiration in hours from DMZ settings"
+          },
+          "days": {
+            "type": "number",
+            "doc": "Share expiration in days from DMZ settings"
+          },
+          "failed": {
+            "type": "boolean",
+            "doc": "True if authentication failed"
+          },
+          "guest_name": {
+            "type": "string",
+            "doc": "Display name of the guest user if already provided"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "INVALID_DATA",
+          "message": "token is required",
+          "http_status": 400
+        }
+      ]
     },
     "guest_logout": {
+      "doc": "Terminate the current guest (DMZ) session.",
       "scope": "hub",
       "permission": {
         "src": "anonymous",
         "fast_check": "public-api"
-      }
+      },
+      "params": {},
+      "returns": {
+        "type": "void",
+        "doc": "No response body"
+      },
+      "errors": []
     },
     "hello": {
+      "doc": "Retrieve the current session user profile enriched with subscription plan details and live connection status. Commonly used on application load to verify session state.",
       "scope": "hub",
       "permission": {
         "src": "anonymous",
         "fast_check": "public-api"
-      }
+      },
+      "params": {},
+      "returns": {
+        "type": "object",
+        "doc": "Current user profile from get_user procedure, augmented with session fields",
+        "properties": {
+          "signed_in": {
+            "type": "number",
+            "doc": "1 if the user is fully signed in, 0 otherwise"
+          },
+          "connection": {
+            "type": "string",
+            "doc": "Connection state: online or offline"
+          },
+          "plan_detail": {
+            "type": "object",
+            "doc": "Current subscription plan renewal information from renewal_get_next procedure"
+          }
+        }
+      },
+      "errors": []
     },
     "ident_exists": {
+      "doc": "Check whether a given ident (username) is already registered in the system.",
       "scope": "hub",
       "permission": {
         "src": "owner",
         "fast_check": "public-api"
-      }
+      },
+      "params": {
+        "value": {
+          "type": "string",
+          "required": true,
+          "doc": "Ident (username) to check for existence"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "doc": "Result from ident_exists procedure"
+      },
+      "errors": []
     },
     "login": {
+      "doc": "Authenticate a user with username or email and password. If a session is already active, returns ALREADY_SIGNED_IN or CROSS_SIGNED_IN status instead of creating a new session. For non-email logins, the current vhost is used to resolve the username.",
       "scope": "hub",
       "permission": {
         "src": "anonymous",
         "fast_check": "public-api"
-      }
+      },
+      "params": {
+        "vars": {
+          "type": "object",
+          "required": true,
+          "doc": "Login credentials object",
+          "properties": {
+            "uid": {
+              "type": "string",
+              "doc": "Username or email address (alias for ident)"
+            },
+            "ident": {
+              "type": "string",
+              "doc": "Username or email address (alias for uid)"
+            },
+            "username": {
+              "type": "string",
+              "doc": "Username (alias for ident, resolved against vhost)"
+            },
+            "password": {
+              "type": "string",
+              "doc": "Plain-text password"
+            }
+          }
+        },
+        "vhost": {
+          "type": "string",
+          "required": false,
+          "doc": "Virtual host override used to resolve non-email usernames in multi-tenant installations"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "doc": "Session result from session.signin",
+        "properties": {
+          "status": {
+            "type": "string",
+            "doc": "ALREADY_SIGNED_IN if the same user is already logged in; CROSS_SIGNED_IN if a different user is already in session"
+          },
+          "current": {
+            "type": "string",
+            "doc": "Email of the currently signed-in user (only when CROSS_SIGNED_IN)"
+          },
+          "uid": {
+            "type": "string",
+            "doc": "ID of the currently signed-in user (only when CROSS_SIGNED_IN)"
+          },
+          "input": {
+            "type": "string",
+            "doc": "The ident that was attempted (only when CROSS_SIGNED_IN)"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "INVALID_DATA",
+          "message": "vars object with uid/ident and password is required",
+          "http_status": 400
+        }
+      ]
+    },
+    "login_top": {
+      "doc": "Finalize a magic-link or OTP-based login flow. Validates the session OTP using the provided uid, code, and secret, then returns the full user profile.",
+      "scope": "hub",
+      "permission": {
+        "src": "anonymous",
+        "fast_check": "public-api"
+      },
+      "params": {
+        "id": {
+          "type": "string",
+          "required": false,
+          "doc": "User ID to authenticate (alias for uid)"
+        },
+        "uid": {
+          "type": "string",
+          "required": false,
+          "doc": "User ID to authenticate (alias for id)"
+        },
+        "code": {
+          "type": "string",
+          "required": false,
+          "doc": "OTP code from the login link"
+        },
+        "secret": {
+          "type": "string",
+          "required": false,
+          "doc": "OTP secret from the login link"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "doc": "Full user profile from get_user procedure after successful OTP validation"
+      },
+      "errors": []
     },
     "lookup_drumates": {
+      "doc": "Search for Drumee users by name with pagination. Used for user discovery and contact suggestions.",
       "scope": "hub",
       "permission": {
         "src": "anonymous"
-      }
+      },
+      "params": {
+        "name": {
+          "type": "string",
+          "required": false,
+          "doc": "Partial name or username to search. Defaults to empty string which returns all users."
+        },
+        "page": {
+          "type": "number",
+          "required": false,
+          "doc": "Page number for pagination (default: 1)"
+        }
+      },
+      "returns": {
+        "type": "array",
+        "doc": "Paginated list of matching drumate user records from lookup_drumates procedure"
+      },
+      "errors": []
     },
     "notification_count": {
+      "doc": "Get the total count of unread notifications for the current authenticated user.",
       "scope": "hub",
       "permission": {
         "src": "owner",
         "fast_check": "user_permission"
-      }
+      },
+      "params": {},
+      "returns": {
+        "type": "object",
+        "doc": "Notification count result from yp_notification_count procedure"
+      },
+      "errors": []
     },
     "notification_list": {
+      "doc": "Get the full list of notifications received by the current authenticated user.",
       "scope": "hub",
       "permission": {
         "src": "owner",
         "fast_check": "user_permission"
-      }
+      },
+      "params": {},
+      "returns": {
+        "type": "array",
+        "doc": "List of notification records from yp_notification_receive_list procedure"
+      },
+      "errors": []
     },
     "ping": {
+      "doc": "Connection health check endpoint. Supports three modes: debug (returns server verbosity and module state), test (returns request timing), and default (echoes the type value).",
       "scope": "hub",
       "permission": {
         "src": "anonymous",
         "fast_check": "public-api"
-      }
+      },
+      "params": {
+        "type": {
+          "type": "string",
+          "required": false,
+          "doc": "Ping mode: debug returns server diagnostics, test returns timing data, omit or any other value returns type echo"
+        },
+        "nid": {
+          "type": "string",
+          "required": false,
+          "doc": "Optional node ID (reserved for future use)"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "doc": "Response varies by type mode",
+        "properties": {
+          "type": {
+            "type": "string",
+            "doc": "Echoed type value (default mode)"
+          },
+          "verbosity": {
+            "type": "number",
+            "doc": "Global server verbosity level (debug mode only)"
+          },
+          "modules": {
+            "type": "object",
+            "doc": "Active debug module flags (debug mode only)"
+          },
+          "me": {
+            "type": "object",
+            "doc": "Current user profile data (debug mode only)"
+          },
+          "t1": {
+            "type": "number",
+            "doc": "Start timestamp in milliseconds (test mode only)"
+          },
+          "t2": {
+            "type": "number",
+            "doc": "End timestamp in milliseconds (test mode only)"
+          }
+        }
+      },
+      "errors": []
     },
     "reset_forgot_password": {
+      "doc": "Reset a user's password using a validated forgot-password token. This is the final step of the password recovery flow, called after validate_forgot_password_token.",
       "scope": "hub",
       "permission": {
         "src": "anonymous",
@@ -154,13 +691,43 @@
       }
     },
     "reset_session": {
+      "doc": "Reset the current session state and bind it to a WebSocket socket ID. Used to re-establish session context after a WebSocket reconnection.",
       "scope": "hub",
       "permission": {
         "src": "anonymous",
         "fast_check": "public-api"
-      }
+      },
+      "params": {
+        "socket_id": {
+          "type": "string",
+          "required": true,
+          "doc": "WebSocket session ID to bind to the current HTTP session"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "doc": "Confirmed session identifiers after reset",
+        "properties": {
+          "sid": {
+            "type": "string",
+            "doc": "Session ID that was reset"
+          },
+          "uid": {
+            "type": "string",
+            "doc": "Current user ID"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "INVALID_DATA",
+          "message": "socket_id is required, or the current session ID is null or undefined",
+          "http_status": 400
+        }
+      ]
     },
     "send_forgot_password_token": {
+      "doc": "Initiate the forgot-password flow by sending a one-time reset token to the user's registered email address. First step of the password recovery sequence.",
       "scope": "hub",
       "permission": {
         "src": "anonymous",
@@ -168,40 +735,95 @@
       }
     },
     "sys_var": {
+      "doc": "Retrieve a system-level configuration variable by name from the sys_var table.",
       "scope": "hub",
       "permission": {
         "src": "anonymous",
         "fast_check": "public-api"
-      }
+      },
+      "params": {
+        "name": {
+          "type": "string",
+          "required": true,
+          "doc": "Name of the system variable to retrieve"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "doc": "System variable record matching the given name from the sys_var table"
+      },
+      "errors": [
+        {
+          "code": "INVALID_DATA",
+          "message": "name is required",
+          "http_status": 400
+        }
+      ]
     },
     "signin": {
+      "doc": "Alias for login. Authenticate a user with username or email and password.",
       "scope": "hub",
       "permission": {
         "src": "anonymous",
         "fast_check": "public-api"
-      }
+      },
+      "method": "login"
     },
     "tutorial": {
+      "doc": "Retrieve a single tutorial entry by name.",
       "scope": "hub",
       "permission": {
         "src": "anonymous",
         "fast_check": "public-api"
-      }
+      },
+      "params": {
+        "name": {
+          "type": "string",
+          "required": false,
+          "doc": "Name or identifier of the tutorial to retrieve"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "doc": "Tutorial record from get_tutorial procedure"
+      },
+      "errors": []
     },
     "tutorials": {
+      "doc": "Retrieve all available tutorial entries.",
       "scope": "hub",
       "permission": {
         "src": "anonymous",
         "fast_check": "public-api"
-      }
+      },
+      "params": {},
+      "returns": {
+        "type": "array",
+        "doc": "All records from the tutorial table"
+      },
+      "errors": []
     },
     "username_exists": {
+      "doc": "Check whether a username is already registered within the current domain (resolved from the request vhost).",
       "scope": "hub",
       "permission": {
         "src": "owner"
-      }
+      },
+      "params": {
+        "value": {
+          "type": "string",
+          "required": true,
+          "doc": "Username to check within the current domain"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "doc": "Result from get_user_in_domain procedure for the current vhost"
+      },
+      "errors": []
     },
     "validate_forgot_password_token": {
+      "doc": "Validate a password-reset token received via email. Second step of the password recovery flow, called before reset_forgot_password.",
       "scope": "hub",
       "permission": {
         "src": "anonymous",
@@ -209,18 +831,74 @@
       }
     },
     "verify_email": {
+      "doc": "Verify a user's email address using a hashed email value and a one-time verification token sent to that address.",
       "scope": "hub",
       "permission": {
         "src": "anonymous",
         "fast_check": "public-api"
-      }
+      },
+      "params": {
+        "uid": {
+          "type": "string",
+          "required": false,
+          "doc": "User ID whose email to verify. Defaults to the current session user."
+        },
+        "email": {
+          "type": "string",
+          "required": true,
+          "doc": "Hashed email address used as the verification target"
+        },
+        "token": {
+          "type": "string",
+          "required": true,
+          "doc": "One-time verification token sent to the user's email"
+        }
+      },
+      "returns": {
+        "type": "void",
+        "doc": "Returns empty body on success"
+      },
+      "errors": [
+        {
+          "code": "INVALID_DATA",
+          "message": "Verification failed: email or token is invalid or expired",
+          "http_status": 400
+        }
+      ]
+    },
+    "host_exists": {
+      "doc": "Check whether a hub (domain) exists by its hostname. Returns the hub record if found, or an empty result if not.",
+      "scope": "hub",
+      "permission": {
+        "src": "anonymous",
+        "fast_check": "public-api"
+      },
+      "params": {
+        "host": {
+          "type": "string",
+          "required": false,
+          "doc": "Hostname to look up in the hub registry via get_hub procedure"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "doc": "Hub record from get_hub procedure, or null/empty if not found"
+      },
+      "errors": []
     },
     "public_key": {
+      "doc": "Retrieve the server's RSA public key in PEM format. Used by clients to encrypt sensitive data (e.g. passwords) before transmission.",
       "scope": "hub",
       "permission": {
         "src": "anonymous",
         "fast_check": "public-api"
-      }
+      },
+      "params": {},
+      "returns": {
+        "type": "string",
+        "doc": "RSA public key in PEM format served as text/plain from crypto/public.pem"
+      },
+      "errors": []
     }
   },
   "modules": {

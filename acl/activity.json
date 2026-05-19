@@ -1,41 +1,506 @@
 {
   "services": {
     "get_unread_count": {
-      "doc": "Get count of unread MFS notifications for current user",
+      "doc": "Get count of unread MFS notifications for current user. Queries the mfs_ack table to calculate how many changelog entries the user hasn't read yet.",
       "scope": "hub",
       "permission": {
         "src": "read"
-      }
+      },
+      "params": {},
+      "returns": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "Operation status",
+            "example": "ok"
+          },
+          "unread_count": {
+            "type": "integer",
+            "description": "Number of unread notifications",
+            "example": 15
+          }
+        }
+      },
+      "errors": []
     },
+
     "mark_all_read": {
-      "doc": "Mark all MFS notifications as read for current user",
+      "doc": "Mark all MFS notifications as read for current user. Updates the mfs_ack table with the last read changelog ID. If no last_id provided, uses the latest changelog ID from database.",
       "scope": "hub",
       "permission": {
         "src": "write"
-      }
+      },
+      "params": {
+        "last_id": {
+          "type": "integer",
+          "required": false,
+          "default": 0,
+          "description": "Specific changelog ID to mark as last read. If not provided or 0, uses the latest changelog ID from database."
+        }
+      },
+      "returns": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "Operation status (ok or error)",
+            "example": "ok"
+          },
+          "message": {
+            "type": "string",
+            "description": "Status message",
+            "example": "All notifications marked as read"
+          },
+          "last_read_id": {
+            "type": "integer",
+            "description": "The changelog ID that was marked as last read",
+            "example": 12345
+          },
+          "mtime": {
+            "type": "integer",
+            "description": "Unix timestamp when the read status was updated",
+            "example": 1707822000
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "DB_PROC_FAILED",
+          "message": "Failed to mark as read",
+          "status": "error"
+        }
+      ]
     },
+
     "get_feed": {
-      "doc": "Get paginated activity feed with read/unread status",
+      "doc": "Get paginated activity feed with read/unread status. Returns MFS changelog entries with pagination (45 items per page by default). Each item includes read status based on user's mfs_ack.last_read_id.",
       "scope": "hub",
       "permission": {
         "src": "read"
-      }
+      },
+      "params": {
+        "page": {
+          "type": "integer",
+          "required": false,
+          "default": 1,
+          "description": "Page number for pagination (45 items per page)"
+        }
+      },
+      "returns": {
+        "type": "array",
+        "description": "List of MFS activity items with read/unread status",
+        "items": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "integer",
+              "description": "Changelog entry ID"
+            },
+            "action": {
+              "type": "string",
+              "description": "Action type (upload, delete, move, copy, etc.)"
+            },
+            "nid": {
+              "type": "string",
+              "description": "Node ID of affected file/folder"
+            },
+            "file_name": {
+              "type": "string",
+              "description": "Name of the file/folder"
+            },
+            "author_id": {
+              "type": "string",
+              "description": "User ID who performed the action"
+            },
+            "ctime": {
+              "type": "integer",
+              "description": "Unix timestamp when action occurred"
+            },
+            "is_read": {
+              "type": "integer",
+              "description": "Read status (0 = unread, 1 = read)"
+            }
+          }
+        }
+      },
+      "errors": []
     },
+
     "get_last_read": {
-      "doc": "Get last read changelog ID for current user",
+      "doc": "Get last read changelog ID for current user. Queries the mfs_ack table from user's database to retrieve the last changelog ID the user has marked as read.",
       "scope": "hub",
       "permission": {
         "src": "read"
-      }
+      },
+      "params": {},
+      "returns": {
+        "type": "object",
+        "properties": {
+          "user_id": {
+            "type": "string",
+            "description": "User ID",
+            "example": "abc123"
+          },
+          "last_read_id": {
+            "type": "integer",
+            "description": "Last changelog ID marked as read (0 if never marked)",
+            "example": 12345
+          },
+          "mtime": {
+            "type": "integer",
+            "description": "Unix timestamp of last update (0 if never updated)",
+            "example": 1707822000
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "USER_DB_NOT_FOUND",
+          "message": "User database not found",
+          "returns": {
+            "user_id": "current_uid",
+            "last_read_id": 0,
+            "mtime": 0
+          }
+        }
+      ]
     },
+
     "acknowledge_file": {
-      "doc": "Mark a specific file/folder as seen",
+      "doc": "Mark a specific file/folder as seen. Updates the mfs_ack table with the changelog ID corresponding to this file/folder. Triggers WebSocket notification to update UI. Replaces old media.mark_as_seen which used JSON metadata.",
       "scope": "hub",
       "permission": {
         "src": "write"
+      },
+      "params": {
+        "nid": {
+          "type": "string",
+          "required": true,
+          "description": "Node ID of the file/folder to acknowledge"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "Operation status (ok or error)",
+            "example": "ok"
+          },
+          "message": {
+            "type": "string",
+            "description": "Status message",
+            "example": "File acknowledged"
+          },
+          "last_read_id": {
+            "type": "integer",
+            "description": "The changelog ID that was marked as last read (only on success)",
+            "example": 12345
+          },
+          "mtime": {
+            "type": "integer",
+            "description": "Unix timestamp when acknowledged (only on success)",
+            "example": 1707822000
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "MISSING_NID",
+          "message": "Parameter 'nid' is required",
+          "status": "error"
+        },
+        {
+          "code": "DB_PROC_FAILED",
+          "message": "File not acknowledged",
+          "status": "error"
+        }
+      ]
+    },
+
+    "log": {
+      "doc": "Get unified activity log (contacts + MFS) with priority sorting. Contact events are shown first, followed by MFS events. Pagination: 45 items per page. This provides a comprehensive activity timeline across both contact management and file operations.",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "params": {
+        "page": {
+          "type": "integer",
+          "required": false,
+          "default": 1,
+          "description": "Page number for pagination (45 items per page)"
+        }
+      },
+      "returns": {
+        "type": "array",
+        "description": "Unified list of activity items from both contact and MFS events, sorted with contact events first",
+        "items": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "integer",
+              "description": "Activity entry ID"
+            },
+            "event_type": {
+              "type": "string",
+              "description": "Type of event (contact_invite, contact_accept, mfs_upload, mfs_delete, etc.)"
+            },
+            "author_id": {
+              "type": "string",
+              "description": "User ID who performed the action"
+            },
+            "target_id": {
+              "type": "string",
+              "description": "Target user/node ID affected by the action"
+            },
+            "metadata": {
+              "type": "object",
+              "description": "Additional event-specific data"
+            },
+            "ctime": {
+              "type": "integer",
+              "description": "Unix timestamp when action occurred"
+            },
+            "is_read": {
+              "type": "integer",
+              "description": "Read status (0 = unread, 1 = read)"
+            }
+          }
+        }
+      },
+      "errors": []
+    },
+
+    "folder_log": {
+      "doc": "Get activity log for a specific folder. Shows all MFS events (upload, delete, move, copy, rename, etc.) related to a specific folder/node. Useful for tracking file activity within a particular directory. Pagination: 45 items per page.",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "params": {
+        "nid": {
+          "type": "string",
+          "required": true,
+          "description": "Node ID of the folder to get activity log for"
+        },
+        "page": {
+          "type": "integer",
+          "required": false,
+          "default": 1,
+          "description": "Page number for pagination (45 items per page)"
+        }
+      },
+      "returns": {
+        "type": "array",
+        "description": "List of MFS activity items for the specified folder",
+        "items": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "integer",
+              "description": "Changelog entry ID"
+            },
+            "action": {
+              "type": "string",
+              "description": "Action type (upload, delete, move, copy, rename, etc.)"
+            },
+            "nid": {
+              "type": "string",
+              "description": "Node ID of affected file/folder"
+            },
+            "file_name": {
+              "type": "string",
+              "description": "Name of the file/folder"
+            },
+            "author_id": {
+              "type": "string",
+              "description": "User ID who performed the action"
+            },
+            "ctime": {
+              "type": "integer",
+              "description": "Unix timestamp when action occurred"
+            },
+            "is_read": {
+              "type": "integer",
+              "description": "Read status (0 = unread, 1 = read)"
+            }
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "MISSING_NID",
+          "message": "Parameter 'nid' is required",
+          "status": "error"
+        }
+      ]
+    },
+
+    "dismiss": {
+      "doc": "Dismiss a single activity notification so it no longer appears in the feed.",
+      "scope": "hub",
+      "permission": {
+        "src": "write"
+      },
+      "params": {
+        "changelog_id": {
+          "type": "integer",
+          "required": true,
+          "description": "The changelog entry ID to dismiss"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "ok on success"
+          },
+          "changelog_id": {
+            "type": "integer",
+            "description": "The dismissed changelog ID"
+          }
+        }
+      }
+    },
+
+    "dismiss_contact_event": {
+      "doc": "Dismiss a single contact_activity row (hub invite, contact invite, etc.) so it no longer appears in the activity feed. Stamps yp.contact_activity.dismissed_at without deleting the underlying audit row.",
+      "scope": "hub",
+      "permission": {
+        "src": "write"
+      },
+      "params": {
+        "activity_id": {
+          "type": "integer",
+          "required": true,
+          "description": "The yp.contact_activity row ID to dismiss"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "ok on success"
+          },
+          "activity_id": {
+            "type": "integer",
+            "description": "The dismissed contact_activity ID"
+          },
+          "dismissed_at": {
+            "type": "integer",
+            "description": "Unix timestamp when the row was dismissed"
+          }
+        }
+      }
+    },
+
+    "list": {
+      "doc": "Single-call notification feed combining notification_center rollups + standalone hub-invite rows. Returns a flat array; client renders by `category` (chat | contact | media | teamchat | ticket | hub_invite).",
+      "scope": "hub",
+      "permission": { "src": "read" },
+      "params": {},
+      "returns": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "category": { "type": "string" },
+            "key_id": { "type": "string" },
+            "hub_id": { "type": "string" },
+            "last_id": { "type": "integer" },
+            "cnt": { "type": "integer" },
+            "ctime": { "type": "integer" }
+          }
+        }
+      }
+    },
+
+    "dismiss_rollup": {
+      "doc": "Alias of notification_dismiss under the consolidated activity.* API. Hides a rollup row from the feed.",
+      "scope": "hub",
+      "permission": { "src": "write" },
+      "params": {
+        "category": { "type": "string", "required": true },
+        "key_id": { "type": "string", "required": true },
+        "hub_id": { "type": "string", "required": false },
+        "last_id": { "type": "integer", "required": false, "default": 0 }
+      },
+      "returns": { "type": "object" }
+    },
+
+    "read": {
+      "doc": "Mark a rollup as read (advance read pointer) without hiding it. For chat/teamchat/ticket this is identical to dismiss; for media we only advance mfs_ack; for contact this is a no-op (use dismiss to hide).",
+      "scope": "hub",
+      "permission": { "src": "write" },
+      "params": {
+        "category": { "type": "string", "required": true },
+        "key_id": { "type": "string", "required": true },
+        "hub_id": { "type": "string", "required": false },
+        "last_id": { "type": "integer", "required": false, "default": 0 }
+      },
+      "returns": { "type": "object" }
+    },
+
+    "create": {
+      "doc": "Publish a new notification via the activity.* namespace. Routes by category to the underlying table (mfs_changelog for media, contact_activity for invites). chat/teamchat/ticket are not supported here — use the domain endpoint (chat.post / channel.post / ticket.post).",
+      "scope": "hub",
+      "permission": { "src": "write" },
+      "params": {
+        "category": { "type": "string", "required": true },
+        "key_id": { "type": "string", "required": true },
+        "hub_id": { "type": "string", "required": false },
+        "payload": { "type": "object", "required": false }
+      },
+      "returns": { "type": "object" }
+    },
+
+    "notification_dismiss": {
+      "doc": "Unified dismiss for any rollup returned by drumate.notification_center. Routes by category to the right read-pointer/status update (chat → p2p_read, contact → contact.dismissed_at, media → mfs_dismissed, teamchat → <hub>.read_channel, ticket → yp.read_ticket_channel).",
+      "scope": "hub",
+      "permission": {
+        "src": "write"
+      },
+      "params": {
+        "category": {
+          "type": "string",
+          "required": true,
+          "description": "Rollup category: chat | contact | media | teamchat | ticket"
+        },
+        "key_id": {
+          "type": "string",
+          "required": true,
+          "description": "Identifier the rollup uses (peer_id, contact id, hub_id, ticket_id)"
+        },
+        "hub_id": {
+          "type": "string",
+          "required": false,
+          "description": "Hub id for the rollup (required for media + teamchat)"
+        },
+        "last_id": {
+          "type": "integer",
+          "required": false,
+          "default": 0,
+          "description": "Latest ack target (ref_ctime / sys_id / changelog_id)"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "properties": {
+          "status": { "type": "string" },
+          "category": { "type": "string" },
+          "key_id": { "type": "string" },
+          "hub_id": { "type": "string" },
+          "last_id": { "type": "integer" },
+          "dismissed_at": { "type": "integer" }
+        }
       }
     }
   },
+
   "modules": {
     "private": "service/private/activity"
   }

@@ -16,8 +16,10 @@
  */
 
 const { Attr, Messenger, Cache, uniqueId } = require("@drumee/server-essentials");
-const { resolve } = require("path");
 const { Entity } = require("@drumee/server-core");
+const { resolve } = require("path");
+const { readFileSync } = require("fs");
+const { template } = require("lodash");
 
 class Otp extends Entity {
 
@@ -31,19 +33,16 @@ class Otp extends Entity {
     const socket_id = this.input.need(Attr.socket_id);
 
     let socket_ok = await this.yp.await_func("is_socket_bound", socket_id, this.input.sid());
-    this.debug("AAA:34", socket_ok)
     if (!socket_ok) {
       return { error: 1, status: "no-socket" }
     }
 
     let user = await this.yp.await_proc("drumate_exists", ident);
-    this.debug("AAA:40", user)
     if (!user && !user.id) {
       return { error: 1, status: "no-user", user };
     }
 
     let otp = await this.yp.await_proc("secret_check", user.id, secret, code);
-    this.debug("AAA:44", otp)
     if (!otp || otp.code != code) {
       return { error: 1, status: "wrong-code", user };
     }
@@ -75,8 +74,11 @@ class Otp extends Entity {
     if (!user || !user.email) {
       return this.output.data({ status: "no-user", email });
     }
-
-    let { code, secret } = await this.yp.await_proc(`secret_create`, user.id, uniqueId());
+    let token = uniqueId();
+    let { code, secret } = await this.yp.await_proc(`secret_create`, user.id, token);
+    if (this.input.get(Attr.method) == "otp") {
+      ({ code, secret } = await this.yp.await_proc(`otp_create`, user.id, token));
+    }
     const ulang = this.input.ua_language();
     let lex = Cache.lex(ulang)
     let data = {
@@ -84,22 +86,34 @@ class Otp extends Entity {
       code,
       why_this_otp: lex._why_this_otp,
     }
+    // Render the local styled OTP template ourselves and hand the
+    // resulting HTML to Messenger via its html: constructor option.
+    // The bundled butler/otp.tpl expects a different data shape
+    // (recipient/text via block includes); the local template is the
+    // designed UI for this email.
+    let html;
+    try {
+      const tpl = resolve(__dirname, "./templates/otp.html");
+      html = template(readFileSync(tpl, "utf8"))(data);
+    } catch (e) {
+      this.warn(`OTP template render failed: ${e}`);
+    }
+
     const msg = new Messenger({
       subject: lex._your_otp,
       recipient: user.email,
+      html,
       handler: this.exception.email,
     });
 
     let sent = 0;
     try {
-      let tpl = resolve(__dirname, "./templates/otp.html")
-      let html = msg.renderFrom(tpl, data)
-      msg.send({ html });
+      await msg.send();
       sent = 1;
     } catch (e) {
-      this.warn(e)
+      this.warn(e);
     }
-    this.output.data({ status: 'ok', sent, secret, email });
+    this.output.data({ status: 'ok', sent, ...user, secret, email });
   }
 }
 

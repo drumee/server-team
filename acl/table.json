@@ -1,28 +1,169 @@
 {
   "services": {
     "insert_row": {
+      "doc": "Insert a row into a custom hub table. Looks up the table by name or id, then calls custom_row_insert with the values array serialized as JSON. Values must be provided as an array; rejects with '_values_must_be_array' if not.",
       "scope": "hub",
       "permission": {
         "src": "admin"
-      }
+      },
+      "params": {
+        "name": {
+          "type": "string",
+          "required": false,
+          "description": "Custom table name. Falls back to id if omitted."
+        },
+        "id": {
+          "type": "string",
+          "required": false,
+          "description": "Custom table ID used as fallback when name is not provided"
+        },
+        "values": {
+          "type": "array",
+          "required": true,
+          "description": "Row values to insert as an array. Also accepted via the value alias. Must be an array; non-array input is rejected."
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Inserted row data returned from custom_row_insert stored procedure"
+      },
+      "errors": [
+        {
+          "code": "_values_must_be_array",
+          "message": "The values parameter must be an array",
+          "condition": "values (or value) input is not an array"
+        }
+      ]
     },
+
     "create_table": {
+      "doc": "Create a custom table attached to the current hub. Registers the table via custom_table_register, then executes a CREATE TABLE query built from the provided column and key definitions. Column types supported: mediumtext, enum, int, integer, float, and varchar/other string types. Key types can be PRIMARY, UNIQUE, INDEX, or empty.",
       "scope": "hub",
       "permission": {
         "src": "admin"
-      }
+      },
+      "params": {
+        "name": {
+          "type": "string",
+          "required": true,
+          "description": "Table name to register and create"
+        },
+        "columns": {
+          "type": "array",
+          "required": true,
+          "description": "Column definitions array. Each entry requires: name (string), type (mediumtext, enum, int, integer, float, or varchar/other), value (length or enum values array), and optionally attribute (e.g. NOT NULL) and default."
+        },
+        "keys": {
+          "type": "array",
+          "required": true,
+          "description": "Key definitions array. Each entry requires: name (string), type (PRIMARY, UNIQUE, INDEX, or empty string for plain KEY), and optionally value (array of column names for composite keys)."
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Registered table record from custom_table_register after successful CREATE TABLE execution",
+        "properties": {
+          "table_name": {
+            "type": "string",
+            "description": "Actual table name created in the database"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "QUERY ERROR",
+          "message": "CREATE TABLE query execution failed",
+          "condition": "Database returns an error when executing the generated CREATE TABLE SQL"
+        }
+      ]
     },
+
     "delete_table": {
+      "doc": "Delete a registered custom table by name. Calls custom_table_delete stored procedure with the table name.",
       "scope": "hub",
       "permission": {
         "src": "admin"
-      }
+      },
+      "params": {
+        "name": {
+          "type": "string",
+          "required": true,
+          "description": "Name of the custom table to delete"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Deletion confirmation data from custom_table_delete stored procedure"
+      },
+      "errors": []
     },
+
     "fetch": {
+      "doc": "Fetch rows from a custom hub table with optional column selection, filtering, ordering, and pagination. Looks up the table via custom_table_get, then executes a SELECT query with sanitized column, filter, and order clauses. Supports both page-based and limit-based result capping. Column, filter, and order tokens are sanitized to prevent injection.",
       "scope": "hub",
       "permission": {
         "src": "read"
-      }
+      },
+      "params": {
+        "name": {
+          "type": "string",
+          "required": false,
+          "description": "Custom table name. Falls back to id if omitted."
+        },
+        "id": {
+          "type": "string",
+          "required": false,
+          "description": "Custom table ID used as fallback when name is not provided. Required if name is omitted."
+        },
+        "columns": {
+          "type": "array",
+          "required": false,
+          "default": ["*"],
+          "description": "Columns to SELECT. Also accepted via select alias. Defaults to all columns. Each token is sanitized by stripping commas, semicolons, and spaces."
+        },
+        "filter": {
+          "type": "array",
+          "required": false,
+          "description": "WHERE clause tokens as an array of strings. Also accepted via where alias. Tokens are sanitized and joined with spaces."
+        },
+        "order": {
+          "type": "array",
+          "required": false,
+          "description": "ORDER BY clause tokens as an array of strings. Tokens are sanitized and joined with spaces."
+        },
+        "page": {
+          "type": "integer",
+          "required": false,
+          "description": "Page number for pagination. Values <= 0 are treated as page 1. When provided, overrides limit. Offset is computed as (page - 1) * page_length."
+        },
+        "page_length": {
+          "type": "integer",
+          "required": false,
+          "default": 15,
+          "description": "Number of rows per page when using page-based pagination. Defaults to 15."
+        },
+        "limit": {
+          "type": "integer",
+          "required": false,
+          "description": "Hard row limit for the query. Only applied when page is not set."
+        }
+      },
+      "returns": {
+        "type": "array",
+        "description": "Rows returned by the SELECT query on the custom table, or empty object if the table is not found"
+      },
+      "errors": [
+        {
+          "code": "name is required",
+          "message": "Neither name nor id was provided",
+          "condition": "Both name and id inputs resolve to empty"
+        },
+        {
+          "code": "QUERY ERROR",
+          "message": "SELECT query execution failed",
+          "condition": "Database returns an error when executing the generated SELECT SQL"
+        }
+      ]
     }
   },
   "modules": {

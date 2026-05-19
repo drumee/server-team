@@ -1,10 +1,56 @@
 {
   "services": {
     "clear_all": {
+      "doc": "Clear MFS file notifications and chat message notifications across multiple hubs for the authenticated user. Iterates over the provided nodes map calling stored procedure mfs_clear_notifications per hub, then iterates over the messages map calling stored procedure channel_clear_notifications per hub. Hubs with no db_name are silently skipped.",
       "scope": "hub",
       "permission": {
         "src": "owner"
-      }
+      },
+      "params": {
+        "nodes": {
+          "type": "object",
+          "required": true,
+          "description": "Map of hub_id to array of MFS node IDs whose file notifications should be cleared. Keys are hub IDs, values are arrays of node identifiers to reset."
+        },
+        "messages": {
+          "type": "object",
+          "required": true,
+          "description": "Map of hub_id to any value indicating that chat message notifications should be cleared for that hub. Keys are hub IDs. The value is not used directly; only the hub key is needed to identify which hubs to clear."
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "The nodes map echoed back as confirmation of which MFS node notifications were processed",
+        "properties": {
+          "nodes": {
+            "type": "object",
+            "description": "The original nodes input map returned as the response list, keyed by hub_id"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "MISSING_NODES",
+          "message": "nodes parameter is required but was not provided",
+          "returns": {
+            "status": "MISSING_NODES"
+          }
+        },
+        {
+          "code": "MISSING_MESSAGES",
+          "message": "messages parameter is required but was not provided",
+          "returns": {
+            "status": "MISSING_MESSAGES"
+          }
+        },
+        {
+          "code": "INTERNAL_ERROR",
+          "message": "Failed to clear notifications via stored procedure mfs_clear_notifications or channel_clear_notifications",
+          "returns": {
+            "status": "INTERNAL_ERROR"
+          }
+        }
+      ]
     }
   },
   "modules": {

@@ -1,27 +1,773 @@
 {
   "services": {
-    "change_email": {
+    "get_profile": {
+      "doc": "Get current user's complete profile information",
       "scope": "hub",
       "permission": {
         "src": "owner"
+      },
+      "returns": {
+        "id": {
+          "type": "string",
+          "doc": "User ID"
+        },
+        "email": {
+          "type": "string",
+          "doc": "User email address"
+        },
+        "firstname": {
+          "type": "string",
+          "doc": "First name"
+        },
+        "lastname": {
+          "type": "string",
+          "doc": "Last name"
+        },
+        "fullname": {
+          "type": "string",
+          "doc": "Full name"
+        },
+        "profile": {
+          "type": "object",
+          "doc": "Extended profile information (JSON)"
+        }
+      }
+    },
+    "update_profile": {
+      "doc": "Update user profile information (may require OTP verification for sensitive fields)",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "params": {
+        "profile": {
+          "type": "object",
+          "required": true,
+          "doc": "Profile fields to update (firstname, lastname, mobile, address, etc.)"
+        },
+        "secret": {
+          "type": "string",
+          "required": false,
+          "doc": "OTP secret (required if OTP verification needed)"
+        },
+        "code": {
+          "type": "string",
+          "required": false,
+          "doc": "OTP code (required if OTP verification needed)"
+        }
+      },
+      "returns": {
+        "profile": {
+          "type": "object",
+          "doc": "Updated profile information"
+        }
+      },
+      "errors": [
+        {
+          "code": "WRONG_PASSWORD",
+          "message": "OTP code is incorrect",
+          "http_status": 401
+        }
+      ]
+    },
+    "change_password": {
+      "doc": "Change user password with old password verification",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "params": {
+        "old_password": {
+          "type": "string",
+          "required": true,
+          "doc": "Current password for verification"
+        },
+        "new_password": {
+          "type": "string",
+          "required": true,
+          "minLength": 8,
+          "doc": "New password (minimum 8 characters)"
+        }
+      },
+      "returns": {
+        "status": {
+          "type": "string",
+          "doc": "success or error code"
+        },
+        "error": {
+          "type": "string",
+          "doc": "Error code if failed: wrong_password or uncompliant_password"
+        }
+      },
+      "errors": [
+        {
+          "code": "wrong_password",
+          "message": "Current password is incorrect",
+          "http_status": 401
+        },
+        {
+          "code": "uncompliant_password",
+          "message": "New password does not meet requirements (minimum 8 characters)",
+          "http_status": 400
+        }
+      ]
+    },
+    "change_email": {
+      "doc": "Change user email address. Verifier branches on profile.password_set: password OR (secret+code).",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "params": {
+        "email": {
+          "type": "string",
+          "required": true,
+          "pattern": "^[^@]+@[^@]+\\.[^@]+$",
+          "doc": "New email address"
+        },
+        "password": {
+          "type": "string",
+          "required": false,
+          "doc": "Required when password_set=1"
+        },
+        "secret": {
+          "type": "string",
+          "required": false,
+          "doc": "OTP secret (required when password_set=0)"
+        },
+        "code": {
+          "type": "string",
+          "required": false,
+          "minLength": 6,
+          "maxLength": 6,
+          "doc": "OTP code (required when password_set=0)"
+        }
+      },
+      "returns": {
+        "email": {
+          "type": "string",
+          "doc": "Updated email address"
+        }
+      },
+      "errors": [
+        {
+          "code": "INVALID_EMAIL_FORMAT",
+          "message": "Email format is invalid",
+          "http_status": 400
+        },
+        {
+          "code": "EMAIL_ALREADY_EXIST",
+          "message": "Email address is already in use",
+          "http_status": 409
+        }
+      ]
+    },
+    "data_usage": {
+      "doc": "Get current disk usage and quota information for user",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "returns": {
+        "usage": {
+          "type": "number",
+          "doc": "Current disk usage in bytes"
+        },
+        "quota": {
+          "type": "object",
+          "doc": "Quota limits",
+          "properties": {
+            "storage": {
+              "type": "number",
+              "doc": "Total storage quota in bytes"
+            },
+            "real": {
+              "type": "number",
+              "doc": "Real available space"
+            }
+          }
+        }
+      }
+    },
+    "notification_center": {
+      "doc": "Get list of all notifications for current user",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "returns": {
+        "notifications": {
+          "type": "array",
+          "doc": "Array of notification objects",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "doc": "Notification ID"
+              },
+              "entity_id": {
+                "type": "string",
+                "doc": "Related entity (hub or user) ID"
+              },
+              "type": {
+                "type": "string",
+                "doc": "Notification type"
+              },
+              "count": {
+                "type": "number",
+                "doc": "Unread count"
+              }
+            }
+          }
+        }
+      }
+    },
+    "logout": {
+      "doc": "Logout user and cleanup session",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "log": true,
+      "params": {
+        "device_id": {
+          "type": "string",
+          "required": false,
+          "doc": "Device ID to unregister (for mobile devices)"
+        }
+      },
+      "returns": {
+        "session_id": {
+          "type": "string",
+          "doc": "Terminated session ID"
+        }
+      }
+    },
+    "get_otp": {
+      "doc": "Generate and send One-Time Password via SMS or email",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "returns": {
+        "secret": {
+          "type": "string",
+          "doc": "OTP secret token for verification"
+        },
+        "expiry": {
+          "type": "number",
+          "doc": "OTP expiration timestamp"
+        },
+        "tips": {
+          "type": "string",
+          "doc": "Hint showing where OTP was sent (last 4 digits of phone or email domain)"
+        },
+        "error": {
+          "type": "string",
+          "doc": "Error message if OTP could not be sent"
+        }
+      },
+      "errors": [
+        {
+          "code": "OTP_NOT_AVAILABLE",
+          "message": "OTP service is not enabled",
+          "http_status": 503
+        },
+        {
+          "code": "INVALID_PROFILE",
+          "message": "No valid phone or email in profile",
+          "http_status": 400
+        }
+      ]
+    },
+    "set_avatar": {
+      "doc": "Set user avatar using a media file from MFS",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "params": {
+        "reference": {
+          "type": "string",
+          "required": true,
+          "doc": "Node ID of image file in MFS to use as avatar"
+        }
+      },
+      "returns": {
+        "id": {
+          "type": "string",
+          "doc": "User ID"
+        },
+        "avatar": {
+          "type": "string",
+          "doc": "Avatar URL"
+        }
+      },
+      "errors": [
+        {
+          "code": "no_avatar",
+          "message": "Avatar file not found or not accessible",
+          "http_status": 404
+        }
+      ]
+    },
+    "remove_avatar": {
+      "doc": "Remove user avatar and restore default",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "returns": {
+        "id": {
+          "type": "string",
+          "doc": "User ID"
+        },
+        "avatar": {
+          "type": "string",
+          "doc": "Default avatar URL"
+        }
+      }
+    },
+    "my_hubs": {
+      "doc": "Get paginated list of hubs that user owns",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "params": {
+        "page": {
+          "type": "number",
+          "required": false,
+          "default": 1,
+          "min": 1,
+          "doc": "Page number for pagination"
+        }
+      },
+      "returns": {
+        "hubs": {
+          "type": "array",
+          "doc": "Array of hub objects",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "doc": "Hub ID"
+              },
+              "name": {
+                "type": "string",
+                "doc": "Hub name"
+              },
+              "area": {
+                "type": "string",
+                "doc": "Hub area: private, public, or share"
+              },
+              "owner_id": {
+                "type": "string",
+                "doc": "Owner user ID"
+              }
+            }
+          }
+        }
+      }
+    },
+    "disk_space": {
+      "doc": "Get detailed MFS manifest showing all files and folders with sizes",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "returns": {
+        "manifest": {
+          "type": "array",
+          "doc": "Array of all media items with detailed metadata",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "doc": "Node ID"
+              },
+              "filename": {
+                "type": "string",
+                "doc": "File or folder name"
+              },
+              "filesize": {
+                "type": "number",
+                "doc": "Size in bytes"
+              },
+              "category": {
+                "type": "string",
+                "doc": "Node category"
+              }
+            }
+          }
+        }
+      }
+    },
+    "show_login_log": {
+      "doc": "Get paginated login history with device and location information",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "params": {
+        "page": {
+          "type": "number",
+          "required": false,
+          "default": 1,
+          "min": 1,
+          "doc": "Page number for pagination"
+        }
+      },
+      "returns": {
+        "sessions": {
+          "type": "array",
+          "doc": "Array of login session objects",
+          "items": {
+            "type": "object",
+            "properties": {
+              "city": {
+                "type": "string",
+                "doc": "Login location city"
+              },
+              "ip": {
+                "type": "string",
+                "doc": "IP address"
+              },
+              "intime": {
+                "type": "number",
+                "doc": "Login timestamp"
+              },
+              "outtime": {
+                "type": "number",
+                "doc": "Logout timestamp (null if still active)"
+              },
+              "status": {
+                "type": "string",
+                "doc": "Session status"
+              },
+              "device": {
+                "type": "object",
+                "doc": "Parsed device information from user agent",
+                "properties": {
+                  "family": {
+                    "type": "string",
+                    "doc": "Device family (OS/Browser/Version or Vendor/Model/Type)"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "update_settings": {
+      "doc": "Update user settings (merged with existing settings)",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "params": {
+        "settings": {
+          "type": "object",
+          "required": true,
+          "doc": "Settings object to merge with existing settings"
+        }
+      },
+      "returns": {
+        "settings": {
+          "type": "object",
+          "doc": "Updated complete settings object"
+        }
+      }
+    },
+    "notification_remove": {
+      "doc": "Mark notifications as read/acknowledged for a specific entity (hub or user)",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "params": {
+        "entity_id": {
+          "type": "string",
+          "required": false,
+          "doc": "Entity ID (hub_id or user_id) to mark notifications as read. Empty to mark all."
+        }
+      },
+      "returns": {
+        "ok": {
+          "type": "number",
+          "doc": "Success indicator (1)"
+        }
+      }
+    },
+    "delete_account": {
+      "doc": "Initiate account deletion. Verifier branches on profile.password_set: password OR (secret+code).",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "log": true,
+      "params": {
+        "password": {
+          "type": "string",
+          "required": false,
+          "doc": "Required when password_set=1"
+        },
+        "secret": {
+          "type": "string",
+          "required": false,
+          "doc": "OTP secret (required when password_set=0)"
+        },
+        "code": {
+          "type": "string",
+          "required": false,
+          "minLength": 6,
+          "maxLength": 6,
+          "doc": "OTP code (required when password_set=0)"
+        }
+      },
+      "returns": {
+        "secret": {
+          "type": "string",
+          "doc": "Deletion confirmation token (sent to email)"
+        }
+      },
+      "errors": [
+        {
+          "code": "_invalid_key",
+          "message": "OTP verification failed",
+          "http_status": 401
+        }
+      ]
+    },
+    "list_oauth_links": {
+      "doc": "List OAuth providers linked to this account.",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      }
+    },
+    "unlink_oauth": {
+      "doc": "Disconnect an OAuth provider. Refuses if it would leave the account with no auth method.",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "log": true,
+      "params": {
+        "provider": {
+          "type": "string",
+          "required": true,
+          "doc": "OAuth provider key (google|apple|...)"
+        },
+        "password": {
+          "type": "string",
+          "required": false
+        },
+        "secret": {
+          "type": "string",
+          "required": false
+        },
+        "code": {
+          "type": "string",
+          "required": false,
+          "minLength": 6,
+          "maxLength": 6
+        }
+      }
+    },
+    "set_initial_password": {
+      "doc": "Set first password for an OAuth-only account. OTP-gated. Refuses if a password already exists.",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "log": true,
+      "params": {
+        "password": {
+          "type": "string",
+          "required": true
+        },
+        "secret": {
+          "type": "string",
+          "required": true
+        },
+        "code": {
+          "type": "string",
+          "required": true,
+          "minLength": 6,
+          "maxLength": 6
+        }
+      }
+    },
+    "confirm_delete_account": {
+      "doc": "Confirm and execute account deletion (freezes account, removes from hubs, sends reactivation link)",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "params": {
+        "secret": {
+          "type": "string",
+          "required": true,
+          "doc": "Deletion confirmation token from delete_account"
+        }
+      },
+      "returns": {
+        "rejected": {
+          "type": "number",
+          "doc": "1 if deletion rejected (invalid secret)"
+        },
+        "reason": {
+          "type": "string",
+          "doc": "Rejection reason code"
+        }
+      },
+      "errors": [
+        {
+          "code": "_invalid_secret",
+          "message": "Deletion token is invalid or expired",
+          "http_status": 401
+        }
+      ]
+    },
+    "update_ident": {
+      "doc": "Change user's ident/username (must be unique within domain)",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "params": {
+        "ident": {
+          "type": "string",
+          "required": true,
+          "doc": "New username/ident"
+        },
+        "id": {
+          "type": "string",
+          "required": true,
+          "doc": "User ID to update"
+        }
+      },
+      "returns": {
+        "id": {
+          "type": "string",
+          "doc": "User ID"
+        },
+        "ident": {
+          "type": "string",
+          "doc": "Updated ident"
+        },
+        "username": {
+          "type": "string",
+          "doc": "Updated username"
+        }
+      },
+      "errors": [
+        {
+          "code": "_ident_already_exists",
+          "message": "Username is already taken in this domain",
+          "http_status": 409
+        }
+      ]
+    },
+    "hub_to_pro": {
+      "doc": "Upgrade free user account to Pro account with custom domain and organization",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "params": {
+        "ident": {
+          "type": "string",
+          "required": true,
+          "doc": "Domain identifier (subdomain)"
+        },
+        "name": {
+          "type": "string",
+          "required": true,
+          "doc": "Organization name"
+        }
+      },
+      "returns": {
+        "id": {
+          "type": "string",
+          "doc": "Domain ID"
+        },
+        "name": {
+          "type": "string",
+          "doc": "Domain name (ident.drumee.com)"
+        },
+        "status": {
+          "type": "string",
+          "doc": "Status code (PRO_USER, NAME_NOT_AVAILABLE, or URL_NOT_AVAILABLE if failed)"
+        }
+      },
+      "errors": [
+        {
+          "code": "PRO_USER",
+          "message": "User is already a Pro account",
+          "http_status": 400
+        },
+        {
+          "code": "NAME_NOT_AVAILABLE",
+          "message": "Organization name is already taken",
+          "http_status": 409
+        },
+        {
+          "code": "URL_NOT_AVAILABLE",
+          "message": "Domain identifier is already taken",
+          "http_status": 409
+        }
+      ]
+    },
+    "helpdesk": {
+      "doc": "Get paginated helpdesk messages in user's language",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "params": {
+        "Xlang": {
+          "type": "string",
+          "required": false,
+          "doc": "Language code (defaults to user's language)"
+        },
+        "page": {
+          "type": "number",
+          "required": false,
+          "default": 1,
+          "min": 1,
+          "doc": "Page number for pagination"
+        }
+      },
+      "returns": {
+        "messages": {
+          "type": "array",
+          "doc": "Array of helpdesk message objects",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "doc": "Message ID"
+              },
+              "metadata": {
+                "type": "object",
+                "doc": "Message metadata (parsed from JSON)"
+              }
+            }
+          }
+        }
       }
     },
     "change_mobile": {
       "scope": "hub",
       "permission": {
         "src": "owner"
-      }
-    },
-    "change_password": {
-      "scope": "hub",
-      "permission": {
-        "src": "owner"
-      }
-    },
-    "check_drumate_exist": {
-      "scope": "hub",
-      "permission": {
-        "src": "anonymous"
       }
     },
     "check_password": {
@@ -42,32 +788,7 @@
         "src": "owner"
       }
     },
-    "confirm_delete_account": {
-      "scope": "hub",
-      "permission": {
-        "src": "owner"
-      }
-    },
     "contacts": {
-      "scope": "hub",
-      "permission": {
-        "src": "owner"
-      }
-    },
-    "data_usage": {
-      "scope": "hub",
-      "permission": {
-        "src": "owner"
-      }
-    },
-    "delete_account": {
-      "scope": "hub",
-      "permission": {
-        "src": "owner"
-      },
-      "log": true
-    },
-    "disk_space": {
       "scope": "hub",
       "permission": {
         "src": "owner"
@@ -103,31 +824,7 @@
         "src": "anonymous"
       }
     },
-    "get_profile": {
-      "scope": "hub",
-      "permission": {
-        "src": "owner"
-      }
-    },
-    "get_otp": {
-      "scope": "hub",
-      "permission": {
-        "src": "owner"
-      }
-    },
-    "hub_to_pro": {
-      "scope": "hub",
-      "permission": {
-        "src": "owner"
-      }
-    },
     "hubs": {
-      "scope": "hub",
-      "permission": {
-        "src": "owner"
-      }
-    },
-    "helpdesk": {
       "scope": "hub",
       "permission": {
         "src": "owner"
@@ -140,7 +837,7 @@
       },
       "log": true
     },
-    "logout": {
+    "mark_onboarding_complete": {
       "scope": "hub",
       "permission": {
         "src": "owner"
@@ -154,34 +851,33 @@
       },
       "method": "contacts"
     },
-    "my_hubs": {
+    "backup": {
+      "doc": "Export user data as a ZIP archive. Accepts flags: personal (user-owned files/folders), hubs (workspace files where user has download permission), chat (P2P chat history per peer as CSV), logs (services_log + mfs_changelog + contact_activity as CSV). Runs as offline queue job — download link sent via email on completion.",
       "scope": "hub",
       "permission": {
         "src": "owner"
-      }
-    },
-    "notification_center": {
-      "scope": "hub",
-      "permission": {
-        "src": "owner"
-      }
-    },
-    "notification_remove": {
-      "scope": "hub",
-      "permission": {
-        "src": "owner"
-      }
-    },
-    "prepare_data_backup": {
-      "scope": "hub",
-      "permission": {
-        "src": "owner"
-      }
-    },
-    "remove_avatar": {
-      "scope": "hub",
-      "permission": {
-        "src": "owner"
+      },
+      "params": {
+        "flags": {
+          "type": "array",
+          "required": true,
+          "doc": "One or more of: files (user-owned files/folders), workspace (hub files where user has access), chat (team chat history per hub as CSV), activity (services_log + mfs_changelog + contact_activity as CSV)"
+        },
+        "socket_id": {
+          "type": "string",
+          "required": true,
+          "doc": "WebSocket connection ID for real-time progress notifications"
+        }
+      },
+      "returns": {
+        "zipid": {
+          "type": "string",
+          "doc": "Unique job ID — used by frontend to track progress via WebSocket events"
+        },
+        "status": {
+          "type": "string",
+          "doc": "Always 'queued' — confirms the job was accepted"
+        }
       }
     },
     "reset_forgot_password": {
@@ -202,12 +898,6 @@
         "src": "anonymous"
       }
     },
-    "set_avatar": {
-      "scope": "hub",
-      "permission": {
-        "src": "owner"
-      }
-    },
     "set_lang": {
       "scope": "hub",
       "permission": {
@@ -215,30 +905,6 @@
       }
     },
     "show_backup_log": {
-      "scope": "hub",
-      "permission": {
-        "src": "owner"
-      }
-    },
-    "show_login_log": {
-      "scope": "hub",
-      "permission": {
-        "src": "owner"
-      }
-    },
-    "update_ident": {
-      "scope": "hub",
-      "permission": {
-        "src": "owner"
-      }
-    },
-    "update_profile": {
-      "scope": "hub",
-      "permission": {
-        "src": "owner"
-      }
-    },
-    "update_settings": {
       "scope": "hub",
       "permission": {
         "src": "owner"
@@ -257,6 +923,12 @@
       }
     },
     "verify_email": {
+      "scope": "hub",
+      "permission": {
+        "src": "anonymous"
+      }
+    },
+    "check_drumate_exist": {
       "scope": "hub",
       "permission": {
         "src": "anonymous"

@@ -1,10 +1,49 @@
 {
   "services": {
     "read": {
+      "doc": "Read changelog entries for the current user from the changelog_read stored procedure. All filter parameters are optional; any falsy value is stripped before the procedure call. The current user ID is injected automatically from the session.",
       "scope": "hub",
       "permission": {
         "src": "owner"
-      }
+      },
+      "params": {
+        "last": {
+          "type": "string",
+          "required": false,
+          "doc": "ID or cursor of the last changelog entry seen by the client. Used for incremental fetching. Omitted from the procedure call when falsy."
+        },
+        "id": {
+          "type": "string",
+          "required": false,
+          "doc": "Specific changelog entry ID to retrieve. Omitted from the procedure call when falsy."
+        },
+        "page": {
+          "type": "number",
+          "required": false,
+          "doc": "Page number for pagination. Omitted from the procedure call when falsy."
+        },
+        "exclude": {
+          "type": "string",
+          "required": false,
+          "doc": "Comma-separated list of entry IDs or categories to exclude from results. Omitted from the procedure call when falsy."
+        }
+      },
+      "returns": {
+        "items": {
+          "type": "array",
+          "doc": "List of changelog entries returned by the changelog_read stored procedure. Returns an empty array when the procedure yields no results.",
+          "items": {
+            "type": "object"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "PERMISSION_DENIED",
+          "message": "Caller does not have owner permission on this hub",
+          "http_status": 403
+        }
+      ]
     }
   },
   "modules": {

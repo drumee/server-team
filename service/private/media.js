@@ -16,7 +16,7 @@
  */
 
 const { Attr, Constants, Permission, Privilege,
-  RedisStore, Cache, toArray, sysEnv
+  RedisStore, Cache, toArray, sysEnv, Script
 } = require("@drumee/server-essentials")
 const {
   BOUND,
@@ -44,17 +44,20 @@ const {
 } = Constants;
 
 const { MfsTools, Generator, Document } = require("@drumee/server-core");
-const { check_base, remove_node, move_node, copy_node, mkdir } = MfsTools;
+const { check_base, remove_node, move_node, copy_node, mkdir, rmdir, cleanSeen } = MfsTools;
 const Media = require("../media");
+const { writeAudit } = require("./_audit");
 const { stringify } = JSON;
 const { isEmpty, isString, values } = require("lodash");
-const { resolve, basename, extname, normalize } = require("path");
-const { existsSync, writeFileSync, readdirSync } = require("fs");
+const { join, resolve, basename, extname } = require("path");
+const { existsSync, readFileSync, writeFileSync, readdirSync, statSync, copyFileSync, mkdirSync } = require("fs");
 const { writeFileSync: writeJson } = require("jsonfile");
 const SPAWN_OPT = { detached: true, stdio: ["ignore", "ignore", "ignore"] };
 const Spawn = require("child_process").spawn;
 const { tmp_dir, quota, server_location } = sysEnv();
 const JSON_OPT = { spaces: 2, EOL: "\r\n" };
+const { emptyTrash } = require('../../offline/queues/trashQueue');
+const indexQueue = require('../../offline/queues/indexQueue');
 
 //########################################
 class __private_media extends Media {
@@ -67,6 +70,7 @@ class __private_media extends Media {
     this.move_all = this.move_all.bind(this);
     this.pre_restore_into = this.pre_restore_into.bind(this);
     this.restore_into = this.restore_into.bind(this);
+    this.restore = this.restore.bind(this);
     this.pre_move = this.pre_move.bind(this);
     this._ready_for_move = this._ready_for_move.bind(this);
     this.update_caption = this.update_caption.bind(this);
@@ -89,7 +93,6 @@ class __private_media extends Media {
     this.list_server_files = this.list_server_files.bind(this);
     this.server_export = this.server_export.bind(this);
     this.server_import = this.server_import.bind(this);
-    //this.import = this.import.bind(this);
   }
 
   /**
@@ -267,9 +270,9 @@ class __private_media extends Media {
     const socket_id = this.input.get(Attr.socket_id);
     data = toArray(data);
     let result = [];
-    let copied = [];
+    // let copied = [];
     let dest, src;
-    let notify = {};
+    // let notify = {};
     let nodes = {};
     for (node of data) {
       switch (node.action) {
@@ -281,22 +284,22 @@ class __private_media extends Media {
         case "copy":
           src = { nid: node.nid, mfs_root: node.src_mfs_root };
           dest = { nid: node.des_id, hub_id: rid, mfs_root: node.des_mfs_root };
-          let m = await this.yp.await_proc(
-            "forward_proc",
-            dest.hub_id,
-            "mfs_access_node",
-            `"${this.uid}", "${dest.nid}"`
-          );
+          // let m = await this.yp.await_proc(
+          //   "forward_proc",
+          //   dest.hub_id,
+          //   "mfs_access_node",
+          //   `"${this.uid}", "${dest.nid}"`
+          // );
           try {
             if (node.type == "same") {
               move_node(src, dest, 1);
             } else {
               copy_node(src, dest, 1);
-              m.position = this.input.get(Attr.position) || 0;
+              // m.position = this.input.get(Attr.position) || 0;
             }
             dest.parent_id = node.des_id;
-            notify[rid] = this.input.get(Attr.pid);
-            copied.push(dest);
+            // notify[rid] = this.input.get(Attr.pid);
+            // copied.push(dest);
           } catch (e) {
             this.warn("COPY FAILED ", e);
           }
@@ -335,10 +338,6 @@ class __private_media extends Media {
               c = await this.yp.await_proc(proc, nid, s.uid);
               counts[s.uid] = c;
             }
-
-            r.new_chat = c.new_chat;
-            r.new_file = c.new_file;
-            r.hubs = c.hubs;
             nodes[s.uid] = r;
             await RedisStore.sendData(this.payload(r), s);
           }
@@ -351,7 +350,7 @@ class __private_media extends Media {
             mfs_root: node.src_mfs_root,
           };
           remove_node(target, 1);
-          copied = dest;
+          // copied = dest;
           break;
       }
     }
@@ -446,6 +445,9 @@ class __private_media extends Media {
       return;
     }
     let wicket = await this.db.call_proc("mfs_wicket_home", this.uid);
+    if (wicket[5]) { /** Created by desk_create_hub */
+      wicket = { ...wicket[5] }
+    }
     if (wicket.hub_id == this.dest_granted().hub_id) {
       this.exception.user("WICKET_HUB");
       return;
@@ -781,7 +783,6 @@ class __private_media extends Media {
     let lock = {
       uid: this.uid,
       date: new Date().getTime(),
-      //md5_hash
     };
     await this.db.await_proc("mfs_set_metadata", node.id, { lock }, 0);
   }
@@ -849,11 +850,10 @@ class __private_media extends Media {
 
     const src = this.source_granted(Attr.all);
     const dest = this.dest_granted();
-
     this.heap.srcgrantlst = [];
     let source_node;
     let denied = [];
-    for (var node of src) {
+    for (let node of src) {
       var proc = `${node.db_name}.mfs_access_node`;
       source_node = await this.yp.await_proc(proc, uid, node.id);
       if (source_node.permission & node.privilege) {
@@ -869,6 +869,8 @@ class __private_media extends Media {
       }
     }
     if (!isEmpty(denied)) {
+      this.warn("Got denied nodes", denied)
+      this._done();
       return this.output.add_data({ denied });
     }
     this._done();
@@ -886,6 +888,63 @@ class __private_media extends Media {
       uid
     );
     await this._dispatch_restore(data);
+  }
+
+  /**
+  * Restore a trashed file/folder to its original location.
+  * If the original parent no longer exists, returns parent_missing=1
+  * so the FE can show a location picker and call restore_into instead.
+  * No physical file move is needed — files remain in mfs_root/{id}/.
+  */
+  async restore() {
+    const nid = this.input.need(Attr.nid);
+    let data = await this.db.await_proc('mfs_restore', nid);
+    data = toArray(data)[0] || {};
+
+    if (data.failed) {
+      return this.exception.user(data.message || 'RESTORE_FAILED');
+    }
+
+    if (data.parent_missing) {
+      return this.output.data({
+        parent_missing: 1,
+        nid,
+        original_parent_id: data.original_parent_id,
+      });
+    }
+
+    // Fetch full node attributes for WS notification
+    const restored = await this.db.await_proc('mfs_access_node', this.uid, nid);
+    if (!restored || !restored.hub_id) {
+      return this.output.data(data);
+    }
+
+    let changelog = await this.changelog_write({ src: restored, event: 'media.new' });
+    let sockets = await this.yp.await_proc('entity_sockets', restored.hub_id);
+    await RedisStore.sendData(
+      this.payload({ ...restored, args: { changelog } }, { service: 'media.restore' }),
+      sockets
+    );
+    await RedisStore.sendData(
+      this.payload({ rebuild: 1 }, { service: 'notification.resync' }),
+      sockets
+    );
+
+    const hub_db = await this.yp.await_func('get_db_name', restored.hub_id);
+    if (hub_db) {
+      const ftype = restored.filetype || restored.category;
+      const fname = restored.filename || restored.user_filename || nid;
+      await writeAudit(this, {
+        db: hub_db,
+        uid: this.uid,
+        action: 'added',
+        category: 'media',
+        entity_id: nid,
+        log: `${ftype === 'folder' ? 'Folder' : 'File'} '${fname}' restored from trash`,
+      });
+    }
+
+    this.output.data({ ...restored, args: { changelog } });
   }
 
   /**
@@ -919,8 +978,9 @@ class __private_media extends Media {
         case "show":
         case "showone":
           if (!row.dest_db_name) {
-            this.warn("AAA:448 -- GOT NULL DEST DB. Using default", row);
-            r = await this.db.await_proc("mfs_access_node", this.uid, row.nid);
+            let entity = await this.yp.await_proc('get_entity', this.input.get('recipient_id'))
+            proc = `${entity.db_name}.mfs_access_node`;
+            r = await this.db.await_proc(proc, this.uid, row.nid);
             r.privilege = r.permission;
             if (r.filetype == Attr.hub) {
               r.hub_id = row.nid; // hub_id is inconsistent after trash
@@ -947,7 +1007,7 @@ class __private_media extends Media {
             hub_id: row.dest_hub_id,
             mfs_root: row.des_mfs_root,
           };
-          move_node(src, dest);
+          move_node(src, dest, 1);
           break;
         case "outbound":
           proc = `${row.dest_db_name}.mfs_get_related_sb`;
@@ -1109,12 +1169,40 @@ class __private_media extends Media {
    * @params null
    */
   async empty_bin() {
-    let data = await this.db.await_proc("mfs_empty_trash");
-    if (!isEmpty(data)) {
-      await this._empty_bin(data);
+    if (!this.user.get(Attr.settings).trash_expiry) {
+      let list = await this.db.await_proc("mfs_empty_trash");
+      await this._empty_bin(list)
+      return this.output.data(list)
     }
-    let { usage } = await this.yp.await_proc("disk_usage", this.uid);
-    this.output.data({ disk_usage: usage });
+    try {
+      if (!this.uid) {
+        throw new Error('User ID is required');
+      }
+
+      const hub_id = this.hub.get(Attr.id);
+      if (!hub_id) {
+        throw new Error('Hub ID is required');
+      }
+
+      const job = await emptyTrash(
+        this.uid,
+        hub_id,
+        {
+          socket_id: this.input.get(Attr.socket_id) || null,
+          priority: 5
+        }
+      );
+
+      this.output.data({
+        status: 'queued',
+        job_id: job.id,
+        message: 'Trash cleanup has been queued'
+      });
+
+    } catch (error) {
+      this.warn('[TRASH] Failed to queue empty_bin:', error.message);
+      this.exception.server('FAILED_TO_QUEUE_TRASH_CLEANUP');
+    }
   }
 
   /**
@@ -1221,9 +1309,26 @@ class __private_media extends Media {
         }
       }
     }
+    // Snapshot filename/filetype before mfs_pre_trash_next moves rows
+    // to trash_media — needed for human-readable audit log lines.
+    const auditTargets = [];
+    for (const g of granted) {
+      try {
+        const hub_db = await this.yp.await_func('get_db_name', g.hub_id);
+        if (!hub_db) continue;
+        const attr = await this.yp.await_proc(`${hub_db}.mfs_node_attr`, g.nid);
+        if (!attr) continue;
+        auditTargets.push({
+          hub_db,
+          nid: g.nid,
+          filename: attr.user_filename || attr.filename || g.nid,
+          filetype: attr.category || attr.filetype,
+        });
+      } catch (e) { /* best-effort */ }
+    }
     let data = await this.db.await_proc(
       "mfs_pre_trash_next",
-      stringify(granted),
+      granted,
       this.uid,
       Permission.MODIFY
     );
@@ -1257,6 +1362,18 @@ class __private_media extends Media {
       recipients
     );
     this.output.add_data({ changelog });
+
+    for (const t of auditTargets) {
+      await writeAudit(this, {
+        db: t.hub_db,
+        uid: this.uid,
+        action: 'deleted',
+        category: 'media',
+        entity_id: t.nid,
+        log: `${t.filetype === 'hub' ? 'Workspace' : t.filetype === 'folder' ? 'Folder' : 'File'} '${t.filename}' moved to trash`,
+      });
+    }
+
     this.output.list(data);
   }
 
@@ -1368,7 +1485,6 @@ class __private_media extends Media {
     let { node } = this.source_granted();
     let { nid, hub_id } = node;
     let filename = decodeURI(this.input.need(FILENAME));
-
     if (/^(.|.+\/.+| )$/.test(filename)) {
       this.exception.user("INVALID_FILENAME");
       return;
@@ -1399,7 +1515,7 @@ class __private_media extends Media {
       case Attr.schedule:
         try {
           let { metadata } = JSON.parse(this.granted_node());
-          metadata = this.cleanJson(metadata);
+          metadata = cleanSeen(metadata);
           metadata.title = filename;
           res = await this.db.await_proc(
             "mfs_set_metadata",
@@ -1419,7 +1535,16 @@ class __private_media extends Media {
           }
         }
         res = await this.db.await_proc("mfs_rename", nid, filename);
-        let attr = newItems[this.uid] || (await this.db.await_proc("mfs_access_node", this.uid, nid));
+        let attr;
+        if (newItems[this.uid] && newItems[this.uid].filename) {
+          attr = newItems[this.uid]
+        } else {
+          attr = await this.db.await_proc("mfs_access_node", this.uid, nid);
+          newItems[this.uid] = attr;
+        }
+        attr.hub_id = attr.actual_hub_id;
+        attr.privilege = attr.permission;
+        attr.home_id = attr.actual_home_id;
         newItems[this.uid] = attr;
         let old = oldItems[this.uid];
         if (old) {
@@ -1427,10 +1552,13 @@ class __private_media extends Media {
         }
     }
     for (let r of toArray(recipients)) {
-      let dest =
-        newItems[r.uid] ||
-        (await this.db.await_proc("mfs_access_node", r.uid, nid));
-      newItems[r.uid] = dest;
+      let dest;
+      if (newItems[r.uid] && newItems[r.uid].filename) {
+        dest = newItems[r.uid]
+      } else {
+        dest = await this.db.await_proc("mfs_access_node", r.uid, nid);
+        newItems[r.uid] = dest;
+      }
       let model = {
         ...oldItems[r.uid],
         args: {
@@ -1453,6 +1581,17 @@ class __private_media extends Media {
       src: oldItems[this.uid],
       changelog: this.__changelog
     }
+
+    const old_name = (oldItems[this.uid] && oldItems[this.uid].filename) || node.filename || nid;
+    await writeAudit(this, {
+      db: this.hub.get(Attr.db_name),
+      uid: this.uid,
+      action: 'changed',
+      category: 'title',
+      entity_id: nid,
+      log: `${node[FILETYPE] === Attr.hub ? 'Workspace' : 'Item'} renamed from '${old_name}' to '${filename}'`,
+    });
+
     this.output.data(model);
   }
 
@@ -1477,7 +1616,7 @@ class __private_media extends Media {
     let md5Hash = await Generator.rotate_image(node, angle);
     if (md5Hash) {
       let { metadata } = node;
-      metadata = this.cleanJson(metadata);
+      metadata = cleanSeen(metadata);
       metadata.md5Hash = md5Hash;
       let { mtime } = await this.db.await_proc("mfs_set_metadata", node.id, metadata, 1);
       node.mtime = mtime;
@@ -1499,38 +1638,185 @@ class __private_media extends Media {
    * @param {any}
    * Save content into FMS node
    */
-  async save() {
-    const content = this.input.need(Attr.content);
-    let { createHash } = require("crypto");
-    let md5Hash = createHash("md5");
-    let chunk = Buffer.from(content, "utf8");
-    md5Hash.update(chunk);
-    const parent = this.source_granted();
-    const filename = this.randomString() + "-" + this.input.need(Attr.filename);
-    let filepath = resolve(tmp_dir, `${filename}`);
-    const user_filename = this.input.need(Attr.filename);
-    const nid = this.input.get(Attr.id);
-    writeFileSync(filepath, content, { encoding: "utf-8" });
-    let pid = this.input.get(Attr.pid) || parent.id;
+  /**
+   * Snapshot the current on-disk content of `node` into file_version
+   * before it gets overwritten by save/replace. Copies orig.{ext} to
+   * mfs_root/{nid}/versions/{insert_id}.{ext}, inserts the row, and
+   * accounts the snapshot bytes against hub disk_usage.
+   *
+   * Returns the file_version row id, or null if nothing was snapshotted
+   * (no source blob, no md5 change, or the call failed). Failures are
+   * logged but never thrown — versioning must never block a save.
+   */
+  async _snapshot_version(node, opts = {}) {
+    try {
+      if (!node || !node.id || !node.extension) return null;
+      const ext = node.extension;
+      const src = resolve(node.mfs_root, node.id, `orig.${ext}`);
+      if (!existsSync(src)) return null;
+
+      // Skip if the new content hashes to the same bytes as what's
+      // already on disk. Caller passes the new md5 when available.
+      if (opts.newMd5 && node.md5Hash && opts.newMd5 === node.md5Hash) {
+        return null;
+      }
+
+      const filename = node.user_filename || node.filename || "";
+      const filesize = parseInt(node.filesize, 10) || 0;
+
+      // Reserve a row first; we backfill file_path once we know the id.
+      const reserved = await this.db.await_proc(
+        "file_version_create",
+        node.id,
+        filename,
+        filesize,
+        "",
+        this.uid
+      );
+      const row = Array.isArray(reserved) ? reserved[0] : reserved;
+      if (!row || !row.id) return null;
+      const versionId = row.id;
+
+      const versionsDir = resolve(node.mfs_root, node.id, "versions");
+      if (!existsSync(versionsDir)) mkdirSync(versionsDir, { recursive: true });
+      const dest = resolve(versionsDir, `${versionId}.${ext}`);
+      copyFileSync(src, dest);
+
+      await this.db.await_run(
+        `UPDATE file_version SET file_path = ? WHERE id = ?`,
+        [dest, versionId]
+      );
+
+      // Charge the snapshot bytes against the hub's disk_usage so
+      // quota math stays honest. disk_usage trigger will sync quota.
+      const hub_id = node.hub_id || (this.hub && this.hub.get(Attr.id));
+      if (filesize > 0 && hub_id) {
+        try {
+          await this.yp.await_run(
+            `UPDATE yp.disk_usage
+                SET size = GREATEST(0, IFNULL(size, 0) + ?)
+              WHERE hub_id = ?`,
+            [filesize, hub_id]
+          );
+        } catch (e) {
+          this.warn && this.warn("[VERSION] disk_usage update failed:", e.message);
+        }
+      }
+
+      return versionId;
+    } catch (e) {
+      this.warn && this.warn("[VERSION] snapshot failed:", e && e.message);
+      return null;
+    }
+  }
+
+  /**
+   * Shared helper: store or update an on-disk file into MFS.
+   * Creates a new node when nid is absent/unknown; replaces the existing
+   * node otherwise. Handles snapshot, filesize sync, and SEO reindex.
+   */
+  async _persist_file(filepath, user_filename, pid, nid, metadata = {}) {
+    const { createHash } = require("crypto");
+
     if (nid) {
       let attr = await this.db.await_proc("mfs_access_node", this.uid, nid);
+
       if (isEmpty(attr)) {
         await this.store(pid, filepath, user_filename);
-      } else {
-        let metadata = this.input.get(Attr.metadata) || {};
-        metadata = this.cleanJson(metadata);
-        metadata.md5Hash = md5Hash.digest("hex");
-        await this.db.await_proc("mfs_set_metadata", nid, metadata, 0);
-        await this.replace_content(
-          attr,
-          filepath,
-          user_filename,
-          metadata.md5Hash
-        );
+        return;
+      }
+
+      const hash = createHash("md5").update(readFileSync(filepath)).digest("hex");
+      const merged = cleanSeen({ ...metadata, md5Hash: hash });
+
+      const old_filesize = attr.filesize || 0;
+      const old_category = attr.category || attr.filetype;
+      const hub_id = attr.hub_id;
+
+      await this._snapshot_version(attr, { newMd5: hash });
+      await this.db.await_proc("mfs_set_metadata", nid, merged, 0);
+      await this.replace_content(attr, filepath, user_filename, hash);
+
+      try {
+        const mfs_path = resolve(attr.mfs_root, attr.id, `orig.${attr.extension}`);
+        if (!existsSync(mfs_path)) throw new Error(`File not found after replace: ${mfs_path}`);
+        const new_filesize = statSync(mfs_path).size;
+        if (old_filesize !== new_filesize) {
+          const delta = Number(new_filesize) - Number(old_filesize);
+          await this.db.await_proc("mfs_set_attr", nid, "filesize", new_filesize);
+          await this.yp.await_run(
+            `UPDATE yp.disk_usage SET size = GREATEST(0, IFNULL(size, 0) + ?) WHERE hub_id = ?`,
+            [delta, hub_id]
+          );
+          this.debug(`[SAVE] Updated filesize: ${old_filesize} → ${new_filesize} (${delta > 0 ? '+' : ''}${delta})`);
+        }
+      } catch (error) {
+        this.warn('[SAVE] Failed to update filesize:', error.message);
+      }
+
+      if ([Attr.document].includes(old_category)) {
+        try {
+          await this.db.await_proc('seo_delete_index', hub_id, nid);
+          this.debug(`[SEO] Deleted old index for: ${attr.filename}`);
+          await new Promise(r => setTimeout(r, 100));
+          const updated_node = await this.db.await_proc("mfs_access_node", this.uid, nid);
+          if (!isEmpty(updated_node)) {
+            await indexQueue.addFile(updated_node, {
+              uid: this.uid,
+              socket_id: this.input.get(Attr.socket_id),
+              hub_id,
+              priority: 8
+            });
+            this.debug(`[SEO] Queued for reindexing: ${attr.filename}`);
+          }
+        } catch (error) {
+          this.warn(`[SEO] Failed to reindex after save: ${error.message}`);
+        }
       }
     } else {
       await this.store(pid, filepath, user_filename);
     }
+  }
+
+
+  /**
+   */
+  async save() {
+    const content = this.input.need(Attr.content);
+    const convert_to = this.input.get('convert_to');
+    const parent = this.source_granted();
+    const user_filename = this.input.need(Attr.filename);
+    const outdir = resolve(tmp_dir, this.randomString());
+    mkdirSync(outdir, { recursive: true });
+    const filepath = resolve(outdir, user_filename);
+    const nid = this.input.get(Attr.id);
+    const pid = this.input.get(Attr.pid) || parent.id;
+    const metadata = this.input.get(Attr.metadata) || {};
+    let filter = {
+      docx: "docx:Office Open XML Text:EmbedImages",
+      pdf: "pdf:writer_pdf_Export"
+    }
+    switch (convert_to) {
+      case Attr.pdf:
+      case 'docx':
+        const outfile = resolve(outdir, user_filename);
+        let re = new RegExp(`.(${convert_to})$`, 'i')
+        const infile = outfile.replace(re, '.html')
+        writeFileSync(infile, content, { encoding: "utf-8" });
+        let cmd = `${Script.soffice} ${outdir} ${infile} '${filter[convert_to]}'`;
+        if (this.sh_exec(cmd)) {
+          await this._persist_file(outfile, user_filename, pid, nid, metadata);
+        } else {
+          rmdir(outdir)
+          return this.exception.server('PDF_CONVERSION_FAILED');
+        }
+        break;
+      default:
+        writeFileSync(filepath, content, { encoding: "utf-8" });
+        await this._persist_file(filepath, user_filename, pid, nid, metadata);
+    }
+    rmdir(outdir) // Cleanup temp files
+
   }
 
 
@@ -1550,8 +1836,13 @@ class __private_media extends Media {
     }
     let md5Hash = this.input.get("md5Hash");
     let { metadata } = node;
-    metadata = this.cleanJson(metadata);
+    metadata = cleanSeen(metadata);
     metadata.md5Hash = md5Hash;
+
+    // Snapshot the pre-replace blob into file_version before the new
+    // upload overwrites it. Skipped automatically when md5 matches.
+    await this._snapshot_version(node, { newMd5: md5Hash });
+
     let privilege = node.permission;
     let home_dir = node.home_dir;
     let mfs_root = node.mfs_root;
@@ -1613,6 +1904,29 @@ class __private_media extends Media {
       data.user_filename = data.filename.replace(`.${data.extension}`, "");
     }
     node = await this.db.await_proc("mfs_set_node_attr", node.nid, data, 1);
+
+    // Update disk_usage when filesize changes
+    const old_filesize = node.filesize || 0;
+    const new_filesize = data.filesize || 0;
+    const delta = new_filesize - old_filesize;
+
+    if (delta !== 0) {
+      try {
+        const hub_id = node.hub_id || this.hub.get(Attr.id);
+        await this.yp.await_run(`
+          UPDATE disk_usage 
+          SET size = GREATEST(0, IFNULL(size, 0) + ${delta}) 
+          WHERE hub_id = '${hub_id}'
+        `);
+
+        this.debug(`[QUOTA] Updated disk_usage on replace_content: delta=${delta} bytes`);
+        // Trigger will auto-sync quota_usage
+
+      } catch (e) {
+        this.warn('[QUOTA] Failed to update disk_usage on replace_content:', e.message);
+      }
+    }
+
     node.extension = data.extension;
     this._mustReplace = 1;
     let attr = await this.after_store(
@@ -1692,9 +2006,6 @@ class __private_media extends Media {
 
     readdirSync(folderPath).forEach((file) => {
       var ext = extname(file);
-      //.split('.').pop();  // If . need to be removed
-
-      // var mimeT = mime.lookup(file);
       let pathLocal = basename(path, file);
 
       fileList.push({
@@ -1706,6 +2017,15 @@ class __private_media extends Media {
     });
     this.output.add_data({ info: { path: path } });
     this.output.data(fileList);
+  }
+
+  /**
+   * 
+   */
+  async summary() {
+    const nid = this.input.need(Attr.nid);
+    let data = await this.db.await_proc("mfs_node_summary", nid);
+    this.output.data(data);
   }
 }
 

@@ -1,18 +1,81 @@
 {
   "services": {
     "bug_report": {
+      "doc": "Submit a bug report from the current user. Reads all fields from the vars input object, serializes any nested objects to JSON strings, then calls the support_bug_report stored procedure with the extracted fields.",
       "scope": "hub",
       "permission": {
         "src": "anonymous"
-      }
+      },
+      "params": {
+        "vars": {
+          "type": "object",
+          "required": false,
+          "description": "Bug report data object. Nested object values are auto-serialized to JSON strings before storage.",
+          "properties": {
+            "feature": {
+              "type": "string",
+              "description": "Feature or area of the application where the bug occurred"
+            },
+            "description": {
+              "type": "string",
+              "description": "Description of the bug"
+            },
+            "context": {
+              "type": "string",
+              "description": "Context or steps to reproduce"
+            },
+            "location": {
+              "type": "string",
+              "description": "URL or location in the application where the bug was encountered"
+            },
+            "navigator": {
+              "type": "string",
+              "description": "User agent / navigator string"
+            },
+            "browser": {
+              "type": "string",
+              "description": "Browser name and version"
+            },
+            "frequency": {
+              "type": "string",
+              "description": "How often the bug occurs (e.g. always, sometimes, rarely)"
+            },
+            "category": {
+              "type": "string",
+              "description": "Bug category or severity classification"
+            }
+          }
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Confirmation data from support_bug_report stored procedure"
+      },
+      "errors": []
     },
+
     "leave_comment": {
+      "doc": "Submit a feedback comment. Calls feedback_create stored procedure with the provided message. Available to anonymous users.",
       "scope": "hub",
       "permission": {
         "src": "anonymous"
-      }
+      },
+      "params": {
+        "message": {
+          "type": "string",
+          "required": false,
+          "description": "Feedback message content to submit"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Confirmation data from feedback_create stored procedure"
+      },
+      "errors": []
     },
+
     "list_feedback": {
+      "doc": "List all submitted feedback with sorting and pagination. Requires special_access preproc with remit level 1. Calls support_list_feedback stored procedure with column, order, and page parameters.",
       "scope": "hub",
       "permission": {
         "src": "delete",
@@ -20,7 +83,31 @@
           "checker": "special_access",
           "remit": 1
         }
-      }
+      },
+      "params": {
+        "page": {
+          "type": "integer",
+          "required": false,
+          "description": "Page number for paginated results"
+        },
+        "sort_by": {
+          "type": "string",
+          "required": false,
+          "default": "date",
+          "description": "Column to sort results by. Defaults to 'date'."
+        },
+        "order": {
+          "type": "string",
+          "required": false,
+          "default": "desc",
+          "description": "Sort order direction. Defaults to 'desc'."
+        }
+      },
+      "returns": {
+        "type": "array",
+        "description": "Paginated list of feedback records from support_list_feedback stored procedure"
+      },
+      "errors": []
     }
   },
   "modules": {

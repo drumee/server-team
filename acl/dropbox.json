@@ -1,25 +1,165 @@
 {
   "services": {
     "list_files": {
-      "doc": "List files/folders from Dropbox",
+      "doc": "List files and folders at a given path in the connected Dropbox account. Calls the Dropbox files/list_folder API with a limit of 100 entries. Requires a valid OAuth access token retrieved via the dropbox provider.",
       "scope": "hub",
       "permission": {
         "src": "read"
-      }
+      },
+      "params": {
+        "path": {
+          "type": "string",
+          "required": false,
+          "default": "",
+          "doc": "Dropbox folder path to list. Defaults to the root folder (empty string) when not provided."
+        }
+      },
+      "returns": {
+        "success": {
+          "type": "boolean",
+          "doc": "Always true on a successful Dropbox API response"
+        },
+        "files": {
+          "type": "array",
+          "doc": "Array of Dropbox file and folder entry objects returned by the files/list_folder API",
+          "items": {
+            "type": "object"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "UNAUTHORIZED",
+          "message": "OAuth token is invalid or expired. Please re-authenticate.",
+          "http_status": 401
+        },
+        {
+          "code": "INTERNAL_ERROR",
+          "message": "Failed to list Dropbox files",
+          "http_status": 500
+        }
+      ]
     },
     "import_file": {
-      "doc": "Import a single file from Dropbox",
+      "doc": "Import a single file from Dropbox into a Drumee MFS destination folder. Retrieves a temporary download link from the Dropbox files/get_temporary_link API, resolves the destination folder via mfs_node_attr, and imports the file using the internal ExtImport file import mechanism.",
       "scope": "hub",
       "permission": {
         "src": "write"
-      }
+      },
+      "params": {
+        "file_id": {
+          "type": "string",
+          "required": true,
+          "doc": "Dropbox file path or ID passed to the files/get_temporary_link API to obtain a download URL"
+        },
+        "nid": {
+          "type": "string",
+          "required": true,
+          "doc": "Destination MFS node ID (folder) in Drumee where the imported file will be stored. Resolved via mfs_node_attr."
+        }
+      },
+      "returns": {
+        "success": {
+          "type": "boolean",
+          "doc": "Always true on successful import"
+        },
+        "node": {
+          "type": "object",
+          "doc": "The newly created MFS node record for the imported file, as returned by the internal import mechanism"
+        }
+      },
+      "errors": [
+        {
+          "code": "MISSING_PARAM",
+          "message": "Missing file_id or nid (destination folder ID) parameter",
+          "http_status": 400
+        },
+        {
+          "code": "INTERNAL_ERROR",
+          "message": "Failed to get Dropbox file metadata or temporary download link",
+          "http_status": 500
+        },
+        {
+          "code": "INVALID_DESTINATION",
+          "message": "Invalid destination folder ID (nid)",
+          "http_status": 400
+        }
+      ]
     },
     "import_directory": {
-      "doc": "Import entire directory recursively from Dropbox",
+      "doc": "Recursively import an entire Dropbox folder and its contents into a Drumee MFS destination folder. Lists all items via the Dropbox files/list_folder API with cursor-based pagination (limit 2000), creates matching folder structures in Drumee, and imports each file using temporary download links. Returns import statistics including counts of folders created, files imported, items skipped, and any per-item errors.",
       "scope": "hub",
       "permission": {
         "src": "write"
-      }
+      },
+      "params": {
+        "folder_path": {
+          "type": "string",
+          "required": true,
+          "doc": "Dropbox folder path to import recursively (e.g. /Documents/Project). Passed to the files/list_folder API."
+        },
+        "nid": {
+          "type": "string",
+          "required": true,
+          "doc": "Destination MFS node ID (folder) in Drumee where the imported directory tree will be created. Resolved via mfs_node_attr."
+        }
+      },
+      "returns": {
+        "success": {
+          "type": "boolean",
+          "doc": "Always true when the top-level import completes without a fatal error"
+        },
+        "folders": {
+          "type": "number",
+          "doc": "Total number of folders created in Drumee during the recursive import"
+        },
+        "files": {
+          "type": "number",
+          "doc": "Total number of files successfully imported into Drumee"
+        },
+        "skipped": {
+          "type": "number",
+          "doc": "Total number of items skipped during the import"
+        },
+        "errors": {
+          "type": "array",
+          "doc": "List of per-item error records for files or folders that failed to import. Does not cause the overall operation to fail.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "file": {
+                "type": "string",
+                "doc": "File name that failed (present for file-level errors)"
+              },
+              "item": {
+                "type": "string",
+                "doc": "Item name that failed (present for item-level errors)"
+              },
+              "error": {
+                "type": "string",
+                "doc": "Error message describing the failure"
+              }
+            }
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "MISSING_PARAM",
+          "message": "Missing folder_path or nid (destination folder ID) parameter",
+          "http_status": 400
+        },
+        {
+          "code": "INVALID_DESTINATION",
+          "message": "Invalid destination folder ID (nid)",
+          "http_status": 400
+        },
+        {
+          "code": "INTERNAL_ERROR",
+          "message": "Failed to import directory from Dropbox",
+          "http_status": 500
+        }
+      ]
     }
   },
   "modules": {

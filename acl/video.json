@@ -1,22 +1,84 @@
 {
   "services": {
     "master": {
+      "doc": "Serve the HLS master playlist for a video node. Resolves the node's filesystem root and checks whether master.m3u8 already exists. When it does not, spawns an ffmpeg HLS transcode process in the background using Generator.create_hls_args. Waits up to 30 seconds for the file to appear, then streams the playlist content with each stream or segment line optionally appended with a keysel query parameter derived from the request authorisation token. Responds with Content-Type application/x-mpegURL.",
       "scope": "hub",
       "permission": {
         "src": "anonymous"
-      }
+      },
+      "params": {},
+      "returns": {
+        "type": "file",
+        "description": "HLS master playlist file streamed as application/x-mpegURL with Content-Disposition attachment and filename derived from the node filename suffixed with -master.m3u8"
+      },
+      "errors": [
+        {
+          "code": "FILE_NOT_FOUND",
+          "message": "The master.m3u8 file did not appear within 30 seconds of the ffmpeg transcode being spawned",
+          "returns": {
+            "status": "FILE_NOT_FOUND"
+          }
+        }
+      ]
     },
     "segment": {
+      "doc": "Serve a single HLS transport stream segment file. Resolves the segment path as stream-SERIAL/segment-SEG.ts under the node's filesystem root. Serves the file as video/MP2T when it exists on disk, otherwise returns a not-found response. Does not wait for transcoding — the segment must already be present.",
       "scope": "hub",
       "permission": {
         "src": "anonymous"
-      }
+      },
+      "params": {
+        "serial": {
+          "type": "string",
+          "required": true,
+          "description": "Stream serial number identifying which stream subdirectory to read from. Used to build the path stream-SERIAL/segment-SEG.ts."
+        },
+        "segment": {
+          "type": "string",
+          "required": true,
+          "description": "Segment identifier used to locate the .ts file. Used to build the filename segment-SEGMENT.ts."
+        }
+      },
+      "returns": {
+        "type": "file",
+        "description": "HLS transport stream segment served as video/MP2T with filename NODE_FILENAME-stream-SERIAL-segment-SEGMENT.ts"
+      },
+      "errors": [
+        {
+          "code": "FILE_NOT_FOUND",
+          "message": "The resolved segment file does not exist on the server filesystem",
+          "returns": {
+            "status": "FILE_NOT_FOUND"
+          }
+        }
+      ]
     },
     "stream": {
+      "doc": "Serve an HLS stream-level playlist for a specific quality level. Resolves the playlist file at stream-SERIAL/playlist.m3u8 under the node's filesystem root. Waits up to 30 seconds for the file to appear, then streams the playlist content with each stream or segment line optionally appended with a keysel query parameter derived from the request authorisation token. Responds with Content-Type application/x-mpegURL.",
       "scope": "hub",
       "permission": {
         "src": "anonymous"
-      }
+      },
+      "params": {
+        "serial": {
+          "type": "string",
+          "required": true,
+          "description": "Stream serial number identifying the HLS quality level subdirectory. Used to build the path stream-SERIAL/playlist.m3u8."
+        }
+      },
+      "returns": {
+        "type": "file",
+        "description": "HLS stream-level playlist served as application/x-mpegURL with Content-Disposition attachment and filename derived from the node filename suffixed with -stream-SERIAL.m3u8"
+      },
+      "errors": [
+        {
+          "code": "FILE_NOT_FOUND",
+          "message": "The stream playlist file did not appear within 30 seconds of being requested",
+          "returns": {
+            "status": "FILE_NOT_FOUND"
+          }
+        }
+      ]
     }
   },
   "modules": {

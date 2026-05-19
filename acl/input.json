@@ -1,10 +1,49 @@
 {
   "services": {
     "updateLicence": {
+      "doc": "Verify and apply a new Drumee platform licence. Validates the provided licence content against a cryptographic signature using the Drumee public key at /etc/drumee/publickeys/drumee.com.pem. If verification succeeds, persists both licence_content and licence_signature to the system configuration via stored procedure sys_conf_set and reloads the server cache. Always returns the verification result regardless of success or failure.",
       "scope": "hub",
       "permission": {
         "src": "anonymous"
-      }
+      },
+      "params": {
+        "signature": {
+          "type": "string",
+          "required": true,
+          "description": "Cryptographic signature of the licence content, issued by Drumee. Used to verify authenticity against the Drumee public key."
+        },
+        "content": {
+          "type": "string",
+          "required": true,
+          "description": "Licence content payload to verify and store. Must match the provided signature to be accepted."
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Result object indicating whether the licence signature was successfully verified",
+        "properties": {
+          "verified": {
+            "type": "boolean",
+            "description": "True if the signature was verified against the Drumee public key and the licence was applied. False if verification failed or an error occurred during processing."
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "DRUMEE_PUB_KEY_NOT_FOUND",
+          "message": "Drumee public key file not found at /etc/drumee/publickeys/drumee.com.pem",
+          "returns": {
+            "status": "DRUMEE_PUB_KEY_NOT_FOUND"
+          }
+        },
+        {
+          "code": "VERIFICATION_FAILED",
+          "message": "Signature verification failed or an internal error occurred. Response will contain verified: false.",
+          "returns": {
+            "verified": false
+          }
+        }
+      ]
     }
   },
   "modules": {

@@ -1,111 +1,679 @@
 {
   "services": {
     "book": {
+      "doc": "Book a new meeting room. Creates a scheduled meeting node (category=schedule, ext=schedule) in the user home directory with attendees, title, message, and date metadata. Title defaults to a locale-generated headline if not provided. Date defaults to current time if not provided.",
       "scope": "hub",
       "permission": {
         "src": "admin"
-      }
+      },
+      "params": {
+        "title": {
+          "type": "string",
+          "required": false,
+          "description": "Meeting title. Auto-generated from locale template if omitted. Truncated to 100 characters maximum."
+        },
+        "date": {
+          "type": "string",
+          "required": false,
+          "description": "Meeting date/time string. Defaults to current moment formatted as locale long date-time if omitted."
+        },
+        "message": {
+          "type": "string",
+          "required": false,
+          "description": "Meeting invitation message body. Auto-generated from locale template if omitted."
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Created MFS node representing the scheduled meeting",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Node ID of the created meeting schedule node"
+          },
+          "filename": {
+            "type": "string",
+            "description": "Meeting title stored as the node filename"
+          },
+          "category": {
+            "type": "string",
+            "description": "Always 'schedule' for meeting nodes"
+          },
+          "metadata": {
+            "type": "object",
+            "description": "Meeting metadata including content (attendees, title, message, date, room_id) and room_status=booked"
+          }
+        }
+      },
+      "errors": []
     },
+
     "get_meeting_members": {
+      "doc": "Get all members invited to a meeting room. Returns the list of DMZ users who have been granted access to a specific meeting node.",
       "scope": "hub",
       "permission": {
         "src": "admin"
-      }
+      },
+      "params": {
+        "nid": {
+          "type": "string",
+          "required": true,
+          "description": "Node ID of the meeting schedule to retrieve members for"
+        }
+      },
+      "returns": {
+        "type": "array",
+        "description": "List of meeting members with their access details",
+        "items": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "Member user ID"
+            },
+            "email": {
+              "type": "string",
+              "description": "Member email address"
+            },
+            "name": {
+              "type": "string",
+              "description": "Member display name"
+            }
+          }
+        }
+      },
+      "errors": []
     },
+
     "get_screen": {
-      "scope": "hub",
-      "permission": {
-        "src": "read",
-        "fast_check": "user_permission"
-      }
-    },
-    "get": {
+      "doc": "Initialize a screen sharing session for a room. Generates a unique screen_id, grants permission on it, and sends room_invite_next to all current room attendees assigning the requester as presenter and others as listeners. Only available for non-private hub areas.",
       "scope": "hub",
       "permission": {
         "src": "read",
         "fast_check": "user_permission"
       },
-      "method": "get_or_create"
+      "params": {
+        "parent_id": {
+          "type": "string",
+          "required": true,
+          "description": "ID of the parent room for which screen sharing is being initiated"
+        },
+        "parent_type": {
+          "type": "string",
+          "required": true,
+          "description": "Type of the parent room (e.g. room type identifier)"
+        },
+        "socket_id": {
+          "type": "string",
+          "required": true,
+          "description": "WebSocket socket ID of the requesting user"
+        },
+        "device_id": {
+          "type": "string",
+          "required": true,
+          "description": "Device ID of the requesting user"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "New screen sharing room data",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Generated screen room ID"
+          },
+          "type": {
+            "type": "string",
+            "description": "Always 'screen' for screen sharing rooms"
+          },
+          "socket_id": {
+            "type": "string",
+            "description": "Socket ID of the session"
+          }
+        }
+      },
+      "errors": []
     },
+
+    "get": {
+      "doc": "Get or create a room for the current user. Retrieves an existing room matching the given device, socket, and room type, or creates a new one if none exists. Mapped to the get_or_create implementation method.",
+      "scope": "hub",
+      "permission": {
+        "src": "read",
+        "fast_check": "user_permission"
+      },
+      "method": "get_or_create",
+      "params": {
+        "device_id": {
+          "type": "string",
+          "required": true,
+          "description": "Device ID of the user"
+        },
+        "socket_id": {
+          "type": "string",
+          "required": true,
+          "description": "WebSocket socket ID of the user"
+        },
+        "room_type": {
+          "type": "string",
+          "required": true,
+          "description": "Type of room to get or create (e.g. meeting, screen)"
+        },
+        "id": {
+          "type": "string",
+          "required": false,
+          "description": "Specific room ID to look up. If omitted, a new room is created."
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Room record retrieved or created",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Room ID"
+          },
+          "type": {
+            "type": "string",
+            "description": "Room type"
+          },
+          "user_id": {
+            "type": "string",
+            "description": "Owner user ID"
+          },
+          "socket_id": {
+            "type": "string",
+            "description": "Socket ID associated with the room"
+          },
+          "device_id": {
+            "type": "string",
+            "description": "Device ID associated with the room"
+          }
+        }
+      },
+      "errors": []
+    },
+
     "hello": {
+      "doc": "Register a guest user session for public meeting access. Binds a guest name to the current session cookie via cookie_bind_guest. Used as the entry point for unauthenticated users joining a shared meeting link.",
       "scope": "hub",
       "permission": {
         "src": "read",
         "fast_check": "public-api"
-      }
+      },
+      "params": {
+        "name": {
+          "type": "string",
+          "required": true,
+          "description": "Display name for the guest user joining the meeting"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Empty confirmation object on successful guest session binding"
+      },
+      "errors": []
     },
+
     "invite": {
+      "doc": "Invite a peer to join an active room. Sends a room_invite_next event to the target guest via WebSocket (signaling.message) with linkup type, assigning them the listener role. Notifies the guest socket on their endpoint node.",
       "scope": "hub",
       "permission": {
         "src": "write",
         "fast_check": "user_permission"
-      }
+      },
+      "params": {
+        "room_id": {
+          "type": "string",
+          "required": true,
+          "description": "ID of the room to invite the guest into"
+        },
+        "guest": {
+          "type": "object",
+          "required": true,
+          "description": "Guest user object containing uid, socket_id, device_id, and optionally node (endpoint address)"
+        },
+        "room_type": {
+          "type": "string",
+          "required": true,
+          "description": "Type of the room being joined"
+        }
+      },
+      "returns": {
+        "type": "array",
+        "description": "List containing guest connection info and signaling data payload",
+        "items": {
+          "type": "object",
+          "properties": {
+            "uid": {
+              "type": "string",
+              "description": "Guest user ID"
+            },
+            "socket_id": {
+              "type": "string",
+              "description": "Guest socket ID"
+            },
+            "type": {
+              "type": "string",
+              "description": "Signaling type, always 'linkup'"
+            },
+            "service": {
+              "type": "string",
+              "description": "Signaling service identifier, always 'signaling.message'"
+            }
+          }
+        }
+      },
+      "errors": []
     },
+
     "join": {
+      "doc": "Join an active room and notify the hub owner. Retrieves or creates a room entry, attaches hub area and node details, then sends a WebSocket notification to the hub owner's sockets. Returns room data including current attendees list.",
       "scope": "hub",
       "permission": {
         "src": "read",
         "fast_check": "user_permission"
-      }
+      },
+      "params": {
+        "id": {
+          "type": "string",
+          "required": true,
+          "description": "Room node ID to join"
+        },
+        "socket_id": {
+          "type": "string",
+          "required": true,
+          "description": "WebSocket socket ID of the joining user"
+        },
+        "device_id": {
+          "type": "string",
+          "required": true,
+          "description": "Device ID of the joining user"
+        },
+        "room_type": {
+          "type": "string",
+          "required": true,
+          "description": "Type of the room being joined"
+        },
+        "endpointAddress": {
+          "type": "string",
+          "required": false,
+          "description": "Server endpoint address. Falls back to Cache environment value if omitted."
+        },
+        "endpointRoute": {
+          "type": "string",
+          "required": false,
+          "description": "Server endpoint route. Falls back to Cache environment value if omitted."
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Room data with hub context and attendees",
+        "properties": {
+          "wicket_id": {
+            "type": "string",
+            "description": "Hub owner ID"
+          },
+          "area": {
+            "type": "string",
+            "description": "Hub area (private, dmz, etc.)"
+          },
+          "details": {
+            "type": "object",
+            "description": "Sanitized MFS node attributes for the room node"
+          },
+          "attendees": {
+            "type": "array",
+            "description": "Current list of room attendees"
+          }
+        }
+      },
+      "errors": []
     },
+
     "leave": {
+      "doc": "Leave an active room and notify remaining peers. Removes the user from the room via room_leave_next, pushes user online status to 1 (online/idle), and sends a room.leave signaling message to all remaining attendees via WebSocket.",
       "scope": "hub",
       "permission": {
         "src": "read",
         "fast_check": "user_permission"
-      }
+      },
+      "params": {
+        "socket_id": {
+          "type": "string",
+          "required": true,
+          "description": "WebSocket socket ID of the leaving user"
+        },
+        "room_id": {
+          "type": "string",
+          "required": true,
+          "description": "ID of the room being left"
+        },
+        "hub_id": {
+          "type": "string",
+          "required": true,
+          "description": "Hub ID containing the room"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Unified room data after the user has left"
+      },
+      "errors": []
     },
+
     "public_link": {
+      "doc": "Generate a public shareable link for a meeting room node. Creates a DMZ grant token for the specified node, grants permission to the public_id system user, and returns a shareable URL containing the access token.",
       "scope": "hub",
       "permission": {
         "src": "admin"
-      }
+      },
+      "params": {
+        "nid": {
+          "type": "string",
+          "required": true,
+          "description": "Node ID of the meeting room to generate a public link for"
+        },
+        "password": {
+          "type": "string",
+          "required": false,
+          "description": "Optional password to protect the public link"
+        },
+        "days": {
+          "type": "integer",
+          "required": false,
+          "default": 0,
+          "description": "Number of days for link expiry. Combined with hours to compute total expiry in hours."
+        },
+        "hours": {
+          "type": "integer",
+          "required": false,
+          "default": 0,
+          "description": "Number of hours for link expiry. Combined with days to compute total expiry."
+        },
+        "permission": {
+          "type": "integer",
+          "required": false,
+          "description": "Permission level to grant on the node. Defaults to Privilege.write if omitted."
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Public shareable link for the meeting room",
+        "properties": {
+          "link": {
+            "type": "string",
+            "description": "Full shareable URL with DMZ access token appended as path segment"
+          }
+        }
+      },
+      "errors": []
     },
+
     "shutdown": {
+      "doc": "Shut down an active room session. Reserved for admin-level room lifecycle management. Returns an empty object on completion.",
       "scope": "hub",
       "permission": {
         "src": "admin"
-      }
+      },
+      "params": {
+        "room_id": {
+          "type": "string",
+          "required": true,
+          "description": "ID of the room to shut down"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Empty confirmation object"
+      },
+      "errors": []
     },
+
     "remove": {
+      "doc": "Remove a meeting room and revoke all permissions. Revokes all permissions on the meeting node using permission_revoke with scope 'meeting' and returns the node ID as confirmation.",
       "scope": "hub",
       "permission": {
         "src": "admin"
-      }
+      },
+      "params": {
+        "nid": {
+          "type": "string",
+          "required": true,
+          "description": "Node ID of the meeting room to remove"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Confirmation of removal",
+        "properties": {
+          "nid": {
+            "type": "string",
+            "description": "Node ID of the removed meeting room"
+          }
+        }
+      },
+      "errors": []
     },
+
     "request_screen_access": {
+      "doc": "Request access to a peer screen sharing session. Reserved endpoint for future screen access request workflow. Currently not active in the service implementation.",
       "scope": "hub",
       "permission": {
         "src": "read",
         "fast_check": "user_permission"
-      }
+      },
+      "params": {},
+      "returns": {
+        "type": "object",
+        "description": "Reserved"
+      },
+      "errors": []
     },
+
     "requestAccess": {
+      "doc": "Request access to join an active room as a participant. Verifies room permission via room_access, retrieves presenter and current peers, pushes user online status to 2 (in-meeting), and if the requester is the presenter sends a meeting.start signal to all peers.",
       "scope": "hub",
       "permission": {
         "src": "read",
         "fast_check": "public-api"
-      }
+      },
+      "params": {
+        "socket_id": {
+          "type": "string",
+          "required": true,
+          "description": "WebSocket socket ID of the requesting user"
+        },
+        "room_id": {
+          "type": "string",
+          "required": true,
+          "description": "ID of the room to request access to"
+        },
+        "hub_id": {
+          "type": "string",
+          "required": true,
+          "description": "Hub ID containing the room"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Room access context with peer and presenter information",
+        "properties": {
+          "presenter": {
+            "type": "object",
+            "description": "Current presenter data from room_get_presenter"
+          },
+          "peers": {
+            "type": "array",
+            "description": "List of current room attendees excluding the requesting socket"
+          },
+          "presenter_id": {
+            "type": "string",
+            "description": "User ID of the current presenter, or null if none"
+          },
+          "room_id": {
+            "type": "string",
+            "description": "Room ID from the access record"
+          },
+          "user": {
+            "type": "object",
+            "description": "Requesting user info (avatar_id, deviceId, role, ssid, uid, username)"
+          },
+          "ssid": {
+            "type": "string",
+            "description": "Socket ID from the access record"
+          },
+          "status": {
+            "type": "string",
+            "description": "Room access status"
+          },
+          "peer": {
+            "type": "object",
+            "description": "Alias of user object for peer-to-peer signaling"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "WEAK_PRIVILEGE OOOP",
+          "message": "User does not have sufficient permission to access the room",
+          "condition": "room_access returns no record or permission is falsy"
+        }
+      ]
     },
+
     "unified_room": {
+      "doc": "Manage unified room state for multi-participant sessions. Supports four operations via the flag parameter: get (retrieve room state), add (join with media settings using defaults), update (join with explicit required media settings), and remove (leave the unified room).",
       "scope": "hub",
       "permission": {
         "src": "read",
         "fast_check": "public-api"
-      }
+      },
+      "params": {
+        "flag": {
+          "type": "string",
+          "required": true,
+          "description": "Operation to perform: 'get' to retrieve, 'add' to join with optional settings, 'update' to update with required settings, 'remove' to leave"
+        },
+        "id": {
+          "type": "string",
+          "required": true,
+          "description": "Room ID to operate on"
+        },
+        "uid": {
+          "type": "string",
+          "required": false,
+          "description": "User ID. Defaults to empty string if omitted."
+        },
+        "is_mic_enabled": {
+          "type": "integer",
+          "required": false,
+          "description": "Microphone enabled state (0 or 1). Required when flag=update. Defaults to 1 when flag=add."
+        },
+        "is_video_enabled": {
+          "type": "integer",
+          "required": false,
+          "description": "Camera enabled state (0 or 1). Required when flag=update. Defaults to 0 when flag=add."
+        },
+        "is_share_enabled": {
+          "type": "integer",
+          "required": false,
+          "description": "Screen share enabled state (0 or 1). Required when flag=update. Defaults to 0 when flag=add."
+        },
+        "is_write_enabled": {
+          "type": "integer",
+          "required": false,
+          "description": "Write/annotation enabled state (0 or 1). Required when flag=update. Defaults to 0 when flag=add."
+        },
+        "metadata": {
+          "type": "object",
+          "required": false,
+          "description": "Additional room metadata object. Used when flag=add or flag=update. Defaults to empty object."
+        }
+      },
+      "returns": {
+        "type": "array",
+        "description": "List of unified room records after the operation"
+      },
+      "errors": []
     },
+
     "update": {
+      "doc": "Update a scheduled meeting room. Supports partial or full updates controlled by the flag parameter. Flags: 'when' updates date only, 'title' updates title and renames the node, 'agenda' updates message, 'member' updates attendees and sends email invitations, 'all' updates all fields. Commits invitation emails to new attendees when flag includes member changes.",
       "scope": "hub",
       "permission": {
         "src": "admin"
-      }
+      },
+      "params": {
+        "flag": {
+          "type": "string",
+          "required": true,
+          "description": "Update scope: 'when' (date), 'title', 'agenda' (message), 'member' (attendees), or 'all' (all fields)"
+        },
+        "nid": {
+          "type": "string",
+          "required": true,
+          "description": "Node ID of the meeting room to update"
+        },
+        "date": {
+          "type": "string",
+          "required": false,
+          "description": "New meeting date/time string. Applied when flag is 'when' or 'all'."
+        },
+        "title": {
+          "type": "string",
+          "required": false,
+          "description": "New meeting title. Applied when flag is 'title' or 'all'. Truncated to 100 characters."
+        },
+        "message": {
+          "type": "string",
+          "required": false,
+          "description": "New meeting message/agenda. Applied when flag is 'agenda' or 'all'."
+        },
+        "attendees": {
+          "type": "array",
+          "required": false,
+          "description": "Updated attendee list. Required when flag is 'member' or 'all'. Each entry should contain email and optionally name."
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Updated meeting content fields",
+        "properties": {
+          "attendees": {
+            "type": "array",
+            "description": "Updated list of attendees"
+          },
+          "title": {
+            "type": "string",
+            "description": "Updated meeting title"
+          },
+          "message": {
+            "type": "string",
+            "description": "Updated meeting message/agenda"
+          },
+          "date": {
+            "type": "string",
+            "description": "Updated meeting date/time"
+          }
+        }
+      },
+      "errors": []
     },
+
     "users": {
+      "doc": "List all users currently in a room. Reserved endpoint for room participant listing. Currently not active in the service implementation.",
       "scope": "hub",
       "permission": {
         "src": "read",
         "fast_check": "user_permission"
-      }
+      },
+      "params": {},
+      "returns": {
+        "type": "array",
+        "description": "Reserved"
+      },
+      "errors": []
     }
   },
   "modules": {

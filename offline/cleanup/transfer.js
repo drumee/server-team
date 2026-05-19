@@ -75,8 +75,8 @@ class __offline_tranfer_cleanup extends Logger {
     for (let file of files) {
       try {
         let dir;
-        let data = await yp.await_proc(`${db_name}.mfs_manifest`, 
-          file.resource_id, uid, 1);
+        let data = await yp.await_proc(`${db_name}.mfs_manifest`,
+          { nid: file.resource_id, uid, show_nodes: 1 });
         let leafs = data[0];
         if (!_.isArray(leafs)) {
           leafs = [leafs]

@@ -124,6 +124,55 @@ class mfs extends Mfs {
       })
       .catch(self.fallback);
   }
+
+  /**
+   * Get comprehensive node/folder information
+   * 
+   * Input:
+   * - hub_id
+   * - nid
+   * 
+   * Output:
+   * - file_count: Total files (recursive)
+   * - members: Array of users with permission
+   * - total_size: Total bytes used
+   * - ctime: Creation timestamp (upload_time)
+   * - mtime: Most recent modification timestamp (publish_time)
+   */
+  async node_summary() {
+    const hubId = this.input.need(Attr.hub_id);
+    const nid = this.input.need(Attr.nid);
+    
+    this.debug(`[MFS] Getting node info for hub: ${hubId}, nid: ${nid}`);
+    
+    const result = await this.yp.await_proc(
+      'forward_proc',
+      hubId,
+      'mfs_node_summary',
+      `'${hubId}', '${nid}'`
+    );
+    
+    const { toArray } = require('@drumee/server-essentials').utils;
+    const data = toArray(result)[0];
+    
+    if (data) {
+      if (typeof data.members === 'string') {
+        try {
+          data.members = JSON.parse(data.members);
+        } catch (e) {
+          this.warn('[MFS] Failed to parse members JSON:', e.message);
+          data.members = [];
+        }
+      }
+      
+      this.output.data(data);
+    } else {
+      this.output.data({
+        status: 'error',
+        message: 'Node not found'
+      });
+    }
+  }
 }
 
 module.exports = mfs;

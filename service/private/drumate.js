@@ -16,6 +16,7 @@
  */
 
 const { existsSync } = require('fs');
+const { resolve } = require('path');
 const { isEmpty, isArray } = require('lodash');
 const {
   Attr, toArray, Remit, Constants, sendSms,
@@ -104,8 +105,17 @@ class __private_drumate extends Entity {
   }
 
   /**
-   * 
-   * @returns 
+   * Change the user's email.
+   *
+   * Verifier branches on profile.password_set:
+   *   - password_set=1 → require current password (server-side verification,
+   *     not just the UI pre-check) so an attacker on the session can't
+   *     change the email out from under the user.
+   *   - password_set=0 → require email-OTP secret+code, the same flow we
+   *     use for delete_account on OAuth-only users.
+   *
+   * Falls back to password verification when the flag is missing for
+   * backward compatibility with legacy users.
    */
   async change_email() {
     const email = this.input.need(Attr.email);
@@ -113,6 +123,29 @@ class __private_drumate extends Entity {
       this.exception.user(INVALID_EMAIL_FORMAT);
       return;
     }
+
+    const profile = this.user.profile() || this.parseJSON(this.user.get(Attr.profile)) || {};
+    const passwordSet = profile.password_set;
+    const usePassword = passwordSet === undefined || parseInt(passwordSet) === 1;
+
+    if (usePassword) {
+      const password = this.input.need(Attr.password);
+      const ok = await this.yp.await_proc('check_password_next', this.uid, password);
+      if (isEmpty(ok)) {
+        this.exception.user(WRONG_PASSWORD);
+        return;
+      }
+    } else {
+      const secret = this.input.need(Attr.secret);
+      const code = this.input.need(Attr.code);
+      const otp = await this.yp.await_proc('secret_check', this.uid, secret, code);
+      if (!otp || otp.code != code) {
+        this.output.data({ error: 'INVALID_CODE' });
+        return;
+      }
+      await this.yp.await_proc('secret_clear', this.uid, 'all');
+    }
+
     let row = await this.yp.await_proc('email_exists', email);
     if (!isEmpty(row) && row.email) {
       this.exception.user(EMAIL_ALREADY_EXIST);
@@ -126,6 +159,8 @@ class __private_drumate extends Entity {
    * 
    */
   check_password() {
+    const password = this.input.get(Attr.password);
+    this.debug("AAA:130", password)
     this.yp.call_proc('check_password_next', this.uid, password, this.output.data);
   }
 
@@ -148,13 +183,16 @@ class __private_drumate extends Entity {
     const new_password = this.input.need(Attr.new_password);
     let r = await this.yp.await_proc('check_password_next', this.uid, old_password);
     if (isEmpty(r)) {
-      this.exception.forbiden('wrong_password');
+      this.output.data({ error: 'wrong_password' });
       return
     }
     if (!new_password.match(/(.+){8,}/)) { //(/(.+){2,} +(.+){4,}/)
-      this.exception.reject('uncompliant_password');
+      this.output.data({ error: 'uncompliant_password' });
     } else {
       r = await this.yp.await_proc('set_password', this.uid, new_password);
+      // Flag the account as password-backed so step-up flows
+      // (delete_account, change_email) gate on password rather than OTP.
+      await this.yp.call_proc('drumate_update_profile', this.uid, { password_set: 1 });
       this.output.data(r)
     }
   }
@@ -307,10 +345,10 @@ class __private_drumate extends Entity {
     })
   }
 
-  /** check_otp
+  /** check_otp_and_change
    *  Check if there pending OTP
    */
-  async check_otp() {
+  async check_otp_and_change() {
     let secret = this.input.use(Attr.secret);
     let code = this.input.use(Attr.code);
     if (secret && code) {
@@ -360,6 +398,18 @@ class __private_drumate extends Entity {
     this.output.data(data);
   }
 
+  /**
+  * Mark onboarding as complete for current user
+  */
+  async mark_onboarding_complete() {
+    let data = await this.yp.await_proc(
+      'drumate_update_profile',
+      this.uid,
+      JSON.stringify({ onboarded: true })
+    );
+    this.output.data(data);
+  }
+
 
   /**
    * 
@@ -373,7 +423,7 @@ class __private_drumate extends Entity {
     } catch {
       cur_profile = {};
     }
-    if (await this.check_otp()) return;
+    if (await this.check_otp_and_change()) return;
     for (let key in profile) {
       if (['otp'].includes(key)) {
         if (cur_profile.otp != null) {
@@ -416,7 +466,7 @@ class __private_drumate extends Entity {
    * 
    */
   async disk_space() {
-    let data = await this.db.await_proc('mfs_manifest', this.home_id, this.uid, 0);
+    let data = await this.db.await_proc('mfs_manifest', { nid: this.home_id, uid: this.uid, show_nodes: 0 });
     this.output.list(data);
   }
 
@@ -527,12 +577,44 @@ class __private_drumate extends Entity {
     this.output.list(r);
   }
 
+  /**
+   * Queue a full user-data export (personal files, hub files, P2P chat, activity logs).
+   * Flags: personal | hubs | chat | logs
+   * Runs as offline background process — sends download link via email on completion.
+   */
+  async backup() {
+    const { spawn } = require('child_process');
+    const SPAWN_OPT = { detached: true, stdio: ['ignore', 'ignore', 'ignore'] };
+
+    const flags = this.input.need('flags');
+    const socket_id = this.input.need(Attr.socket_id);
+    const zipid = this.randomString();
+    const email = this.user.get(Attr.email);
+    const lang = this.user.language() || 'en';
+    const { db_name, profile } = this.user.toJSON();
+    const data = {
+      uid: this.uid,
+      hub_id: this.hub.get(Attr.id),
+      zipid,
+      socket_id,
+      flags: Array.isArray(flags) ? flags : [flags],
+      lang,
+      email: profile.email,
+      db_name
+    };
+
+    const cmd = resolve(__dirname, '../../offline/drumate', 'backup.js');
+    const child = spawn(cmd, [JSON.stringify(data)], SPAWN_OPT);
+    child.unref();
+
+    this.output.json({ zipid, status: 'queued' });
+  }
 
   /**
    * Confirm account deletion
    * @param {string} token - secret string required to validate account deletion
    */
-  async confirm_delete_account() {
+  async unused_confirm_delete_account() {
     let secret = this.input.need(Attr.secret);
     const data = await this.yp.await_proc('token_get', secret);
     if (isEmpty(data)) {
@@ -588,25 +670,144 @@ class __private_drumate extends Entity {
   }
 
   /**
-   * Prepare account deletion
-   * Shall send secret link containing a token that will be used to confirm deletion
-   * @constructor
+   * Prepare account deletion.
+   *
+   * Verifier branches on profile.password_set:
+   *   - password_set=1 → password (current behaviour)
+   *   - password_set=0 → email-OTP (secret + code via secret_check) so
+   *     OAuth-only users (random UUID password) can delete their account.
+   *
+   * Falls back to password verification when the flag is missing for
+   * backward compatibility with legacy users.
    */
   async delete_account() {
-    let secret = this.input.use(Attr.secret);
-    let code = this.input.use(Attr.code);
-    let otp = await this.yp.await_proc('otp_check', this.uid, secret, code);
-    if (isEmpty(otp)) {
-      this.exception.user('_invalid_key');
+    const profile = this.user.profile() || this.parseJSON(this.user.get(Attr.profile)) || {};
+    const passwordSet = profile.password_set;
+    const usePassword = passwordSet === undefined || parseInt(passwordSet) === 1;
+
+    if (usePassword) {
+      const password = this.input.use(Attr.password);
+      const data = await this.yp.await_proc('check_password_next', this.uid, password);
+      if (isEmpty(data)) {
+        this.output.data({ error: "WRONG_CREDENTIALS" });
+        return;
+      }
+    } else {
+      const secret = this.input.need(Attr.secret);
+      const code = this.input.need(Attr.code);
+      const otp = await this.yp.await_proc("secret_check", this.uid, secret, code);
+      if (!otp || otp.code != code) {
+        this.output.data({ error: "INVALID_CODE" });
+        return;
+      }
+      await this.yp.await_proc("secret_clear", this.uid, "all");
+    }
+
+    await this.yp.await_proc(`drumate_freeze`, this.uid);
+    this.session.logout({ redirect: "#/welcome" });
+  }
+
+  /**
+   * Return the OAuth providers linked to this user.
+   * Used by the "Linked accounts" settings card to render the list.
+   *
+   * Returns: [{ provider, email, mtime }, ...]
+   */
+  async list_oauth_links() {
+    const rows = await this.yp.await_query(
+      'SELECT provider, email, ctime, mtime FROM oauth_accounts WHERE user_id = ? ORDER BY ctime ASC',
+      this.uid
+    );
+    this.output.data(toArray(rows));
+  }
+
+  /**
+   * Disconnect an OAuth provider from this account.
+   *
+   * Refuses if it would leave the account with NO way to authenticate:
+   *   - password_set=0 AND removing the user's last oauth row → reject.
+   * Otherwise deletes the oauth_accounts row.
+   *
+   * Sensitive — gated by the same password-or-OTP fork as delete_account.
+   */
+  async unlink_oauth() {
+    const provider = this.input.need('provider');
+
+    const profile = this.user.profile() || this.parseJSON(this.user.get(Attr.profile)) || {};
+    const passwordSet = profile.password_set;
+    const usePassword = passwordSet === undefined || parseInt(passwordSet) === 1;
+
+    if (usePassword) {
+      const password = this.input.need(Attr.password);
+      const ok = await this.yp.await_proc('check_password_next', this.uid, password);
+      if (isEmpty(ok)) {
+        this.output.data({ error: "WRONG_CREDENTIALS" });
+        return;
+      }
+    } else {
+      // OAuth-only user trying to unlink — make sure they're not about
+      // to lock themselves out. Count remaining links AFTER the unlink.
+      const remaining = await this.yp.await_query(
+        'SELECT COUNT(*) AS n FROM oauth_accounts WHERE user_id = ? AND provider != ?',
+        this.uid, provider
+      );
+      const left = (remaining && remaining.n) || 0;
+      if (left === 0) {
+        this.output.data({ error: "LAST_AUTH_METHOD" });
+        return;
+      }
+      const secret = this.input.need(Attr.secret);
+      const code = this.input.need(Attr.code);
+      const otp = await this.yp.await_proc("secret_check", this.uid, secret, code);
+      if (!otp || otp.code != code) {
+        this.output.data({ error: "INVALID_CODE" });
+        return;
+      }
+      await this.yp.await_proc("secret_clear", this.uid, "all");
+    }
+
+    await this.yp.await_query(
+      'DELETE FROM oauth_accounts WHERE user_id = ? AND provider = ?',
+      this.uid, provider
+    );
+    this.output.data({ status: "ok", provider });
+  }
+
+  /**
+   * Allow OAuth-only users (password_set=0) to set a password for the
+   * first time. Gated by an email-OTP step so an attacker on the
+   * session can't add a password that locks the user out.
+   *
+   * Once set, password_set flips to 1 and the user can sign in either
+   * way. Refuses if password_set=1 already (use change_password instead).
+   */
+  async set_initial_password() {
+    const profile = this.user.profile() || this.parseJSON(this.user.get(Attr.profile)) || {};
+    if (parseInt(profile.password_set) === 1) {
+      this.output.data({ error: "ALREADY_HAS_PASSWORD" });
       return;
     }
 
-    secret = this.randomString();
-    const fullname = this.user.get(Attr.fullname);
-    let recipient = this.user.get(Attr.profile).email;
-    await this.yp.await_proc('token_generate',
-      recipient, fullname, secret, 'delete_account', this.uid);
-    this.output.data({ secret });
+    const password = this.input.need(Attr.password);
+    if (!password.match(/(.+){8,}/)) {
+      this.output.data({ error: "uncompliant_password" });
+      return;
+    }
+
+    const secret = this.input.need(Attr.secret);
+    const code = this.input.need(Attr.code);
+    const otp = await this.yp.await_proc("secret_check", this.uid, secret, code);
+    if (!otp || otp.code != code) {
+      this.output.data({ error: "INVALID_CODE" });
+      return;
+    }
+    await this.yp.await_proc("secret_clear", this.uid, "all");
+
+    await this.yp.await_proc("set_password", this.uid, password);
+    await this.yp.call_proc("drumate_update_profile", this.uid, { password_set: 1 });
+
+    const user = await this.yp.await_proc("get_user", this.uid);
+    this.output.data(user);
   }
 
   /**
@@ -713,11 +914,6 @@ class __private_drumate extends Entity {
     let entity = 'hub';
     if (isEmpty(entity_id)) {
       entity = 'empty';
-    } else if (entity_id == 'Support Ticket') {
-      entity = 'Support Ticket';
-      let sbox = await this.db.await_proc("mfs_wicket_home", this.uid);
-
-      tickets = await this.yp.await_proc('forward_proc', sbox.hub_id, 'ticket_unreaded', `'${this.uid}'`);
     } else {
       let drumate = await this.yp.await_proc('drumate_exists', entity_id);
       if (!isEmpty(drumate)) { entity = 'drumate' }

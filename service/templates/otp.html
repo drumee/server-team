@@ -1,52 +1,84 @@
 <!DOCTYPE html>
 <html>
-
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>
-    <%= heading %>
-  </title>
+  <meta name="x-apple-disable-message-reformatting">
+  <title><%= heading %></title>
 </head>
+<body style="margin:0;padding:0;background:#f2f2f7;-webkit-font-smoothing:antialiased;font-family:'Geist','SF Pro Display',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f2f2f7;">
+    <tr>
+      <td align="center" style="padding:20px 8px;">
+        <table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0" style="width:600px;max-width:100%;background:#fff;border-radius:8px;overflow:hidden;">
 
-<body style="background: #f4f5f8; padding: 20px;">
-  <div data-layer="1"
-    style="width: 480px; padding: 32px; background: var(--Gray-White, white); border-radius: 24px; outline: 1px var(--Neutral-200, #EBECF0) solid; outline-offset: -1px; flex-direction: column; justify-content: center; align-items: center; gap: 32px; display: inline-flex">
-    <div data-layer="1"
-      style="align-self: stretch; flex-direction: column; justify-content: flex-start; align-items: center; gap: 24px; display: flex">
-      <div data-layer="4" style="width: 83px; height: 72px; position: relative">
-        <div data-svg-wrapper data-layer="Symbol" class="Symbol" style="left: 1.20px; top: 2.25px; position: absolute">
-          <svg width="81" height="64" viewBox="0 0 81 64" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path
-              d="M12.3286 1.1773C26.3873 -3.77489 31.1116 8.55949 34.4635 7.58372C68.5443 -2.34044 69.585 7.28991 73.8757 19.2162C74.0939 19.9947 74.2604 20.8101 74.3817 21.6542C78.2022 24.6535 80.6355 29.1781 80.6356 34.2403C80.6356 40.8759 76.4554 46.5882 70.4493 49.1515C68.1051 57.7594 61.1646 64 52.9669 64C48.9502 64 45.2356 62.5016 42.2153 59.9609C39.309 62.5016 35.7346 64 31.8696 64C25.2821 64 19.5384 59.648 16.5094 53.1997C16.327 53.2051 16.1438 53.208 15.96 53.208C6.40948 53.208 2.17338e-05 45.8873 0 36.8567C2.71648e-05 31.5636 1.32768 26.8587 5.45236 23.8702C3.80918 13.734 4.4931 3.93739 12.3286 1.1773ZM42.8633 16.8696C39.9205 16.8696 37.535 19.2055 37.535 22.0869V31.1304C37.535 34.0119 39.9206 36.3478 42.8633 36.3478C45.8061 36.3478 48.1916 34.0119 48.1917 31.1304V22.0869C48.1917 19.2055 45.8061 16.8696 42.8633 16.8696ZM57.7827 16.8696C54.8399 16.8696 52.4543 19.2055 52.4543 22.0869V31.1304C52.4543 34.0119 54.8399 36.3478 57.7827 36.3478C60.7254 36.3478 63.111 34.0119 63.111 31.1304V22.0869C63.111 19.2055 60.7254 16.8696 57.7827 16.8696Z"
-              fill="var(--Primary-500, #B251FB)" />
-          </svg>
-        </div>
-      </div>
-      <div data-layer="1"
-        style="align-self: stretch; flex-direction: column; justify-content: center; align-items: flex-start; gap: 4px; display: flex">
-        <div data-layer="1"
-          style="align-self: stretch; text-align: center; color: var(--Neutral-900, #222732); font-size: 32px; font-family: Armin Grotesk; font-weight: 600; line-height: 40px; word-wrap: break-word">
-          <%= heading %>
-        </div>
-        <div data-layer="1" style="justify-content: flex-start; align-items: center; gap: 12px; display: inline-flex">
-          <div data-layer="1"
-            style="width: 52px; height: 72px; padding-left: 16px; padding-right: 16px; padding-top: 8px; padding-bottom: 8px; background: var(--Gray-White, white); border-radius: 1000px; outline: 1px var(--Neutral-200, #EBECF0) solid; outline-offset: -1px; justify-content: center; align-items: center; gap: 16px; display: flex">
-            <div data-layer="1"
-              style="text-box-trim: trim-both; text-box-edge: cap alphabetic; text-align: center; color: var(--Neutral-900, #222732); font-size: 32px; font-family: Armin Grotesk; font-weight: 400; line-height: 40px; word-wrap: break-word">
-              <%= code %>
-            </div>
-          </div>
-        </div>
-        <div data-layer="1" style="align-self: stretch; text-align: center">
-          <span
-            style="color: var(--Neutral-600, #8C929C); font-size: 16px; font-family: Armin Grotesk; font-weight: 400; line-height: 26px; letter-spacing: 0.16px; word-wrap: break-word">
-            <%= why_this_otp %>
-          </span>
-        </div>
-      </div>
-    </div>
-  </div>
+          <!-- Header: purple signature -->
+          <tr>
+            <td bgcolor="#433cc5" align="center" style="padding:24px;background:#433cc5;">
+              <table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr><td align="center" style="line-height:0;">
+                <img src="https://content.app.drumee.com/icons/logo.png" width="170" height="36" alt="Drumee" style="display:block;border:0;outline:0;text-decoration:none;-ms-interpolation-mode:bicubic;">
+              </td></tr></table>
+            </td>
+          </tr>
+
+          <!-- Main content -->
+          <tr>
+            <td style="padding:32px;" align="center">
+
+              <!-- Headline -->
+              <h1 style="margin:0 0 24px 0;padding:0;text-align:center;font-family:'Geist','SF Pro Display',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;font-weight:600;font-size:24px;line-height:1.1;color:#282538;">
+                <%= heading %>
+              </h1>
+
+              <!-- OTP code pill -->
+              <table role="presentation" cellpadding="0" cellspacing="0" border="0" align="center" style="margin:0 auto;background:#ffffff;border:1px solid #EBECF0;border-radius:1000px;">
+                <tr>
+                  <td style="padding:8px 24px;text-align:center;font-family:'Geist Mono','SF Mono',Menlo,Consolas,monospace;font-weight:600;font-size:32px;line-height:40px;letter-spacing:8px;color:#282538;">
+                    <%= code %>
+                  </td>
+                </tr>
+              </table>
+
+              <!-- 24px gap -->
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td style="height:24px;line-height:24px;font-size:0;">&nbsp;</td></tr></table>
+
+              <p style="margin:0;padding:0;text-align:center;font-family:'Geist','SF Pro Display',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;font-weight:400;font-size:16px;line-height:1.4;color:#84848c;">
+                <%= why_this_otp %>
+              </p>
+
+            </td>
+          </tr>
+
+          <!-- Footer -->
+          <tr>
+            <td bgcolor="#f2f2f7" style="background:#fff;border-top:1px solid #d1d1d6;padding:33px 32px 32px 32px;">
+              <table role="presentation" cellpadding="0" cellspacing="0" border="0" align="center">
+                <tr>
+                  <td style="padding:0 16px;font-family:'Geist','SF Pro Display',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;font-size:10px;line-height:1.4;color:#84848c;">
+                    <a href="https://drumee.com/privacy/" style="color:#84848c;text-decoration:none;">Privacy Policy</a>
+                  </td>
+                  <td style="padding:0 16px;font-family:'Geist','SF Pro Display',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;font-size:10px;line-height:1.4;color:#84848c;">
+                    <a href="https://drumee.com/terms/" style="color:#84848c;text-decoration:none;">Terms of Service</a>
+                  </td>
+                  <td style="padding:0 16px;font-family:'Geist','SF Pro Display',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;font-size:10px;line-height:1.4;color:#84848c;">
+                    <a href="https://drumee.com/about" style="color:#84848c;text-decoration:none;">Support</a>
+                  </td>
+                </tr>
+              </table>
+
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td style="height:32px;line-height:32px;font-size:0;">&nbsp;</td></tr></table>
+
+              <p style="margin:0 0 7px 0;padding:0;text-align:center;font-family:'Geist','SF Pro Display',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;font-weight:700;font-size:12px;line-height:1.4;color:#84848c;">DRUMEE WORKSPACE</p>
+
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td style="height:32px;line-height:32px;font-size:0;">&nbsp;</td></tr></table>
+
+              <p style="margin:0;padding:0;text-align:center;font-family:'Geist','SF Pro Display',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;font-weight:400;font-size:8px;line-height:1.4;color:#84848c;">&copy; <%= new Date().getFullYear() %> Drumee. All rights reserved.</p>
+            </td>
+          </tr>
+
+        </table>
+      </td>
+    </tr>
+  </table>
 </body>
-
 </html>

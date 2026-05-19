@@ -118,13 +118,24 @@ class __butler extends Mfs {
     try {
       a = data.email.split("@");
     } catch (e) {
-      this.exception.user("invalid_token");
+      this.output.data({ error: "INVALID_LINK" });
+      // this.exception.user("invalid_token");
       return;
     }
 
     if (data.status != "active") {
-      this.exception.user("invalid_token");
+      this.output.data({ error: 'LINK_EXPIRES' });
+      // this.exception.user("invalid_token");
       return;
+    }
+
+    // Check if email is already a registered Drumee user
+    if (data.method === 'signup') {
+      const existingUser = await this.yp.await_proc('drumate_exists', data.email);
+      if (!isEmpty(existingUser) && existingUser.id) {
+        data.user_exists = true;
+        data.uid = existingUser.id;
+      }
     }
 
     a = a[0].split(/[\.-_]/);
@@ -169,7 +180,7 @@ class __butler extends Mfs {
     const ulang = this.input.ua_language();
     const link = `${this.input.homepath()}#/welcome/reset/${user.id}/${token}`;
     const subject = Cache.message("_password_reset_link", ulang);
-
+    const { main_domain } = sysEnv();
     const msg = new Messenger({
       template: "butler/password-forgot",
       subject,
@@ -179,7 +190,7 @@ class __butler extends Mfs {
         icon: this.hub.get(Attr.icon),
         recipient: user.fullname,
         link,
-        home: process.env.domain_name,
+        home: main_domain,
       },
       handler: this.exception.email,
     });
@@ -231,6 +242,9 @@ class __butler extends Mfs {
       return this.output.data({ status: "DRUMATE_NOT_EXISTS" });
     }
     drumate = await this.yp.await_proc("set_password", id, pw);
+    // Forgot-password flow is a real password set — flag the account
+    // as password-backed even if it was previously OAuth-only.
+    await this.yp.call_proc("drumate_update_profile", id, { password_set: 1 });
     let connection = "offline";
     if ([1, "1", "sms"].includes(drumate.otp)) {
       metadata.step = "otpverify";
@@ -255,13 +269,13 @@ class __butler extends Mfs {
       profile.connected = "1";
       await this.yp.call_proc("drumate_update_profile", id, stringify(profile));
       //let domain = await this.yp.await_func("domain_name", sid);
-      await this.yp.await_proc(
-        "session_login_next",
-        id,
-        pw,
-        this.input.sid(),
-        drumate.domain
-      );
+      let opt = {
+        uid: id,
+        password: pw,
+        sid: this.input.sid(),
+        host: drumate.domain
+      }
+      let log = await this.yp.await_proc("session_signin", opt);
       metadata.step = "complete";
       await this.yp.await_proc("token_update", secret, metadata);
       res = await this.yp.await_proc("token_get_next", secret);
@@ -440,16 +454,16 @@ class __butler extends Mfs {
     }
     let hub = await this.yp.await_proc("get_hub", org.url);
     let user = await this.yp.await_proc("get_user", this.uid);
-    if(!user?.id){
+    if (!user?.id) {
       user = {
-        uid:this.uid,
-        id:this.uid,
-        profile:{},
+        uid: this.uid,
+        id: this.uid,
+        profile: {},
         ident: this.session.ident(),
-        username:this.session.ident(),
-        signed_in:0,
+        username: this.session.ident(),
+        signed_in: 0,
         settings: {},
-        organisation:org
+        organisation: org
       }
     }
     user.main_domain = main_domain;
@@ -520,10 +534,13 @@ class __butler extends Mfs {
     }
 
     await this.yp.await_proc("set_password", user.id, pw);
+    // Token-based password set is a real password — flag the account
+    // as password-backed for downstream step-up auth.
+    await this.yp.call_proc("drumate_update_profile", user.id, { password_set: 1 });
     await this.yp.await_proc("token_delete", secret);
     this.output.data(user);
   }
-  
+
   /**
    * The account schema is picked from the pool of hubs that are already created by offline process 
    */
@@ -535,6 +552,7 @@ class __butler extends Mfs {
       password,
     } = data;
     let username = firstname || email.split('@')[0];
+    username = username.replace(/[^a-zA-Z0-9]/g, '');// Accept only ascci alphanum
     username = await this.yp.await_func("ensure_username", { username: username.toLowerCase(), domain });
     let a = firstname.split(/ +/)
     let lastname = "";
@@ -543,7 +561,6 @@ class __butler extends Mfs {
       a.shift()
       lastname = a.join(' ')
     }
-    username = username.replace(/[^a-zA-Z0-9]/g, '');
     let profile = {
       username,
       sharebox: uniqueId(),
@@ -553,7 +570,11 @@ class __butler extends Mfs {
       lang: this.user.language() || this.input.app_language(),
       firstname,
       lastname,
-      email
+      email,
+      // Local signup — real password supplied by user. Step-up flows
+      // (delete_account, change_email) will gate on password instead of OTP.
+      auth_method: "local",
+      password_set: 1,
     }
 
     let user = await this.yp.await_proc("drumate_create", password, profile);
@@ -586,26 +607,28 @@ class __butler extends Mfs {
     const password = this.input.need(Attr.password).trim();
     const email = this.input.need(Attr.email).trim();
     const firstname = this.input.get(Attr.firstname);
+
     let bound = await this.yp.await_func("socket_check_binding", socket_id, this.input.sid());
     if (!bound) {
       return this.output.data({ status: "not_bound" });
     }
-    let data = {
-      socket_id, password, email, firstname
-    }
-    let user = await this.yp.await_proc("drumate_exists", email);
-    if (user && user.email) {
+
+    let existingUser = await this.yp.await_proc("drumate_exists", email);
+    if (existingUser && existingUser.email) {
       return this.output.data({ status: "user_exists", email });
     }
-    data = await this._create_account(data)
-    let tpl = resolve(__dirname, "./templates/welcome.html")
-    switch (data.failed) {
-      case 0:
+
+    let accountData = { socket_id, password, email, firstname };
+    accountData = await this._create_account(accountData);  
+    
+    let tpl = resolve(__dirname, "./templates/welcome.html");
+    switch (accountData.failed) {
+      case 0: {
         /** Output done by session.login */
-        const ulang = this.input.ua_language();
-        let lex = Cache.lex(ulang)
+        const ulang = "en";
+        let lex = Cache.lex(ulang);
         const { main_domain } = sysEnv();
-        let data = {
+        let mailData = {
           heading: lex._your_account_is_all_set,
           message: lex._mail_signup_drumee,
           workspace: lex._discover_drumee_desk,
@@ -613,31 +636,92 @@ class __butler extends Mfs {
           signature: lex._drumee_team,
           reminder: lex._copyright.format(`${new Date().getFullYear()}`),
           hello: lex._hello_x.format(firstname || ""),
-        }
+        };
         const msg = new Messenger({
           subject: lex._welcome_on_drumee,
           recipient: email,
           handler: this.exception.email,
         });
-
-        let html = msg.renderFrom(tpl, data)
+        let html = msg.renderFrom(tpl, mailData);
         await msg.send({ html });
-        return
+
+        // Resolve pending hub invitations registered before account existed
+        try {
+          await this._resolve_pending_invitation(email);
+        } catch (err) {
+          this.warn("[signup] Failed to resolve pending_invitation for", email, err && err.message);
+        }
+
+        return;
+      }
       case 2:
         return this.output.data({ status: 'server_busy' });
       default: {
-        this.warn("Failed to create drumate", data)
-        if (data.error) {
+        this.warn("Failed to create drumate", accountData);
+        if (accountData.error) {
           return this.output.data({ status: 'server_error' });
         }
       }
     }
-    if (!data.error) {
+
+    if (!accountData.error) {
       /** Output done by session.login */
-      return
+      return;
     }
 
-    return this.output.data(data);
+    return this.output.data(accountData);
+  }
+
+  /**
+  * After a new user completes signup, resolve any pending hub invitations
+  * that were registered via yp_add_pending_invitation before the account existed.
+  *
+  * @param {string} email - newly registered user's email
+  */
+  async _resolve_pending_invitation(email) {
+    const { toArray } = require("@drumee/server-essentials").utils;
+    const { isEmpty } = require("lodash");
+
+    // 1. Get new user's ID
+    const newUser = await this.yp.await_proc("drumate_exists", email);
+    if (isEmpty(newUser) || !newUser.id) {
+      this.warn("[_resolve_pending_invitation] Cannot find newly created user for", email);
+      return;
+    }
+
+    // 2. Find all pending hub invitations for this email
+    const pending = await this.yp.await_proc("pending_invitation_get_by_email", email);
+    const rows = toArray(pending);
+    if (isEmpty(rows)) return;
+
+    for (const row of rows) {
+      const { hub_id, permission, expiry_time } = row;
+      try {
+        // 3. Get hub db_name explicitly
+        const db_name = await this.yp.await_func("get_db_name", hub_id);
+        if (!db_name) {
+          this.warn(`[_resolve_pending_invitation] Cannot find db_name for hub ${hub_id}`);
+          continue;
+        }
+
+        // 4. Add as real member
+        await this.yp.await_proc(`${db_name}.add_member`, newUser.id, permission, expiry_time);
+
+        // 5. Grant hub permission
+        await this.yp.await_proc(
+          `${db_name}.permission_grant`,
+          '*', newUser.id, expiry_time, permission, 'system', 'Resolved from pending_invitation on signup'
+        );
+
+        this.debug(`[_resolve_pending_invitation] Added user ${newUser.id} to hub ${hub_id}`);
+      } catch (err) {
+        // Log per-hub failure but continue processing remaining hubs
+        this.warn(`[_resolve_pending_invitation] Failed for hub ${hub_id}:`, err && err.message);
+      }
+    }
+
+    // 6. Clean up all resolved pending_invitation entries for this email
+    await this.yp.await_proc("pending_invitation_delete_by_email", email);
   }
 
   /**
@@ -649,6 +733,15 @@ class __butler extends Mfs {
     const data = geoip.lookup(ip) || {};
     data.ip = ip;
     this.output.data(data);
+  }
+
+  /**
+   * 
+   */
+  async unsubscribe() {
+    const unsubscribe = this.input.get(Attr.email);
+    await this.yp.await_query(`UPDATE emailing SET status='unsubscribed' WHERE email=?`, unsubscribe)
+    this.output.data({ unsubscribe });
   }
 
   /**

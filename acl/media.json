@@ -1,5 +1,1333 @@
 {
   "services": {
+    "upload": {
+      "doc": "Upload new file to MFS (with quota and permission checks)",
+      "scope": "hub",
+      "permission": {
+        "src": "write",
+        "preproc": {
+          "checker": "pre_upload"
+        }
+      },
+      "params": {
+        "pid": {
+          "type": "string",
+          "required": true,
+          "doc": "Parent folder ID where file will be uploaded"
+        },
+        "file": {
+          "type": "file",
+          "required": true,
+          "doc": "File to upload (multipart/form-data)"
+        },
+        "filename": {
+          "type": "string",
+          "required": true,
+          "maxLength": 126,
+          "doc": "Original filename"
+        },
+        "filesize": {
+          "type": "number",
+          "required": false,
+          "doc": "File size in bytes (for quota checking)"
+        },
+        "md5Hash": {
+          "type": "string",
+          "required": false,
+          "doc": "MD5 hash for deduplication"
+        },
+        "metadata": {
+          "type": "object",
+          "required": false,
+          "doc": "Additional file metadata"
+        },
+        "replace": {
+          "type": "number",
+          "required": false,
+          "enum": [0, 1],
+          "default": 0,
+          "doc": "Replace existing file (1) or create new (0)"
+        },
+        "ownpath": {
+          "type": "string",
+          "required": false,
+          "doc": "Absolute path within hub (will create parent folders if not exist)"
+        }
+      },
+      "returns": {
+        "id": {
+          "type": "string",
+          "doc": "New file node ID"
+        },
+        "nid": {
+          "type": "string",
+          "doc": "New file node ID (alias)"
+        },
+        "filename": {
+          "type": "string",
+          "doc": "Uploaded filename"
+        },
+        "filesize": {
+          "type": "number",
+          "doc": "File size in bytes"
+        },
+        "category": {
+          "type": "string",
+          "doc": "File category: image, video, audio, document, web, archive, etc"
+        },
+        "extension": {
+          "type": "string",
+          "doc": "File extension"
+        },
+        "mimetype": {
+          "type": "string",
+          "doc": "MIME type"
+        },
+        "mtime": {
+          "type": "number",
+          "doc": "Modification timestamp"
+        },
+        "ctime": {
+          "type": "number",
+          "doc": "Creation timestamp"
+        }
+      },
+      "errors": [
+        {
+          "code": "INSUFFICIENT_STORAGE",
+          "message": "Not enough storage quota",
+          "http_status": 507
+        },
+        {
+          "code": "PERMISSION_DENIED",
+          "message": "No write permission on destination folder",
+          "http_status": 403
+        },
+        {
+          "code": "FAILED_CREATE_FILE",
+          "message": "File creation failed",
+          "http_status": 500
+        },
+        {
+          "code": "INVALID_FILENAME",
+          "message": "Filename contains invalid characters",
+          "http_status": 400
+        },
+        {
+          "code": "OWNPATH_INCONSISTENT",
+          "message": "ownpath must use home_id as base",
+          "http_status": 400
+        }
+      ]
+    },
+    "download": {
+      "doc": "Download file from MFS",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "params": {
+        "nid": {
+          "type": "string",
+          "required": true,
+          "doc": "Node ID of file to download"
+        }
+      },
+      "returns": {
+        "file": {
+          "type": "binary",
+          "doc": "File content stream"
+        }
+      },
+      "errors": [
+        {
+          "code": "NODE_NOT_FOUND",
+          "message": "File does not exist",
+          "http_status": 404
+        },
+        {
+          "code": "PERMISSION_DENIED",
+          "message": "No read permission",
+          "http_status": 403
+        }
+      ]
+    },
+    "make_dir": {
+      "doc": "Create new directory/folder in MFS",
+      "scope": "hub",
+      "permission": {
+        "src": "write"
+      },
+      "params": {
+        "dirname": {
+          "type": "string",
+          "required": false,
+          "maxLength": 255,
+          "doc": "Directory name (use with pid). Slashes will be replaced with dashes"
+        },
+        "pid": {
+          "type": "string",
+          "required": false,
+          "doc": "Parent folder ID (required if using dirname)"
+        },
+        "ownpath": {
+          "type": "string",
+          "required": false,
+          "doc": "Absolute path within hub (alternative to dirname+pid). Will create parent folders if they don't exist"
+        },
+        "metadata": {
+          "type": "object",
+          "required": false,
+          "doc": "Additional folder metadata"
+        }
+      },
+      "returns": {
+        "nid": {
+          "type": "string",
+          "doc": "New folder node ID"
+        },
+        "filename": {
+          "type": "string",
+          "doc": "Folder name"
+        },
+        "category": {
+          "type": "string",
+          "doc": "folder"
+        },
+        "parent_id": {
+          "type": "string",
+          "doc": "Parent folder ID"
+        }
+      },
+      "errors": [
+        {
+          "code": "INVALID_FILENAME",
+          "message": "Filename contains invalid characters (., ./, space only, etc)",
+          "http_status": 400
+        },
+        {
+          "code": "FAILED_CREATE_FOLDER",
+          "message": "Directory creation failed",
+          "http_status": 500
+        },
+        {
+          "code": "PERMISSION_DENIED",
+          "message": "No write permission",
+          "http_status": 403
+        }
+      ]
+    },
+    "trash": {
+      "doc": "Move file/folder to trash bin",
+      "scope": "hub",
+      "permission": {
+        "src": "delete",
+        "preproc": {
+          "checker": "pre_trash"
+        }
+      },
+      "params": {
+        "nid": {
+          "type": "string",
+          "required": true,
+          "doc": "Node ID to trash (can be array for batch operation)"
+        }
+      },
+      "returns": {
+        "items": {
+          "type": "array",
+          "doc": "Array of trashed items",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "doc": "Node ID"
+              },
+              "nid": {
+                "type": "string",
+                "doc": "Node ID (alias)"
+              },
+              "status": {
+                "type": "string",
+                "doc": "New status: deleted"
+              },
+              "delete_time": {
+                "type": "number",
+                "doc": "Timestamp when trashed"
+              }
+            }
+          }
+        },
+        "args": {
+          "type": "object",
+          "doc": "Changelog info",
+          "properties": {
+            "changelog": {
+              "type": "object",
+              "doc": "Change tracking data"
+            }
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "PERMISSION_DENIED",
+          "message": "No delete permission",
+          "http_status": 403
+        },
+        {
+          "code": "NODE_NOT_FOUND",
+          "message": "Node does not exist",
+          "http_status": 404
+        },
+        {
+          "code": "LOCKED",
+          "message": "Item is locked and cannot be deleted",
+          "http_status": 403
+        },
+        {
+          "code": "_delete_hub",
+          "message": "Cannot delete hub",
+          "http_status": 403
+        }
+      ]
+    },
+    "move_all": {
+      "doc": "Move files/folders to different location",
+      "scope": "hub",
+      "permission": {
+        "src": "delete",
+        "dest": "write",
+        "preproc": {
+          "checker": "pre_transact",
+          "action": "move"
+        }
+      },
+      "params": {
+        "nodes": {
+          "type": "array",
+          "required": true,
+          "doc": "Array of source node IDs to move",
+          "items": {
+            "type": "string"
+          }
+        },
+        "dest_id": {
+          "type": "string",
+          "required": true,
+          "doc": "Destination folder ID"
+        },
+        "recipient_id": {
+          "type": "string",
+          "required": false,
+          "doc": "Target hub ID (if moving cross-hub)"
+        }
+      },
+      "returns": {
+        "items": {
+          "type": "array",
+          "doc": "Array of moved items with new locations"
+        },
+        "denied_lst": {
+          "type": "array",
+          "doc": "List of items that could not be moved due to permission"
+        }
+      },
+      "errors": [
+        {
+          "code": "CIRCULAR_REF",
+          "message": "Cannot move folder into itself",
+          "http_status": 400
+        },
+        {
+          "code": "DESTINATION_IS_NOT_DIRECTORY",
+          "message": "Destination must be a folder",
+          "http_status": 400
+        },
+        {
+          "code": "UNABLE_TO_TRANS_INBOUND",
+          "message": "Cannot move inbound items",
+          "http_status": 403
+        },
+        {
+          "code": "WICKET_HUB",
+          "message": "Cannot move to wicket hub",
+          "http_status": 403
+        }
+      ]
+    },
+    "copy_all": {
+      "doc": "Copy files/folders to different location",
+      "scope": "hub",
+      "permission": {
+        "src": "read",
+        "dest": "write",
+        "preproc": {
+          "checker": "pre_transact",
+          "action": "copy"
+        }
+      },
+      "params": {
+        "nodes": {
+          "type": "array",
+          "required": true,
+          "doc": "Array of source node IDs to copy",
+          "items": {
+            "type": "string"
+          }
+        },
+        "dest_id": {
+          "type": "string",
+          "required": true,
+          "doc": "Destination folder ID"
+        },
+        "recipient_id": {
+          "type": "string",
+          "required": false,
+          "doc": "Target hub ID (if copying cross-hub)"
+        }
+      },
+      "returns": {
+        "items": {
+          "type": "array",
+          "doc": "Array of copied items with new IDs"
+        }
+      },
+      "errors": [
+        {
+          "code": "INSUFFICIENT_STORAGE",
+          "message": "Not enough storage quota for copy",
+          "http_status": 507
+        },
+        {
+          "code": "your_limit_exceeded",
+          "message": "Your storage limit exceeded",
+          "http_status": 507
+        },
+        {
+          "code": "limit_exceeded",
+          "message": "Organization storage limit exceeded",
+          "http_status": 507
+        }
+      ]
+    },
+    "rename": {
+      "doc": "Rename file or folder",
+      "scope": "hub",
+      "permission": {
+        "src": "delete"
+      },
+      "params": {
+        "nid": {
+          "type": "string",
+          "required": true,
+          "doc": "Node ID to rename"
+        },
+        "filename": {
+          "type": "string",
+          "required": true,
+          "minLength": 1,
+          "maxLength": 255,
+          "doc": "New filename"
+        }
+      },
+      "returns": {
+        "id": {
+          "type": "string",
+          "doc": "Node ID"
+        },
+        "nid": {
+          "type": "string",
+          "doc": "Node ID (alias)"
+        },
+        "filename": {
+          "type": "string",
+          "doc": "Updated filename"
+        },
+        "args": {
+          "type": "object",
+          "doc": "Changelog and sync info",
+          "properties": {
+            "dest": {
+              "type": "object",
+              "doc": "New node state"
+            },
+            "src": {
+              "type": "object",
+              "doc": "Old node state"
+            },
+            "tag": {
+              "type": "string",
+              "doc": "Transaction tag for sync"
+            },
+            "changelog": {
+              "type": "object",
+              "doc": "Change tracking data"
+            }
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "FILENAME_EXISTS",
+          "message": "A file with this name already exists",
+          "http_status": 409
+        },
+        {
+          "code": "INVALID_FILENAME",
+          "message": "Filename contains invalid characters",
+          "http_status": 400
+        },
+        {
+          "code": "UNABLE_TO_RENAME_INBOUND",
+          "message": "Cannot rename inbound items",
+          "http_status": 403
+        }
+      ]
+    },
+    "show_bin": {
+      "doc": "Get paginated list of files in trash bin",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "params": {
+        "page": {
+          "type": "number",
+          "required": false,
+          "default": 1,
+          "min": 1,
+          "doc": "Page number for pagination"
+        }
+      },
+      "returns": {
+        "items": {
+          "type": "array",
+          "doc": "Array of trashed items",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "doc": "Node ID"
+              },
+              "filename": {
+                "type": "string",
+                "doc": "Filename"
+              },
+              "status": {
+                "type": "string",
+                "doc": "deleted"
+              },
+              "delete_time": {
+                "type": "number",
+                "doc": "Timestamp when trashed"
+              },
+              "category": {
+                "type": "string",
+                "doc": "File category"
+              },
+              "filesize": {
+                "type": "number",
+                "doc": "File size in bytes"
+              }
+            }
+          }
+        }
+      }
+    },
+    "empty_bin": {
+      "doc": "Permanently delete all files from trash bin (queued background job if trash_expiry enabled)",
+      "scope": "hub",
+      "permission": {
+        "src": "admin"
+      },
+      "returns": {
+        "status": {
+          "type": "string",
+          "doc": "queued (if using background job) or immediate completion"
+        },
+        "job_id": {
+          "type": "string",
+          "doc": "Job ID if queued"
+        },
+        "message": {
+          "type": "string",
+          "doc": "Status message"
+        },
+        "deleted_count": {
+          "type": "number",
+          "doc": "Number of items permanently deleted (if immediate)"
+        },
+        "freed_space": {
+          "type": "number",
+          "doc": "Storage space freed in bytes (if immediate)"
+        }
+      },
+      "errors": [
+        {
+          "code": "FAILED_TO_QUEUE_TRASH_CLEANUP",
+          "message": "Failed to queue trash cleanup job",
+          "http_status": 500
+        }
+      ]
+    },
+    "purge": {
+      "doc": "Permanently delete specific items from trash bin",
+      "scope": "hub",
+      "permission": {
+        "src": "admin"
+      },
+      "params": {
+        "list": {
+          "type": "array",
+          "required": false,
+          "default": [],
+          "doc": "Array of node IDs to purge. Empty array = purge all",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "returns": {
+        "items": {
+          "type": "array",
+          "doc": "Array of purged node IDs"
+        }
+      }
+    },
+    "restore_into": {
+      "doc": "Restore files/folders from trash to specified location",
+      "scope": "hub",
+      "permission": {
+        "src": "read",
+        "dest": "write",
+        "preproc": {
+          "checker": "pre_restore_into",
+          "action": "move"
+        }
+      },
+      "params": {
+        "nodes": {
+          "type": "array",
+          "required": true,
+          "doc": "Array of node IDs to restore",
+          "items": {
+            "type": "string"
+          }
+        },
+        "dest_id": {
+          "type": "string",
+          "required": true,
+          "doc": "Destination folder ID where items will be restored"
+        },
+        "recipient_id": {
+          "type": "string",
+          "required": false,
+          "doc": "Target hub ID (if restoring to different hub)"
+        }
+      },
+      "returns": {
+        "items": {
+          "type": "array",
+          "doc": "Array of restored items with new locations"
+        },
+        "denied": {
+          "type": "array",
+          "doc": "Items that could not be restored due to permission"
+        }
+      }
+    },
+    "restore": {
+      "doc": "Restore a trashed file or folder to its original location. If the original parent no longer exists, returns parent_missing=1 so the FE can show a location picker and fall back to restore_into.",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "params": {
+        "nid": {
+          "type": "string",
+          "required": true,
+          "doc": "Node ID of the trashed item to restore (from show_bin results)"
+        }
+      },
+      "returns": {
+        "parent_missing": {
+          "type": "number",
+          "doc": "1 if original parent no longer exists. FE should show location picker and call restore_into."
+        },
+        "original_parent_id": {
+          "type": "string",
+          "doc": "Original parent ID (only present when parent_missing=1). FE can use to show context."
+        },
+        "nid": {
+          "type": "string",
+          "doc": "Node ID (only present when parent_missing=1)"
+        }
+      },
+      "errors": [
+        {
+          "code": "RESTORE_FAILED",
+          "message": "Could not restore node (e.g. attempted to restore root)",
+          "http_status": 400
+        }
+      ]
+    },
+    "show_node_by": {
+      "doc": "Get paginated list of files/folders with sorting",
+      "scope": "hub",
+      "permission": {
+        "src": "anonymous"
+      },
+      "params": {
+        "nid": {
+          "type": "string",
+          "required": true,
+          "doc": "Parent folder ID to browse"
+        },
+        "page": {
+          "type": "number",
+          "required": false,
+          "default": 1,
+          "min": 1,
+          "doc": "Page number"
+        },
+        "sort": {
+          "type": "string",
+          "required": false,
+          "default": "rank",
+          "enum": ["rank", "date", "size", "sort"],
+          "doc": "Sort field"
+        },
+        "order": {
+          "type": "string",
+          "required": false,
+          "default": "asc",
+          "enum": ["asc", "desc"],
+          "doc": "Sort direction"
+        }
+      },
+      "returns": {
+        "items": {
+          "type": "array",
+          "doc": "Array of media items"
+        }
+      }
+    },
+    "show_node_by_with_size": {
+      "doc": "Get paginated list of files/folders with sorting (includes folder sizes)",
+      "scope": "hub",
+      "permission": {
+        "src": "anonymous"
+      },
+      "params": {
+        "nid": {
+          "type": "string",
+          "required": true,
+          "doc": "Parent folder ID to browse"
+        },
+        "page": {
+          "type": "number",
+          "required": false,
+          "default": 1,
+          "min": 1,
+          "doc": "Page number"
+        },
+        "sort": {
+          "type": "string",
+          "required": false,
+          "default": "rank",
+          "enum": ["rank", "date", "size", "sort"],
+          "doc": "Sort field"
+        },
+        "order": {
+          "type": "string",
+          "required": false,
+          "default": "asc",
+          "enum": ["asc", "desc"],
+          "doc": "Sort direction"
+        }
+      },
+      "returns": {
+        "items": {
+          "type": "array",
+          "doc": "Array of items with calculated folder sizes"
+        }
+      }
+    },
+    "manifest": {
+      "doc": "Get folder structure manifest (for export/import operations)",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "params": {
+        "nid": {
+          "type": "string",
+          "required": true,
+          "doc": "Root folder ID for manifest"
+        }
+      },
+      "returns": {
+        "nodes": {
+          "type": "array",
+          "doc": "Hierarchical list of all files and folders",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "doc": "Node ID"
+              },
+              "nid": {
+                "type": "string",
+                "doc": "Node ID (alias)"
+              },
+              "filename": {
+                "type": "string",
+                "doc": "Filename"
+              },
+              "file_path": {
+                "type": "string",
+                "doc": "Full path from root"
+              },
+              "category": {
+                "type": "string",
+                "doc": "file or folder"
+              },
+              "filesize": {
+                "type": "number",
+                "doc": "File size in bytes"
+              }
+            }
+          }
+        },
+        "total_size": {
+          "type": "number",
+          "doc": "Total size of all items in bytes"
+        }
+      }
+    },
+    "search_all": {
+      "doc": "Unified search: filenames + indexed content from documents/images",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "params": {
+        "string": {
+          "type": "string",
+          "required": false,
+          "doc": "Search query string (alternative to 'query')"
+        },
+        "query": {
+          "type": "string",
+          "required": false,
+          "doc": "Search query string (alternative to 'string')"
+        },
+        "page": {
+          "type": "number",
+          "required": false,
+          "default": 1,
+          "min": 1,
+          "doc": "Page number for pagination"
+        },
+        "limit": {
+          "type": "number",
+          "required": false,
+          "default": 20,
+          "min": 1,
+          "max": 100,
+          "doc": "Results per page"
+        }
+      },
+      "returns": {
+        "items": {
+          "type": "array",
+          "doc": "Search results ranked by relevance: exact filename match (highest) → filename contains → extension match → content match (lowest)",
+          "items": {
+            "type": "object",
+            "properties": {
+              "nid": {
+                "type": "string",
+                "doc": "Node ID"
+              },
+              "filename": {
+                "type": "string",
+                "doc": "Filename"
+              },
+              "category": {
+                "type": "string",
+                "doc": "File category"
+              },
+              "relevance": {
+                "type": "number",
+                "doc": "Relevance score"
+              },
+              "match_type": {
+                "type": "string",
+                "doc": "filename, extension, or content"
+              }
+            }
+          }
+        }
+      }
+    },
+    "get_by_type": {
+      "doc": "Get paginated list of files filtered by category",
+      "scope": "hub",
+      "permission": {
+        "src": "anonymous"
+      },
+      "params": {
+        "type": {
+          "type": "string",
+          "required": false,
+          "default": "image",
+          "enum": ["image", "video", "audio", "document", "web", "archive"],
+          "doc": "File category to filter"
+        },
+        "page": {
+          "type": "number",
+          "required": false,
+          "default": 1,
+          "min": 1,
+          "doc": "Page number"
+        },
+        "order": {
+          "type": "string",
+          "required": false,
+          "enum": ["asc", "desc"],
+          "doc": "Sort direction"
+        },
+        "sort": {
+          "type": "string",
+          "required": false,
+          "enum": ["rank", "date", "size", "sort"],
+          "doc": "Sort field"
+        },
+        "pid": {
+          "type": "string",
+          "required": false,
+          "doc": "Parent folder ID (omit to search all)"
+        },
+        "showAll": {
+          "type": "boolean",
+          "required": false,
+          "doc": "Search all folders (ignores pid)"
+        }
+      },
+      "returns": {
+        "items": {
+          "type": "array",
+          "doc": "Array of files matching type"
+        }
+      }
+    },
+    "info": {
+      "doc": "Get detailed file information (type-specific: document pages, video duration, image dimensions, folder size)",
+      "scope": "hub",
+      "permission": {
+        "src": "anonymous"
+      },
+      "params": {
+        "nid": {
+          "type": "string",
+          "required": true,
+          "doc": "Node ID to get info"
+        }
+      },
+      "returns": {
+        "stats": {
+          "type": "object",
+          "doc": "Basic file statistics (id, filename, category, filesize, etc)"
+        },
+        "pages": {
+          "type": "number",
+          "doc": "Number of pages (for documents)"
+        },
+        "pdf": {
+          "type": "string",
+          "doc": "Path to PDF version (for documents)"
+        },
+        "duration": {
+          "type": "string",
+          "doc": "Duration (for audio/video)"
+        },
+        "Image": {
+          "type": "object",
+          "doc": "Image metadata (geometry, format, etc)"
+        },
+        "total_size": {
+          "type": "number",
+          "doc": "Total size including subfolders (for folders)"
+        },
+        "status": {
+          "type": "string",
+          "doc": "working (PDF conversion in progress), ready, or na"
+        }
+      },
+      "errors": [
+        {
+          "code": "FILE_NOT_FOUND",
+          "message": "File does not exist or was deleted",
+          "http_status": 404
+        }
+      ]
+    },
+    "get_node_attr": {
+      "doc": "Get node attributes (optionally for a relative path within folder)",
+      "scope": "hub",
+      "permission": {
+        "src": "anonymous"
+      },
+      "params": {
+        "nid": {
+          "type": "string",
+          "required": true,
+          "doc": "Node ID"
+        },
+        "relpath": {
+          "type": "string",
+          "required": false,
+          "doc": "Relative path from nid (e.g., 'subfolder/file.txt')"
+        }
+      },
+      "returns": {
+        "nid": {
+          "type": "string",
+          "doc": "Node ID"
+        },
+        "filename": {
+          "type": "string",
+          "doc": "Filename"
+        },
+        "category": {
+          "type": "string",
+          "doc": "File category"
+        },
+        "filesize": {
+          "type": "number",
+          "doc": "File size in bytes"
+        },
+        "mtime": {
+          "type": "number",
+          "doc": "Modification timestamp"
+        },
+        "permission": {
+          "type": "number",
+          "doc": "User's permission level"
+        },
+        "ownpath": {
+          "type": "string",
+          "doc": "Absolute path within hub"
+        }
+      }
+    },
+    "zip": {
+      "doc": "Download prepared zip file (after using download service)",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "params": {
+        "id": {
+          "type": "string",
+          "required": true,
+          "doc": "Zip ID from download service"
+        }
+      },
+      "returns": {
+        "file": {
+          "type": "binary",
+          "doc": "Zip file stream"
+        }
+      },
+      "errors": [
+        {
+          "code": "FILE_NOT_FOUND",
+          "message": "Zip file not found or expired",
+          "http_status": 404
+        }
+      ]
+    },
+    "zip_size": {
+      "doc": "Get estimated zip size before creating download",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "params": {
+        "nid": {
+          "type": "string",
+          "required": true,
+          "doc": "Node ID to calculate size"
+        },
+        "socket_id": {
+          "type": "string",
+          "required": true,
+          "doc": "WebSocket ID for checking connection"
+        }
+      },
+      "returns": {
+        "size": {
+          "type": "number",
+          "doc": "Total size in bytes"
+        },
+        "socket_bound": {
+          "type": "boolean",
+          "doc": "Whether socket is connected (false = user online)"
+        }
+      }
+    },
+    "zip_release": {
+      "doc": "Delete temporary zip file after download",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "params": {
+        "id": {
+          "type": "string",
+          "required": true,
+          "doc": "Zip ID to release"
+        }
+      },
+      "returns": {
+        "id": {
+          "type": "string",
+          "doc": "Released zip ID"
+        }
+      }
+    },
+    "zip_cancel": {
+      "doc": "Cancel ongoing zip creation",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "params": {
+        "id": {
+          "type": "string",
+          "required": true,
+          "doc": "Zip ID to cancel"
+        },
+        "cancelId": {
+          "type": "string",
+          "required": true,
+          "doc": "Process ID to kill"
+        }
+      },
+      "returns": {}
+    },
+    "save": {
+      "doc": "Save text content to file (text editor function)",
+      "scope": "hub",
+      "permission": {
+        "src": "write"
+      },
+      "params": {
+        "content": {
+          "type": "string",
+          "required": true,
+          "doc": "Text content to save"
+        },
+        "filename": {
+          "type": "string",
+          "required": true,
+          "doc": "Filename"
+        },
+        "pid": {
+          "type": "string",
+          "required": false,
+          "doc": "Parent folder ID (for new files)"
+        },
+        "id": {
+          "type": "string",
+          "required": false,
+          "doc": "Node ID (for updating existing files)"
+        },
+        "metadata": {
+          "type": "object",
+          "required": false,
+          "doc": "Additional metadata"
+        }
+      },
+      "returns": {
+        "nid": {
+          "type": "string",
+          "doc": "Node ID of saved file"
+        },
+        "filename": {
+          "type": "string",
+          "doc": "Filename"
+        },
+        "filesize": {
+          "type": "number",
+          "doc": "Updated file size"
+        }
+      }
+    },
+    "rotate": {
+      "doc": "Rotate image by specified angle",
+      "scope": "hub",
+      "permission": {
+        "src": "delete"
+      },
+      "params": {
+        "nid": {
+          "type": "string",
+          "required": true,
+          "doc": "Image node ID"
+        },
+        "angle": {
+          "type": "number",
+          "required": false,
+          "default": 90,
+          "enum": [90, 180, 270],
+          "doc": "Rotation angle in degrees"
+        }
+      },
+      "returns": {
+        "nid": {
+          "type": "string",
+          "doc": "Image node ID"
+        },
+        "mtime": {
+          "type": "number",
+          "doc": "Updated modification timestamp"
+        },
+        "metadata": {
+          "type": "object",
+          "doc": "Updated metadata with new md5Hash"
+        },
+        "args": {
+          "type": "object",
+          "doc": "Changelog info"
+        }
+      },
+      "errors": [
+        {
+          "code": "WRONG_FILETYPE",
+          "message": "Only image files can be rotated",
+          "http_status": 400
+        }
+      ]
+    },
+    "replace": {
+      "doc": "Replace existing file content with new upload",
+      "scope": "hub",
+      "permission": {
+        "src": "delete",
+        "preproc": {
+          "checker": "pre_upload"
+        }
+      },
+      "params": {
+        "nid": {
+          "type": "string",
+          "required": true,
+          "doc": "Node ID of file to replace"
+        },
+        "file": {
+          "type": "file",
+          "required": true,
+          "doc": "New file content"
+        },
+        "filename": {
+          "type": "string",
+          "required": true,
+          "doc": "New filename"
+        },
+        "md5Hash": {
+          "type": "string",
+          "required": false,
+          "doc": "MD5 hash of new file"
+        }
+      },
+      "returns": {
+        "nid": {
+          "type": "string",
+          "doc": "Node ID"
+        },
+        "filename": {
+          "type": "string",
+          "doc": "Updated filename"
+        },
+        "filesize": {
+          "type": "number",
+          "doc": "Updated file size"
+        },
+        "extension": {
+          "type": "string",
+          "doc": "Updated file extension"
+        },
+        "replace": {
+          "type": "number",
+          "doc": "1 (confirmation flag)"
+        }
+      },
+      "errors": [
+        {
+          "code": "TARGET_IS_FOLDER_OR_ROOT",
+          "message": "Cannot replace folder or root",
+          "http_status": 400
+        }
+      ]
+    },
+    "mark_as_seen": {
+      "doc": "Mark file as viewed (updates notification/read status)",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "params": {
+        "nid": {
+          "type": "string",
+          "required": true,
+          "doc": "Node ID to mark as seen"
+        }
+      },
+      "returns": {
+        "nid": {
+          "type": "string",
+          "doc": "Node ID"
+        },
+        "status": {
+          "type": "string",
+          "doc": "seen"
+        }
+      }
+    },
+    "summary": {
+      "doc": "Get folder summary (total files, size, breakdown by category)",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "params": {
+        "nid": {
+          "type": "string",
+          "required": true,
+          "doc": "Folder node ID"
+        }
+      },
+      "returns": {
+        "total_files": {
+          "type": "number",
+          "doc": "Total number of files"
+        },
+        "total_size": {
+          "type": "number",
+          "doc": "Total size in bytes"
+        },
+        "by_category": {
+          "type": "object",
+          "doc": "Breakdown by file category"
+        }
+      }
+    },
     "attributes": {
       "scope": "hub",
       "permission": {
@@ -94,33 +1422,10 @@
       },
       "method": "copy_all"
     },
-    "copy_all": {
-      "scope": "hub",
-      "permission": {
-        "src": "read",
-        "dest": "write",
-        "preproc": {
-          "checker": "pre_transact",
-          "action": "copy"
-        }
-      }
-    },
     "toPdf": {
       "scope": "hub",
       "permission": {
         "src": "read"
-      }
-    },
-    "download": {
-      "scope": "hub",
-      "permission": {
-        "src": "read"
-      }
-    },
-    "empty_bin": {
-      "scope": "hub",
-      "permission": {
-        "src": "admin"
       }
     },
     "folder": {
@@ -135,12 +1440,6 @@
         "src": "delete"
       }
     },
-    "get_by_type": {
-      "scope": "hub",
-      "permission": {
-        "src": "anonymous"
-      }
-    },
     "get_filenames": {
       "scope": "hub",
       "permission": {
@@ -151,12 +1450,6 @@
       "scope": "hub",
       "permission": {
         "src": "write"
-      }
-    },
-    "get_node_attr": {
-      "scope": "hub",
-      "permission": {
-        "src": "anonymous"
       }
     },
     "get_node_info": {
@@ -189,12 +1482,6 @@
         "src": "read"
       }
     },
-    "info": {
-      "scope": "hub",
-      "permission": {
-        "src": "anonymous"
-      }
-    },
     "is_expired": {
       "scope": "hub",
       "permission": {
@@ -215,28 +1502,10 @@
         "dest": "admin"
       }
     },
-    "make_dir": {
-      "scope": "hub",
-      "permission": {
-        "src": "write"
-      }
-    },
     "make_dir_special": {
       "scope": "hub",
       "permission": {
         "src": "admin"
-      }
-    },
-    "manifest": {
-      "scope": "hub",
-      "permission": {
-        "src": "read"
-      }
-    },
-    "mark_as_seen": {
-      "scope": "hub",
-      "permission": {
-        "src": "read"
       }
     },
     "move": {
@@ -250,17 +1519,6 @@
         }
       },
       "method": "move_all"
-    },
-    "move_all": {
-      "scope": "hub",
-      "permission": {
-        "src": "delete",
-        "dest": "write",
-        "preproc": {
-          "checker": "pre_transact",
-          "action": "move"
-        }
-      }
     },
     "node_info": {
       "scope": "hub",
@@ -299,12 +1557,6 @@
         "src": "anonymous"
       }
     },
-    "purge": {
-      "scope": "hub",
-      "permission": {
-        "src": "admin"
-      }
-    },
     "raw": {
       "scope": "hub",
       "permission": {
@@ -324,56 +1576,35 @@
         "src": "delete"
       }
     },
-    "rename": {
-      "scope": "hub",
-      "permission": {
-        "src": "delete"
-      }
-    },
     "reorder": {
       "scope": "hub",
       "permission": {
         "src": "delete"
       }
     },
-    "replace": {
+    "relocate": {
       "scope": "hub",
-      "permission": {
-        "src": "delete",
-        "preproc": {
-          "checker": "pre_upload"
-        }
-      }
-    },
-    "restore_into": {
-      "scope": "hub",
+      "method": "move_all",
       "permission": {
         "src": "read",
         "dest": "write",
         "preproc": {
-          "checker": "pre_restore_into",
+          "checker": "pre_transact",
           "action": "move"
         }
       }
     },
-    "rotate": {
-      "scope": "hub",
+    "server_export": {
+      "scope": "domain",
       "permission": {
         "src": "delete"
       }
     },
-    "save": {
-      "scope": "hub",
+    "server_import": {
+      "scope": "domain",
       "permission": {
-        "src": "write"
+        "src": "delete"
       }
-    },
-    "search": {
-      "scope": "hub",
-      "permission": {
-        "src": "read"
-      },
-      "method": "media_search"
     },
     "set_homepage": {
       "scope": "hub",
@@ -393,12 +1624,6 @@
         "src": "admin"
       }
     },
-    "show_bin": {
-      "scope": "hub",
-      "permission": {
-        "src": "read"
-      }
-    },
     "show_folders": {
       "scope": "hub",
       "permission": {
@@ -409,18 +1634,6 @@
       "scope": "hub",
       "permission": {
         "src": "read"
-      }
-    },
-    "show_node_by": {
-      "scope": "hub",
-      "permission": {
-        "src": "anonymous"
-      }
-    },
-    "show_node_by_with_size": {
-      "scope": "hub",
-      "permission": {
-        "src": "anonymous"
       }
     },
     "show_slides": {
@@ -460,27 +1673,6 @@
         "src": "anonymous"
       }
     },
-    "relocate": {
-      "scope": "hub",
-      "permission": {
-        "src": "read",
-        "dest": "write",
-        "method": "move_all",
-        "preproc": {
-          "checker": "pre_transact",
-          "action": "move"
-        }
-      }
-    },
-    "trash": {
-      "scope": "hub",
-      "permission": {
-        "src": "delete",
-        "preproc": {
-          "checker": "pre_trash"
-        }
-      }
-    },
     "update_caption": {
       "scope": "hub",
       "permission": {
@@ -491,15 +1683,6 @@
       "scope": "hub",
       "permission": {
         "src": "delete"
-      }
-    },
-    "upload": {
-      "scope": "hub",
-      "permission": {
-        "src": "write",
-        "preproc": {
-          "checker": "pre_upload"
-        }
       }
     },
     "upload_base64": {
@@ -542,30 +1725,6 @@
         "fast_check": "public-api"
       }
     },
-    "zip": {
-      "scope": "hub",
-      "permission": {
-        "src": "read"
-      }
-    },
-    "zip_cancel": {
-      "scope": "hub",
-      "permission": {
-        "src": "read"
-      }
-    },
-    "zip_release": {
-      "scope": "hub",
-      "permission": {
-        "src": "read"
-      }
-    },
-    "zip_size": {
-      "scope": "hub",
-      "permission": {
-        "src": "read"
-      }
-    },
     "dmz_copy": {
       "scope": "hub",
       "permission": {
@@ -576,18 +1735,6 @@
       "scope": "hub",
       "permission": {
         "src": "write"
-      }
-    },
-    "server_export": {
-      "scope": "domain",
-      "permission": {
-        "src": "delete"
-      }
-    },
-    "server_import": {
-      "scope": "domain",
-      "permission": {
-        "src": "delete"
       }
     }
   },

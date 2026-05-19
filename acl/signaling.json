@@ -1,25 +1,144 @@
 {
   "services": {
     "notify": {
+      "doc": "Broadcast signaling data to a list of hub recipients, excluding the sender socket. Iterates each hub ID in the recipients array, fetches all entity sockets for that hub excluding the provided socket_id, and sends the full input payload to each via RedisStore.",
       "scope": "hub",
       "permission": {
         "src": "read",
         "fast_check": "user_permission"
-      }
+      },
+      "params": {
+        "recipients": {
+          "type": "array",
+          "required": true,
+          "description": "Array of hub IDs to broadcast the signaling data to. Each hub's entity sockets are resolved and notified."
+        },
+        "socket_id": {
+          "type": "string",
+          "required": true,
+          "description": "Socket ID of the sender to exclude from recipients"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Full input data payload echoed back after broadcast"
+      },
+      "errors": []
     },
+
     "message": {
+      "doc": "Broadcast a signaling message to target peers and optionally log a call event. Resolves recipients from the target object set during initialization: socket-scoped (target.socket_id or target.stream_id), hub-scoped (target.hub_id), or user-scoped (target.uid). After sending via RedisStore, attempts to log the call event in chat history if the role is 'caller' and type is cancel, leave, or reject.",
       "scope": "hub",
       "permission": {
         "src": "read",
         "fast_check": "user_permission"
-      }
+      },
+      "params": {
+        "target": {
+          "type": "object",
+          "required": false,
+          "description": "Target recipient descriptor resolved during initialization. Can contain socket_id or stream_id (socket scope), hub_id (hub scope), or uid (user scope)."
+        },
+        "origin": {
+          "type": "object",
+          "required": false,
+          "description": "Origin sender descriptor merged with authenticated user profile (uid, firstname, lastname, fullname, email) during initialization."
+        },
+        "scope": {
+          "type": "string",
+          "required": false,
+          "description": "Explicit dispatch scope override: 'socket', 'hub', or 'user'. Inferred from target fields if omitted."
+        },
+        "type": {
+          "type": "string",
+          "required": false,
+          "description": "Signal type used for call event logging (e.g. 'cancel', 'leave', 'reject'). Only triggers log when role is 'caller'."
+        },
+        "role": {
+          "type": "string",
+          "required": false,
+          "description": "Caller role for event logging. Set to 'caller' to trigger call history logging."
+        },
+        "duration": {
+          "type": "integer",
+          "required": false,
+          "default": 0,
+          "description": "Call duration in seconds for call event logging"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Full input data payload echoed back after broadcast"
+      },
+      "errors": []
     },
+
     "dial": {
+      "doc": "Initiate a call to a target user by sending an INCOMING_CALL signal to all their connected sockets. Resolves the target user's sockets via user_sockets, creates a room_invite_next entry for each socket as a listener, and sends the call payload via RedisStore. Returns offline indicator if the target user has no active sockets. Self-calling is explicitly rejected.",
       "scope": "hub",
       "permission": {
         "src": "read",
         "fast_check": "user_permission"
-      }
+      },
+      "params": {
+        "target": {
+          "type": "object",
+          "required": true,
+          "description": "Target user descriptor resolved during initialization. Must contain uid of the user to call."
+        },
+        "room_id": {
+          "type": "string",
+          "required": true,
+          "description": "Room ID for the call session. Used as the room_id and nid in the INCOMING_CALL payload."
+        },
+        "room_type": {
+          "type": "string",
+          "required": true,
+          "description": "Type of the call room (e.g. meeting, screen)"
+        },
+        "device_id": {
+          "type": "string",
+          "required": false,
+          "description": "Device ID of the caller, included in the room_invite_next entry for each target socket"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Full input data with origin and target fields on success, or offline indicator if target has no active sockets",
+        "properties": {
+          "offline": {
+            "type": "integer",
+            "description": "Present with value 1 when the target user has no active socket connections"
+          },
+          "origin": {
+            "type": "object",
+            "description": "Caller origin descriptor with uid and profile fields"
+          },
+          "target": {
+            "type": "object",
+            "description": "Call target descriptor"
+          },
+          "message": {
+            "type": "string",
+            "description": "Signal type, always 'INCOMING_CALL'"
+          },
+          "room_id": {
+            "type": "string",
+            "description": "Room ID of the initiated call"
+          },
+          "room_type": {
+            "type": "string",
+            "description": "Type of the call room"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "Self calling is not allowed",
+          "message": "The target uid matches the caller's own uid or ident",
+          "condition": "target.uid equals this.uid or this.user.ident()"
+        }
+      ]
     }
   },
   "modules": {

@@ -14,6 +14,7 @@
  * limitations under the License.
  * =============================================================================
  */
+
 const {
   Attr, RedisStore, toArray
 } = require("@drumee/server-essentials");
@@ -30,14 +31,21 @@ class __private_channel extends Entity {
     super(...args);
     this.messages = this.messages.bind(this);
     this.post = this.post.bind(this);
+    this.write = this.write.bind(this);
+    this.list_notifications = this.list_notifications.bind(this);
     this.read = this.read.bind(this);
     this.notify_chat = this.notify_chat.bind(this);
     this.acknowledge = this.acknowledge.bind(this);
+    this.bookmark_add = this.bookmark_add.bind(this);
+    this.bookmark_remove = this.bookmark_remove.bind(this);
+    this.bookmark_list = this.bookmark_list.bind(this);
     this.send_ticket = this.send_ticket.bind(this);
     this.post_ticket = this.post_ticket.bind(this);
     this.show_ticket = this.show_ticket.bind(this);
     this.list_tickets = this.list_tickets.bind(this);
     this.update_ticket = this.update_ticket.bind(this);
+    this.dm_init = this.dm_init.bind(this);
+    this.list_conversations = this.list_conversations.bind(this);
   }
 
   /**
@@ -49,13 +57,34 @@ class __private_channel extends Entity {
 
   /**
    * 
+   * @returns 
+   */
+  async _get_wicket(uid) {
+    let sbox = await this.db.call_proc("mfs_wicket_home", uid);
+    if (sbox && sbox[5]) { /** Created by desk_create_hub */
+      return sbox[5]
+    }
+    return sbox;
+  }
+  /**
+   * 
    */
   async messages() {
     const order = this.input.use(Attr.order, 'asc');
     const page = this.input.use(Attr.page) || 1;
+    const nid = this.input.use(Attr.nid);
     let data = await this.db.await_proc('channel_list_messages', this.uid, 'date', order, page);
-
     data = toArray(data);
+    if (!isEmpty(nid)) {
+      // Legacy messages (no _scope_nid) appear in every folder context for
+      // backward compatibility. New messages scoped via _scope_nid stay isolated.
+      data = data.filter(msg => {
+        try {
+          const meta = typeof msg.metadata === 'string' ? JSON.parse(msg.metadata) : (msg.metadata || {});
+          return !meta._scope_nid || meta._scope_nid === `${nid}`;
+        } catch (e) { return true; }
+      });
+    }
     let messages = [];
 
     let cache = {};
@@ -129,22 +158,15 @@ class __private_channel extends Entity {
   }
 
 
-  /**
-   * 
-   * @param {*} sbox 
-   * @param {*} desdir 
-   * @param {*} attachment 
-   * @param {*} message_id 
-   * @returns 
-   */
-  async move_attachemnt(sbox, desdir, attachment, message_id) {
+  async move_attachemnt(sbox, desdir, attachment, message_id, copy_only = false) {
     let src = []
     message_id = [message_id]
     for (let media of attachment) {
       src.push({ nid: media, hub_id: this.hub.get(Attr.id) })
     }
 
-    let data = await this.db.call_proc('mfs_move_all', stringify(src), this.hub.get(Attr.id), desdir.id, sbox.hub_id);
+    const proc = copy_only ? 'mfs_copy_all' : 'mfs_move_all';
+    let data = await this.db.call_proc(proc, stringify(src), this.hub.get(Attr.id), desdir.id, sbox.hub_id);
     data = toArray(data);
 
     let tempattachment = []
@@ -155,7 +177,11 @@ class __private_channel extends Entity {
           src = { nid: node.nid, mfs_root: node.src_mfs_root };
           dest = { nid: node.des_id, hub_id: sbox.hub_id, mfs_root: node.des_mfs_root };
           tempattachment.push({ hub_id: sbox.hub_id, nid: node.des_id })
-          await move_node(src, dest);
+          if (copy_only) {
+            await copy_node(src, dest, 1);
+          } else {
+            await move_node(src, dest);
+          }
           break;
         case 'copy':
           src = { nid: node.nid, mfs_root: node.src_mfs_root };
@@ -165,14 +191,18 @@ class __private_channel extends Entity {
       }
     }
 
-    for (let node of data) {
-      switch (node.action) {
-        case 'delete':
-          src = { nid: node.nid, hub_id: sbox.hub_id, mfs_root: node.src_mfs_root };
-          await remove_node(src, 1);
+    if (!copy_only) {
+      for (let node of data) {
+        switch (node.action) {
+          case 'delete':
+            src = { nid: node.nid, hub_id: sbox.hub_id, mfs_root: node.src_mfs_root };
+            await remove_node(src, 1);
+        }
       }
     }
-    if (this.hub.get(Attr.id) != this.uid) {
+    // In copy_only mode the originals still exist alongside the sbox copies;
+    // pushing both here would render each attachment twice in the chat.
+    if (!copy_only && this.hub.get(Attr.id) != this.uid) {
       for (let media of attachment) {
         tempattachment.push({ nid: media, hub_id: this.hub.get(Attr.id) })
       }
@@ -222,7 +252,8 @@ class __private_channel extends Entity {
     if (!isEmpty(search_ticket_id)) {
       filter.search_ticket_id = search_ticket_id
     }
-    let sbox = await this.db.call_proc('mfs_wicket_home', this.uid);
+
+    let sbox = await this._get_wicket(this.uid);
     let data = await this.yp.await_proc('forward_proc', sbox.hub_id, 'ticket_list', `'${this.uid}','${stringify(filter)}','${page}'`)
 
     data = toArray(data);
@@ -282,6 +313,10 @@ class __private_channel extends Entity {
 
     let ticket = await this.yp.await_proc('ticket_detail', ticket_id);
     let sbox = await this.yp.await_proc('forward_proc', ticket.uid, 'mfs_wicket_home', `'${ticket.uid}'`);
+    if (sbox[5]) { /** Created by desk_create_hub */
+      sbox = { ...sbox[5] }
+    }
+
     let data = await this.yp.await_proc('forward_proc', sbox.hub_id, 'ticket_show', `${ticket_id},'${this.uid}','${page}'`)
     data = toArray(data);
 
@@ -375,7 +410,7 @@ class __private_channel extends Entity {
     input.metadata = metadata
     input.metadata.message_type = 'ticket_auto_reply'
     let message = Cache.message("_ticket_auto_reply", this.client_language());
-    let data = await this.yp.await_proc('forward_proc', hub_id, 'channel_post_message_next', `'${stringify(input)}','${message}'`)
+    let data = await this.yp.await_proc('forward_proc', hub_id, 'channel_post_message', `'${stringify(input)}','${message}'`)
     return this.output.sanitize(data);
   }
 
@@ -393,9 +428,9 @@ class __private_channel extends Entity {
       let metadata = {};
       let input = {};
       let message_id = await this.yp.await_func("uniqueId");
-      let sbox = await this.db.call_proc('mfs_wicket_home', this.uid);
+      let sbox = await this._get_wicket(this.uid);
       if (!isEmpty(attachment)) {
-        let desdir = await this.yp.await_proc('forward_proc', sbox.hub_id, 'mfs_make_dir', `'${sbox.ticket_id}','${stringify(message_id)}',1`)
+        let desdir = await this.yp.await_proc('forward_proc', sbox.hub_id, 'mfs_make_dir', `'${sbox.ticket_id}','${stringify([message_id])}',1`)
         attachment = await this.move_attachemnt(sbox, desdir, attachment, message_id)
       }
       metadata.status = 'new'
@@ -418,7 +453,7 @@ class __private_channel extends Entity {
       input.metadata.message_type = 'ticket'
       input.ticket_id = ticket.ticket_id;
       if (!isEmpty(attachment)) { input.attachment = attachment }
-      let data = await this.yp.await_proc('forward_proc', sbox.hub_id, 'channel_post_message_next', `'${stringify(input)}','${message}'`)
+      let data = await this.yp.await_proc('forward_proc', sbox.hub_id, 'channel_post_message', `'${stringify(input)}','${message}'`)
       data.is_attachment = 0
       if (!isEmpty(input.attachment)) {
         await this.yp.await_proc('forward_proc', sbox.hub_id, 'channel_post_attachment', `'${message_id}','${sbox.hub_id}','${stringify(input.attachment)}'`)
@@ -474,10 +509,10 @@ class __private_channel extends Entity {
         return this.output.data(res);
       }
       let message_id = await this.yp.await_func("uniqueId");
-      let sbox = await this.db.call_proc('mfs_wicket_home', ticket.uid);
+      let sbox = await this._get_wicket(ticket.uid);
 
       if (!isEmpty(attachment)) {
-        let desdir = await this.yp.await_proc('forward_proc', sbox.hub_id, 'mfs_make_dir', `'${sbox.ticket_id}','${stringify(message_id)}',1`)
+        let desdir = await this.yp.await_proc('forward_proc', sbox.hub_id, 'mfs_make_dir', `'${sbox.ticket_id}','${stringify([message_id])}',1`)
         attachment = await this.move_attachemnt(sbox, desdir, attachment, message_id)
       }
 
@@ -491,7 +526,7 @@ class __private_channel extends Entity {
       if (!isEmpty(attachment)) { input.attachment = attachment }
       if (!isEmpty(message)) { message = message.replace(/'/gi, "''"); }
       if (!isEmpty(thread_id)) { input.thread_id = thread_id }
-      let data = await this.yp.await_proc('forward_proc', sbox.hub_id, 'channel_post_message_next', `'${stringify(input)}','${message}'`)
+      let data = await this.yp.await_proc('forward_proc', sbox.hub_id, 'channel_post_message', `'${stringify(input)}','${message}'`)
       data.is_attachment = 0
       if (!isEmpty(input.attachment)) {
         await this.yp.await_proc('forward_proc', sbox.hub_id, 'channel_post_attachment', `'${message_id}','${sbox.hub_id}','${stringify(input.attachment)}'`)
@@ -544,14 +579,18 @@ class __private_channel extends Entity {
     message_id = message_id.id
 
     if (this.hub.get(Attr.id) == this.uid) {
-      sbox = await this.db.call_proc('mfs_wicket_home', this.uid);
+      sbox = await this._get_wicket(this.uid);
     }
     else {
       sbox = await this.db.call_proc('mfs_home')
     }
+    const nid = this.input.use(Attr.nid);
+    // Folder-scoped posts upload into the folder; copy (not move) so the
+    // originals remain visible in the folder's Files tab.
+    const copy_only = !isEmpty(nid);
     if (!isEmpty(attachment)) {
-      let desdir = await this.yp.await_proc('forward_proc', sbox.hub_id, 'mfs_make_dir', `'${sbox.chat_id}','${stringify(message_id)}',1`)
-      attachment = await this.move_attachemnt(sbox, desdir, attachment, message_id)
+      let desdir = await this.yp.await_proc('forward_proc', sbox.hub_id, 'mfs_make_dir', `'${sbox.chat_id}','${stringify([message_id])}',1`)
+      attachment = await this.move_attachemnt(sbox, desdir, attachment, message_id, copy_only)
     }
     input.author_id = this.uid
     input.uid = this.uid
@@ -559,9 +598,10 @@ class __private_channel extends Entity {
     if (!isEmpty(attachment)) { input.attachment = attachment }
     if (!isEmpty(message)) { message = message.replace(/'/gi, "''"); }
     if (!isEmpty(thread_id)) { input.thread_id = thread_id }
+    if (!isEmpty(nid)) { input.metadata = { _scope_nid: `${nid}` }; }
     input.message_id = message_id
     let data = await this.yp.await_proc('forward_proc', this.hub.get(Attr.id),
-      'channel_post_message_next', `'${stringify(input)}','${message}'`
+      'channel_post_message', `'${stringify(input)}','${message}'`
     );
     data.is_attachment = 0
     if (!isEmpty(input.attachment)) {
@@ -589,6 +629,191 @@ class __private_channel extends Entity {
     this.output.data(data)
   }
 
+  /**
+   * Post a message to a share hub channel.
+   * Supports both authenticated (yp.drumate) and anonymous (yp.dmz_user) authors.
+   * message_id is generated server-side via message_id SP.
+   */
+  async write() {
+    let message = this.input.use(Attr.message, '');
+    const thread_id = this.input.use(Attr.thread_id);
+    let attachment = this.input.use(Attr.attachment, []);
+    const is_forward = this.input.use(Attr.is_forward, 0);
+    const mention_ids = this.input.use('mention_ids', null);
+    let exclude = this.input.need(Attr.socket_id);
+    if (exclude) exclude = [exclude];
+
+    let message_id = await this.db.await_proc('message_id');
+    message_id = message_id.id;
+
+    let sbox = await this.db.call_proc('mfs_home');
+    if (!isEmpty(attachment)) {
+      let desdir = await this.yp.await_proc('forward_proc', sbox.hub_id, 'mfs_make_dir', `'${sbox.chat_id}','${stringify([message_id])}',1`);
+      attachment = await this.move_attachemnt(sbox, desdir, attachment, message_id);
+    }
+
+    if (!isEmpty(message)) { message = message.replace(/'/gi, "''"); }
+
+    let data = await this.db.await_proc(
+      'channel_write',
+      this.uid,
+      message_id,
+      message,
+      thread_id || null,
+      !isEmpty(attachment) ? stringify(attachment) : null,
+      is_forward,
+      !isEmpty(mention_ids) ? stringify(mention_ids) : null
+    );
+
+    data.is_attachment = !isEmpty(attachment) ? 1 : 0;
+
+    if (!isEmpty(thread_id)) {
+      data.thread = await this.threadInfo(thread_id, this.hub.get(Attr.id));
+    }
+
+    data.hub_id = this.hub.get(Attr.id);
+    data.echoId = this.input.get('echoId');
+
+    let hub_id = this.hub.get(Attr.id);
+    let recipients = await this.yp.await_proc('entity_sockets', { exclude, hub_id });
+    await RedisStore.sendData(this.payload(data), recipients);
+
+    if (!isEmpty(mention_ids)) {
+      try {
+        const hubRecipientUids = toArray(recipients).map(r => r.uid);
+        const extraMentionIds = mention_ids.filter(
+          id => id !== this.uid && !hubRecipientUids.includes(id)
+        );
+        if (extraMentionIds.length) {
+          const mentionRecipients = await this.yp.await_proc('user_sockets', extraMentionIds);
+          if (!isEmpty(mentionRecipients)) {
+            await RedisStore.sendData(this.payload(data), mentionRecipients);
+          }
+        }
+      } catch (e) {
+        this.warn('[channel.write] mention notification failed:', e && e.message);
+      }
+    }
+
+    // Track chat_initiated
+    try {
+      const track = await this.db.await_proc('share_track_add', 'chat_initiated', this.uid, null);
+      const row = toArray(track)[0] || {};
+      if (row.inserted) {
+        const trackRecipients = await this.yp.await_proc('entity_sockets', { hub_id });
+        await RedisStore.sendData(
+          this.payload(
+            { event: 'chat_initiated', actor_id: this.uid, firstname: row.firstname, lastname: row.lastname },
+            { service: 'share.track_event' }
+          ),
+          trackRecipients
+        );
+      }
+    } catch (e) {
+      this.warn('[channel.write] chat_initiated tracking failed:', e && e.message);
+    }
+
+    this.output.data(data);
+  }
+
+  /**
+  * Retrieve paginated notifications for the current user across all hubs.
+  * Supports type filter (all / mention / share) and unread-only toggle.
+  */
+  async list_notifications() {
+    const VALID_TYPES = ['all', 'mention', 'share'];
+    let type = this.input.use(Attr.type, 'all');
+    if (!VALID_TYPES.includes(type)) type = 'all';
+    const unread_only = this.input.use('unread_only', 0) ? 1 : 0;
+    const page = this.input.use(Attr.page, 1);
+ 
+    // Get all active hubs for the current user via their drumate media table.
+    // yp.entity does not have an owner_id column; the user's drumate DB (this.db)
+    // tracks all hubs they own/belong to via the media table (category='hub').
+    let hubs = [];
+    try {
+      hubs = toArray(
+        await this.db.await_query(
+          `SELECT m.id AS id, e.db_name, IFNULL(h.name, m.user_filename) AS name
+           FROM media m
+           INNER JOIN yp.entity e ON e.id = m.id
+           LEFT JOIN yp.hub h ON h.id = m.id
+           WHERE m.category = 'hub' AND m.status = 'active'`
+        )
+      );
+    } catch (e) {
+      this.warn('[channel.list_notifications] hub list query failed:', e && e.message);
+    }
+ 
+    // Query channel_list_notifications per hub and aggregate results
+    let all_notifications = [];
+    for (const hub of hubs) {
+      if (!hub.db_name) continue;
+      try {
+        const rows = toArray(
+          await this.yp.await_proc(
+            `${hub.db_name}.channel_list_notifications`,
+            this.uid,
+            type,
+            unread_only,
+            1
+          )
+        );
+        // Tag each row with hub context for renderer
+        for (const row of rows) {
+          row.hub_id = hub.id;
+          row.category = 'teamchat';
+          row.hub_name = hub.name || '';
+          all_notifications.push(row);
+        }
+      } catch (e) {
+        this.warn(`[channel.list_notifications] hub ${hub.id} query failed:`, e && e.message);
+      }
+    }
+ 
+    // Include P2P mentions from yp.contact_activity for mention/all tabs
+    if (type === 'mention' || type === 'all') {
+      try {
+        const p2pMentions = toArray(
+          await this.yp.await_query(
+            `SELECT ca.id, ca.timestamp AS ctime, ca.uid AS author_id,
+              JSON_UNQUOTE(JSON_EXTRACT(ca.data, '$.message_id')) AS message_id,
+              JSON_UNQUOTE(JSON_EXTRACT(ca.data, '$.peer_id')) AS drumate_id,
+              JSON_UNQUOTE(JSON_EXTRACT(ca.data, '$.message')) AS message,
+              CONCAT('["', ca.target_uid, '"]') AS mention_ids,
+              COALESCE(CONCAT(d.firstname, ' ', d.lastname), d.email, '') AS fullname,
+              COALESCE(d.firstname, '') AS firstname,
+              COALESCE(d.lastname, '') AS lastname,
+              0 AS is_read
+            FROM yp.contact_activity ca
+            LEFT JOIN yp.drumate d ON d.id = ca.uid
+            WHERE ca.target_uid = ? AND ca.event = 'p2p_mention' AND ca.dismissed_at IS NULL
+            ORDER BY ca.timestamp DESC LIMIT 45`,
+            this.uid
+          )
+        );
+        for (const row of p2pMentions) {
+          if (unread_only && row.is_read) continue;
+          // Use contact_invite category so the UI dismisses via contact_activity_dismiss
+          // (sets dismissed_at). The mention_ids field makes the skeleton render it as
+          // a mention ("X mentioned you") despite the contact_invite category.
+          row.category = 'contact_invite';
+          all_notifications.push(row);
+        }
+      } catch (e) {
+        this.warn('[channel.list_notifications] p2p mention query failed:', e && e.message);
+      }
+    }
+
+    // Sort merged results by ctime DESC then apply pagination
+    all_notifications.sort((a, b) => b.ctime - a.ctime);
+ 
+    const PAGE_SIZE = 45;
+    const offset = (page - 1) * PAGE_SIZE;
+    const paged = all_notifications.slice(offset, offset + PAGE_SIZE);
+ 
+    this.output.list(paged);
+  }
 
   // ========================
   // 
@@ -761,6 +986,281 @@ class __private_channel extends Entity {
       await RedisStore.sendData(this.payload(msg, { service }), recipients);
     }
     this.output.list(temp_result);
+  }
+
+  /**
+   * Pin (bookmark) a notification message for quick access.
+   * Stores message_id + hub_id in notification_bookmark table (user drumate DB).
+   */
+  async bookmark_add() {
+    const message_id = this.input.need('message_id');
+    const hub_id = this.input.need('hub_id');
+ 
+    const user_db = await this.yp.await_func('get_db_name', this.uid);
+    if (!user_db) return this.exception.server('USER_DB_NOT_FOUND');
+ 
+    const data = await this.yp.await_proc(
+      `${user_db}.notification_bookmark_add`,
+      message_id,
+      hub_id
+    );
+    this.output.data(data);
+  }
+
+  /**
+   * Unpin (remove) a previously bookmarked notification.
+   */
+  async bookmark_remove() {
+    const message_id = this.input.need('message_id');
+ 
+    const user_db = await this.yp.await_func('get_db_name', this.uid);
+    if (!user_db) return this.exception.server('USER_DB_NOT_FOUND');
+ 
+    const data = await this.yp.await_proc(
+      `${user_db}.notification_bookmark_remove`,
+      message_id
+    );
+    this.output.data(data);
+  }
+
+  /**
+   * List all bookmarked notifications for the current user (paginated).
+   */
+  async bookmark_list() {
+    const page = this.input.use(Attr.page, 1);
+ 
+    const user_db = await this.yp.await_func('get_db_name', this.uid);
+    if (!user_db) return this.exception.server('USER_DB_NOT_FOUND');
+ 
+    const data = await this.yp.await_proc(
+      `${user_db}.notification_bookmark_list`,
+      page
+    );
+    this.output.list(data);
+  }
+
+  /**
+   * Get or create a 1-on-1 DM hub between the current user and a recipient.
+   *
+   * DM hubs use area='private' and a deterministic filename:
+   *   _inbox_{lower_uid}_{higher_uid}
+   * where UIDs are sorted lexicographically so the result is
+   * identical regardless of who initiates the conversation.
+   *
+   * Returns: { hub_id, home_id, db_name, is_new }
+   */
+  async dm_init() {
+    const recipient_id = this.input.need('recipient_id');
+    if (!recipient_id || recipient_id === this.uid) {
+      return this.exception.user('Invalid recipient_id.');
+    }
+ 
+    // Get user's drumate DB explicitly
+    const user_db = await this.yp.await_func('get_db_name', this.uid);
+    if (!user_db) return this.exception.server('USER_DB_NOT_FOUND');
+ 
+    // Deterministic filename
+    const [uid_a, uid_b] = [this.uid, recipient_id].sort();
+    const dm_filename = `_inbox_${uid_a}_${uid_b}`;
+ 
+    // 1. Check if DM hub already exists in user's drumate media table
+    const existing = toArray(
+      await this.yp.await_query(
+        `SELECT m.id AS hub_id, e.db_name, e.home_id
+         FROM ${user_db}.media m
+         INNER JOIN yp.entity e ON e.id = m.id
+         WHERE m.category = 'hub'
+           AND m.user_filename = ?
+           AND m.status = 'active'
+         LIMIT 1`,
+        dm_filename
+      )
+    )[0];
+ 
+    if (existing && existing.hub_id) {
+      existing.is_new = 0;
+      return this.output.data(existing);
+    }
+ 
+    // 2. Create new DM hub — desk_create_hub runs in drumate DB context
+    const domain = this.user.get(Attr.domain);
+    const owner_id = this.uid;
+ 
+    // Sanitise filename for hostname
+    let hostname = dm_filename.replace(/[ \.,;:!&~#'|@*\$><\?\(\)\[\]\{\}\"\/]/g, '');
+    hostname = await this.yp.await_func('strip_accents', hostname);
+    hostname = hostname.replace(/\-$/, '').trim().toLowerCase();
+    hostname = new URL(`http://${hostname}`).hostname;
+ 
+    const args = { hostname, area: 'private', filename: dm_filename, owner_id, domain };
+ 
+    // Call desk_create_hub in user's drumate DB
+    const rows = await this.yp.await_proc(`${user_db}.desk_create_hub`, args, {});
+ 
+    let hub_id, hub_db, home_id;
+    for (const r of toArray(rows)) {
+      if (r && r.failed) {
+        this.warn('[dm_init] desk_create_hub failed', rows);
+        return this.exception.server('DM_HUB_CREATION_FAILED');
+      }
+      if (r.db_name && r.filesize != null && r.actual_home_id) {
+        hub_db  = r.db_name;
+        home_id = r.actual_home_id;
+      }
+      if (r.db_name && r.home_dir) {
+        hub_id = r.id;
+        hub_db = hub_db || r.db_name;
+      }
+    }
+ 
+    if (!hub_id || !hub_db) {
+      return this.exception.server('DM_HUB_CREATION_FAILED');
+    }
+ 
+    // 3. Add recipient as member with Edit+Chat privilege
+    //    add_member(member_id, privilege, expiry_time) — expiry_time=0 = no expiry
+    try {
+      await this.yp.await_proc(`${hub_db}.add_member`, recipient_id, 7, 0);
+    } catch (e) {
+      // Non-fatal: hub created, recipient can be added later
+      this.warn('[dm_init] add_member failed:', e && e.message);
+    }
+ 
+    // 4. Notify recipient via WebSocket
+    try {
+      const recipients = await this.yp.await_proc('user_sockets', recipient_id);
+      await RedisStore.sendData(
+        this.payload(
+          { hub_id, home_id, db_name: hub_db, event: 'dm.new' },
+          { service: 'channel.dm_init' }
+        ),
+        recipients
+      );
+    } catch (e) {
+      this.warn('[dm_init] notify failed:', e && e.message);
+    }
+ 
+    this.output.data({ hub_id, home_id, db_name: hub_db, is_new: 1 });
+  }
+
+  /**
+   * List all DM conversations for the current user.
+   *
+   *
+   * Returns: array of conversation objects sorted by last_message_time DESC.
+   * Each item:
+   *   hub_id, db_name, other_uid, last_message, last_message_time,
+   *   unread_count, is_active_now (placeholder — presence via WebSocket)
+   */
+  async list_conversations() {
+    const page = this.input.use(Attr.page, 1);
+    const PAGE_SIZE = 20;
+    const offset = (page - 1) * PAGE_SIZE;
+ 
+    // 1. Find all DM hubs in current user's media table
+    const hubs = toArray(
+      await this.db.await_query(
+        `SELECT m.id AS hub_id, e.db_name, m.user_filename AS filename
+         FROM media m
+         INNER JOIN yp.entity e ON e.id = m.id
+         WHERE m.category = 'hub'
+           AND m.user_filename LIKE '_inbox_%'
+           AND m.status = 'active'
+         ORDER BY m.upload_time DESC`
+      )
+    );
+ 
+    if (!hubs.length) {
+      return this.output.list([]);
+    }
+ 
+    // 2. For each DM hub: get last message + unread count
+    const conversations = [];
+ 
+    for (const hub of hubs) {
+      if (!hub.db_name) continue;
+ 
+      // Derive other_uid from filename: _inbox_{uid_a}_{uid_b}
+      // Current user is one of them; the other is the recipient
+      const parts = hub.filename.split('_').filter(Boolean);
+      // parts: ['inbox', uid_a, uid_b]
+      const other_uid = parts.find(p => p !== 'inbox' && p !== this.uid) || null;
+ 
+      let last_message = null;
+      let last_message_time = 0;
+      let unread_count = 0;
+ 
+      try {
+        const db_name = hub.db_name;
+ 
+        // Last message
+        const lastMsgs = toArray(
+          await this.yp.await_proc(`${db_name}.channel_list_messages`, this.uid, 'date', 'desc', 1)
+        );
+        if (lastMsgs.length) {
+          const lm = lastMsgs[0];
+          last_message = lm.message ? String(lm.message).substring(0, 100) : null;
+          last_message_time = lm.ctime || 0;
+          if (!last_message && lm.is_attachment) last_message = '[File]';
+        }
+ 
+        // Unread count
+        const unreadRow = toArray(
+          await this.yp.await_query(
+            `SELECT COUNT(*) AS cnt
+             FROM ${db_name}.channel c
+             WHERE c.status = 'active'
+               AND c.author_id != ?
+               AND NOT EXISTS (
+                 SELECT 1 FROM ${db_name}.read_channel rc
+                 WHERE rc.message_id = c.message_id AND rc.uid = ?
+               )`,
+            this.uid, this.uid
+          )
+        )[0];
+        unread_count = unreadRow ? (unreadRow.cnt || 0) : 0;
+ 
+      } catch (e) {
+        this.warn(`[list_conversations] hub ${hub.hub_id} query failed:`, e && e.message);
+      }
+ 
+      // Get other user's profile
+      let other_user = { id: other_uid };
+      if (other_uid) {
+        try {
+          other_user = await this.yp.await_proc('get_user', other_uid) || { id: other_uid };
+        } catch (e) {
+          this.warn('[list_conversations] get_user failed:', e && e.message);
+        }
+      }
+ 
+      conversations.push({
+        hub_id: hub.hub_id,
+        db_name: hub.db_name,
+        other_uid,
+        other_user,
+        last_message,
+        last_message_time,
+        unread_count,
+      });
+    }
+ 
+    // 3. Sort by last_message_time DESC, apply pagination
+    conversations.sort((a, b) => b.last_message_time - a.last_message_time);
+    const paged = conversations.slice(offset, offset + PAGE_SIZE);
+ 
+    this.output.list(paged);
+  }
+
+  /**
+   * Get all channel messages in the current hub that have a specific file attached.
+   * Powers the "See Chat Threads" feature from the file context menu
+   * Params: file_nid (required) — media node ID of the file to search in attachment JSON arrays.
+   */
+  async list_by_file() {
+    const file_nid = this.input.need('file_nid');
+    const data = await this.db.await_proc('channel_list_by_file', file_nid);
+    this.output.list(data);
   }
 }
 

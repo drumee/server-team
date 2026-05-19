@@ -19,6 +19,7 @@
       icons         : "<%= appRoot %>/static/icons",
       instance      : "<%= instance_name %>",
       instance_name : "<%= instance_name %>",
+      isPlugin      : <%= typeof(isPlugin) === 'undefined' ? 0:1 %>,
       keysel        : "<%= keysel %>",
       lang          : "<%= language %>",
       localhost     : <%= localhost %>,
@@ -31,7 +32,7 @@
       service       : "<%= servicePath %>?",
       serviceApi    : "<%= servicePath %>?",
       servicePath   : "<%= servicePath %>",
-      serviceUrl    : "<%= protocol %>://<%= main_domain %><%= servicePath %>?",
+      serviceUrl    : "<%= protocol %>://<%= main_domain %><%= svcPath %>",
       signed_in     : <%= signed_in || 0 %>,
       startTime,
       static        : "<%= appRoot %>/static/",
@@ -45,6 +46,7 @@
   }
 
   const DEBUG =  {};
+
 
   window.onerror = function (msg, url, line, col, error) {
     fetch('<%= svcPath %>bootstrap.report_error', {

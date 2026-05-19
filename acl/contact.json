@@ -1,36 +1,608 @@
 {
   "services": {
-    "accept_informed": {
+
+    "invite": {
+      "doc": "Send a contact invitation by email. Creates a contact entry and dispatches an invitation email. For non-Drumee users, sends a signup link. For registered Drumee users on different domains, sends a notification email. Same-domain colleagues on a Paid plan cannot be invited as they are automatically in contacts.",
       "scope": "hub",
       "permission": {
         "src": "owner"
-      }
+      },
+      "params": {
+        "email": { "type": "string", "required": true, "doc": "Email address of the person to invite" },
+        "message": { "type": "string", "required": false, "doc": "Optional personal message to include in the invitation email" },
+        "firstname": { "type": "string", "required": false, "doc": "First name of the invitee" },
+        "lastname": { "type": "string", "required": false, "doc": "Last name of the invitee" },
+        "surname": { "type": "string", "required": false, "doc": "Middle or additional name of the invitee" }
+      },
+      "returns": {
+        "type": "object",
+        "doc": "Created or updated contact record with invitation details",
+        "properties": {
+          "id": { "type": "string", "doc": "Contact record ID" },
+          "entity": { "type": "string", "doc": "Contact entity identifier: Drumee uid if registered, email address otherwise" },
+          "uid": { "type": "string", "doc": "Drumee user ID if the invitee is a registered user, null otherwise" },
+          "status": { "type": "string", "doc": "Contact status after invite: invitation, pending, or active" },
+          "firstname": { "type": "string", "doc": "First name stored for this contact" },
+          "lastname": { "type": "string", "doc": "Last name stored for this contact" },
+          "email": { "type": "array", "doc": "List of email address objects associated with this contact" },
+          "input": { "type": "string", "doc": "The original email address used to send the invitation" }
+        }
+      },
+      "errors": [
+        { "code": "INVALID_DATA", "message": "The email address format is invalid", "http_status": 400 },
+        { "code": "ALREADY_IN_CONTACT", "message": "This email is already an active contact in your list", "http_status": 409 },
+        { "code": "INVITE_RECEIVED", "message": "You already have a pending invitation from this person", "http_status": 409 },
+        { "code": "SAME_DOMAIN", "message": "Cannot invite a colleague from the same paid-plan domain; they are automatically in your contacts", "http_status": 400 }
+      ]
     },
+
+    "invite_accept": {
+      "doc": "Accept a pending contact invitation from another Drumee user. Creates a bidirectional contact connection, initiates a welcome chat exchange via handshake, logs the accept activity, and notifies the inviting party via WebSocket.",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "params": {
+        "email": { "type": "string", "required": true, "doc": "Email address of the Drumee user whose invitation you are accepting" }
+      },
+      "returns": {
+        "type": "object",
+        "doc": "Updated contact record reflecting the accepted status",
+        "properties": {
+          "contact_id": { "type": "string", "doc": "Contact record ID" },
+          "status": { "type": "string", "doc": "New contact status (active)" },
+          "uid": { "type": "string", "doc": "Drumee user ID of the accepted contact" }
+        }
+      },
+      "errors": [
+        { "code": "NOT_A_DRUMATE", "message": "The email address does not belong to a registered Drumee user", "http_status": 404 },
+        { "code": "NO_INVITE", "message": "No pending invitation found from this user", "http_status": 404 }
+      ]
+    },
+
+    "invite_refuse": {
+      "doc": "Refuse a pending contact invitation from another Drumee user. Updates the invitation status, logs the refuse activity, and notifies the inviting party via WebSocket.",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "params": {
+        "email": { "type": "string", "required": true, "doc": "Email address of the Drumee user whose invitation to refuse" }
+      },
+      "returns": {
+        "type": "object",
+        "doc": "Updated contact status after refusal",
+        "properties": {
+          "status": { "type": "string", "doc": "Contact relationship status after refusal" },
+          "uid": { "type": "string", "doc": "Drumee user ID of the refusing party" }
+        }
+      },
+      "errors": [
+        { "code": "NOT_A_DRUMATE", "message": "The email address does not belong to a registered Drumee user", "http_status": 404 },
+        { "code": "NO_INVITE", "message": "No pending invitation found from this user", "http_status": 404 }
+      ]
+    },
+
     "add": {
+      "doc": "Manually add a new contact by Drumee user ID or by email address list. These two inputs are mutually exclusive. Optionally sends an invitation email by setting invite=1.",
       "scope": "hub",
       "permission": {
         "src": "owner"
-      }
+      },
+      "params": {
+        "invitee_id": { "type": "string", "required": false, "doc": "Drumee user ID of the contact to add. Mutually exclusive with email array." },
+        "email": { "type": "array", "required": false, "doc": "Array of email objects: [{ email, is_default, category }]. Required if invitee_id is not provided. One entry must have is_default=1." },
+        "firstname": { "type": "string", "required": false, "doc": "Contact's first name" },
+        "lastname": { "type": "string", "required": false, "doc": "Contact's last name" },
+        "surname": { "type": "string", "required": false, "doc": "Contact's middle or additional name" },
+        "mobile": { "type": "array", "required": false, "doc": "Array of phone objects: [{ phone, areacode, category, is_default }]" },
+        "address": { "type": "array", "required": false, "doc": "Array of address objects: [{ street, city, country, category, is_default }]" },
+        "tag": { "type": "array", "required": false, "doc": "Array of tag identifiers to assign to this contact" },
+        "comment": { "type": "string", "required": false, "doc": "Internal comment or note about this contact" },
+        "message": { "type": "string", "required": false, "doc": "Personal message included in invitation email when invite=1" },
+        "invite": { "type": "string", "required": false, "default": "0", "doc": "Set to '1' to send an invitation email to the contact" }
+      },
+      "returns": {
+        "type": "object",
+        "doc": "Newly created contact record with full details",
+        "properties": {
+          "id": { "type": "string", "doc": "Contact record ID" },
+          "entity": { "type": "string", "doc": "Contact entity identifier (uid or email)" },
+          "uid": { "type": "string", "doc": "Drumee user ID if the contact is a registered user, null otherwise" },
+          "status": { "type": "string", "doc": "Contact status (independant, invitation, active, etc.)" },
+          "firstname": { "type": "string", "doc": "Contact's first name" },
+          "lastname": { "type": "string", "doc": "Contact's last name" },
+          "email": { "type": "array", "doc": "List of associated email addresses" },
+          "mobile": { "type": "array", "doc": "List of associated phone numbers" },
+          "address": { "type": "array", "doc": "List of associated addresses" },
+          "tag": { "type": "array", "doc": "List of associated tags" }
+        }
+      },
+      "errors": [
+        { "code": "INVALID_DATA", "message": "Provide either invitee_id or email array, but not both (or neither)", "http_status": 400 },
+        { "code": "INVALID_INVITEE_ID", "message": "The provided invitee_id does not match any registered Drumee user", "http_status": 404 },
+        { "code": "SAME_DOMAIN", "message": "Cannot add a colleague from the same paid-plan domain as an external contact", "http_status": 400 },
+        { "code": "MANY_DEFAULT_EMAIL", "message": "Only one email address can be designated as default (is_default=1)", "http_status": 400 },
+        { "code": "NO_DEFAULT_MAIL", "message": "At least one email address must be designated as default", "http_status": 400 },
+        { "code": "ALREADY_IN_CONTACT", "message": "This contact already exists in your contact list", "http_status": 409 },
+        { "code": "SELF_CONTACT", "message": "You cannot add yourself as a contact", "http_status": 400 },
+        { "code": "EMAIL_NOT_SENT", "message": "Contact was created successfully but the invitation email failed to send", "http_status": 207 }
+      ]
     },
-    "add_to_group": {
+
+    "update": {
+      "doc": "Update an existing contact's information including name, email addresses, phone numbers, addresses, and tags. All sub-arrays are fully replaced on update (not merged). Optionally re-sends or initiates an invitation via invite=1.",
       "scope": "hub",
       "permission": {
         "src": "owner"
-      }
+      },
+      "params": {
+        "contact_id": { "type": "string", "required": true, "doc": "ID of the contact to update" },
+        "firstname": { "type": "string", "required": false, "doc": "Updated first name. Required when the contact is linked to a Drumee user (uid is set)." },
+        "lastname": { "type": "string", "required": false, "doc": "Updated last name. Required when the contact is linked to a Drumee user (uid is set)." },
+        "surname": { "type": "string", "required": false, "doc": "Updated middle or additional name" },
+        "email": { "type": "array", "required": false, "doc": "Replacement email list: [{ email, is_default, category }]. Fully replaces existing emails." },
+        "mobile": { "type": "array", "required": false, "doc": "Replacement phone list: [{ phone, areacode, category, is_default }]. Fully replaces existing phones." },
+        "address": { "type": "array", "required": false, "doc": "Replacement address list: [{ street, city, country, category, is_default }]. Fully replaces existing addresses." },
+        "tag": { "type": "array", "required": false, "doc": "Replacement tag list. Fully replaces existing tags." },
+        "comment": { "type": "string", "required": false, "doc": "Updated internal comment" },
+        "message": { "type": "string", "required": false, "doc": "Message for invitation email (used when invite=1)" },
+        "invite": { "type": "string", "required": false, "default": "0", "doc": "Set to '1' to send or re-send an invitation email" }
+      },
+      "returns": {
+        "type": "object",
+        "doc": "Updated contact record with full details",
+        "properties": {
+          "id": { "type": "string", "doc": "Contact record ID" },
+          "entity": { "type": "string", "doc": "Contact entity identifier after update" },
+          "status": { "type": "string", "doc": "Current contact status" },
+          "email": { "type": "array", "doc": "Updated list of email addresses" },
+          "mobile": { "type": "array", "doc": "Updated list of phone numbers" },
+          "address": { "type": "array", "doc": "Updated list of addresses" },
+          "tag": { "type": "array", "doc": "Updated list of tags" }
+        }
+      },
+      "errors": [
+        { "code": "CONACT_NOT_EXIST", "message": "No contact found with the given contact_id", "http_status": 404 },
+        { "code": "EMPTY_FIRSTNAME", "message": "First name is required when updating a contact linked to a Drumee user", "http_status": 400 },
+        { "code": "EMPTY_LASTNAME", "message": "Last name is required when updating a contact linked to a Drumee user", "http_status": 400 },
+        { "code": "MANY_DEFAULT_EMAIL", "message": "Only one email address can be designated as default (is_default=1)", "http_status": 400 },
+        { "code": "NO_DEFAULT_MAIL", "message": "A default email address is required when is_need_email is set on this contact", "http_status": 400 },
+        { "code": "ALREADY_IN_CONTACT", "message": "The new email/entity is already used by another contact in your list", "http_status": 409 },
+        { "code": "SAME_DOMAIN", "message": "Cannot assign a same-domain colleague as an external contact", "http_status": 400 },
+        { "code": "SELF_CONTACT", "message": "You cannot set yourself as a contact", "http_status": 400 },
+        { "code": "EMAIL_NOT_SENT", "message": "Contact was updated successfully but the invitation email failed to send", "http_status": 207 }
+      ]
     },
+
+    "show_contact": {
+      "doc": "List the current user's contacts with optional filtering by tag, name, and status. Free users (domain_id=1) see only their personal contact table. Paid users (domain_id>1) see personal contacts only; same-domain colleagues are available via my_contacts.",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "params": {
+        "tag_id": { "type": "string", "required": false, "doc": "Filter contacts belonging to a specific tag ID. Pass empty string to show all tags." },
+        "name": { "type": "string", "required": false, "doc": "Search keyword to filter contacts by name (partial match)" },
+        "order": { "type": "string", "required": false, "default": "asc", "doc": "Sort direction: 'asc' or 'desc'" },
+        "page": { "type": "number", "required": false, "default": 1, "doc": "Page number for pagination" },
+        "option": { "type": "string", "required": false, "default": "active", "doc": "Filter by contact status: 'active', 'archived', or 'all'" }
+      },
+      "returns": {
+        "type": "array",
+        "doc": "Paginated list of contact objects",
+        "items": {
+          "id": { "type": "string", "doc": "Contact record ID" },
+          "entity": { "type": "string", "doc": "Contact entity (Drumee uid or email)" },
+          "uid": { "type": "string", "doc": "Drumee user ID if the contact is a registered user" },
+          "status": { "type": "string", "doc": "Contact relationship status (active, archived, invitation, etc.)" },
+          "firstname": { "type": "string", "doc": "First name" },
+          "lastname": { "type": "string", "doc": "Last name" },
+          "fullname": { "type": "string", "doc": "Full display name" },
+          "email": { "type": "string", "doc": "Default email address" },
+          "avatar": { "type": "string", "doc": "Avatar URL if the contact is a Drumee user" }
+        }
+      },
+      "errors": []
+    },
+
+    "my_contacts": {
+      "doc": "Search and filter the current user's contacts. Free users (domain_id=1) see only their personal contact table. Paid users (domain_id>1) see personal contacts UNION colleagues from the same domain. Returns an empty array when the search key is empty.",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "params": {
+        "value": { "type": "string", "required": false, "default": "", "doc": "Search keyword to filter by name or email. Returns empty array if omitted or blank." },
+        "page": { "type": "number", "required": false, "default": 1, "doc": "Page number for pagination" },
+        "only_drumate": { "type": "number", "required": false, "default": 0, "doc": "Set to 1 to return only contacts who are registered Drumee users" },
+        "filter": { "type": "array", "required": false, "doc": "Array of additional filter criteria" },
+        "status": { "type": "string", "required": false, "default": "", "doc": "Filter by contact status (active, archived, etc.)" }
+      },
+      "returns": {
+        "type": "array",
+        "doc": "List of matching contact objects",
+        "items": {
+          "id": { "type": "string", "doc": "Contact or user ID" },
+          "uid": { "type": "string", "doc": "Drumee user ID (if a registered user)" },
+          "entity": { "type": "string", "doc": "Contact entity (uid or email)" },
+          "fullname": { "type": "string", "doc": "Full display name" },
+          "email": { "type": "string", "doc": "Default email address" },
+          "status": { "type": "string", "doc": "Contact status" },
+          "avatar": { "type": "string", "doc": "Avatar URL" }
+        }
+      },
+      "errors": []
+    },
+
+    "email_in_use": {
+      "doc": "Check whether an email is already referenced by any of the caller's contacts — as the contact's entity (default identifier) or in their contact_email rows. Pass contact_id when editing to exclude that contact from the check.",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "params": {
+        "email": { "type": "string", "required": true, "doc": "Email address to check" },
+        "contact_id": { "type": "string", "required": false, "doc": "Contact ID to exclude (the one being edited)" }
+      },
+      "returns": {
+        "type": "object",
+        "doc": "Empty object when the email is free; otherwise a contact descriptor.",
+        "properties": {
+          "id": { "type": "string", "doc": "Conflicting contact ID" },
+          "firstname": { "type": "string", "doc": "Conflicting contact first name" },
+          "lastname": { "type": "string", "doc": "Conflicting contact last name" },
+          "entity": { "type": "string", "doc": "Conflicting contact entity identifier" },
+          "email": { "type": "string", "doc": "The matching email address that triggered the conflict" }
+        }
+      },
+      "errors": []
+    },
+
+    "get_contact": {
+      "doc": "Retrieve full details of a specific contact including all associated email addresses, phone numbers, postal addresses, and tags.",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "params": {
+        "contact_id": { "type": "string", "required": true, "doc": "ID of the contact to retrieve" }
+      },
+      "returns": {
+        "type": "object",
+        "doc": "Full contact record with all nested sub-arrays",
+        "properties": {
+          "id": { "type": "string", "doc": "Contact record ID" },
+          "entity": { "type": "string", "doc": "Contact entity identifier (uid or email)" },
+          "uid": { "type": "string", "doc": "Drumee user ID if the contact is a registered user" },
+          "status": { "type": "string", "doc": "Contact relationship status" },
+          "firstname": { "type": "string", "doc": "First name" },
+          "lastname": { "type": "string", "doc": "Last name" },
+          "surname": { "type": "string", "doc": "Middle or additional name" },
+          "fullname": { "type": "string", "doc": "Full display name" },
+          "comment": { "type": "string", "doc": "Internal comment" },
+          "email": { "type": "array", "doc": "All email addresses: [{ id, email, is_default, category }]" },
+          "mobile": { "type": "array", "doc": "All phone numbers: [{ id, phone, areacode, category, is_default }]" },
+          "address": { "type": "array", "doc": "All postal addresses: [{ id, street, city, country, category, is_default }]" },
+          "tag": { "type": "array", "doc": "All tags associated with this contact" }
+        }
+      },
+      "errors": []
+    },
+
+    "delete_contact": {
+      "doc": "Permanently delete a contact from the current user's contact list. Sends a real-time WebSocket notification to both the owner and the contact (if they are a Drumee user).",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "params": {
+        "contact_id": { "type": "string", "required": true, "doc": "ID of the contact to permanently delete" }
+      },
+      "returns": {
+        "type": "object",
+        "doc": "Deletion result data",
+        "properties": {
+          "id": { "type": "string", "doc": "ID of the deleted contact record" },
+          "status": { "type": "string", "doc": "Deletion confirmation status" }
+        }
+      },
+      "errors": []
+    },
+
+    "search": {
+      "doc": "Search for Drumee users across the platform by keyword within the current domain. Intended for discovering potential contacts to add. Returns an empty array if the search key is blank.",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "params": {
+        "key": { "type": "string", "required": false, "doc": "Search keyword (name or email). Returns empty array if omitted." },
+        "string": { "type": "string", "required": false, "doc": "Alternative parameter name for key" },
+        "page": { "type": "number", "required": false, "default": 1, "doc": "Page number for pagination" }
+      },
+      "returns": {
+        "type": "array",
+        "doc": "List of Drumee users matching the search keyword",
+        "items": {
+          "uid": { "type": "string", "doc": "Drumee user ID" },
+          "email": { "type": "string", "doc": "User's email address" },
+          "fullname": { "type": "string", "doc": "User's full display name" },
+          "avatar": { "type": "string", "doc": "User's avatar URL" }
+        }
+      },
+      "errors": []
+    },
+
+    "invite_get": {
+      "doc": "Retrieve the list of pending contact invitations received by the current user. Used to display the invitation inbox.",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "params": {},
+      "returns": {
+        "type": "array",
+        "doc": "List of pending invitation records",
+        "items": {
+          "id": { "type": "string", "doc": "Invitation record ID" },
+          "entity": { "type": "string", "doc": "Sender's entity identifier (uid or email)" },
+          "uid": { "type": "string", "doc": "Sender's Drumee user ID" },
+          "fullname": { "type": "string", "doc": "Sender's full display name" },
+          "email": { "type": "string", "doc": "Sender's email address" },
+          "status": { "type": "string", "doc": "Invitation status (received, invitation)" },
+          "created_at": { "type": "number", "doc": "Unix timestamp when the invitation was sent" }
+        }
+      },
+      "errors": []
+    },
+
+    "invite_count": {
+      "doc": "Get the count of pending contact invitations received by the current user. Used to display notification badges in the UI.",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "params": {},
+      "returns": {
+        "type": "object",
+        "doc": "Pending invitation count",
+        "properties": {
+          "count": { "type": "number", "doc": "Number of pending received invitations" }
+        }
+      },
+      "errors": []
+    },
+
+    "accept_informed": {
+      "doc": "Acknowledge that the current user has been notified that their sent invitation was accepted by the recipient. Transitions the contact status from 'informed' to 'active' on the sender's side and sends a WebSocket update.",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "params": {
+        "email": { "type": "string", "required": true, "doc": "Email address of the Drumee user who accepted your invitation" }
+      },
+      "returns": {
+        "type": "object",
+        "doc": "Updated contact status after acknowledgement",
+        "properties": {
+          "contact_id": { "type": "string", "doc": "Contact record ID" },
+          "status": { "type": "string", "doc": "New contact status (active)" }
+        }
+      },
+      "errors": [
+        { "code": "NOT_A_DRUMATE", "message": "The email address does not belong to a registered Drumee user", "http_status": 404 },
+        { "code": "NO_INVITE", "message": "No informed-status invitation found for this user", "http_status": 404 }
+      ]
+    },
+
     "block": {
+      "doc": "Block a contact to prevent further interaction. Updates the contact relationship record for both parties and sends real-time WebSocket notifications.",
       "scope": "hub",
       "permission": {
         "src": "owner"
-      }
+      },
+      "params": {
+        "contact_id": { "type": "string", "required": true, "doc": "ID of the contact to block" }
+      },
+      "returns": {
+        "type": "object",
+        "doc": "Full contact record reflecting the blocked status",
+        "properties": {
+          "id": { "type": "string", "doc": "Contact record ID" },
+          "entity": { "type": "string", "doc": "Contact entity identifier" },
+          "uid": { "type": "string", "doc": "Drumee user ID of the blocked contact" },
+          "status": { "type": "string", "doc": "Updated contact status (blocked)" },
+          "email": { "type": "array", "doc": "Contact's email addresses" }
+        }
+      },
+      "errors": []
     },
+
+    "unblock": {
+      "doc": "Unblock a previously blocked contact, restoring the contact relationship. Sends real-time WebSocket notifications to both parties.",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "params": {
+        "contact_id": { "type": "string", "required": true, "doc": "ID of the contact to unblock" }
+      },
+      "returns": {
+        "type": "object",
+        "doc": "Full contact record after unblocking",
+        "properties": {
+          "id": { "type": "string", "doc": "Contact record ID" },
+          "entity": { "type": "string", "doc": "Contact entity identifier" },
+          "uid": { "type": "string", "doc": "Drumee user ID of the unblocked contact" },
+          "status": { "type": "string", "doc": "Updated contact status (active)" },
+          "email": { "type": "array", "doc": "Contact's email addresses" }
+        }
+      },
+      "errors": []
+    },
+
     "change_status": {
+      "doc": "Change the status of a contact to 'active' (restore) or 'archived' (soft-archive without deletion). Sends a real-time WebSocket update to the current user's sessions.",
       "scope": "hub",
       "permission": {
         "src": "owner"
-      }
+      },
+      "params": {
+        "contact_id": { "type": "string", "required": true, "doc": "ID of the contact whose status to change" },
+        "status": { "type": "string", "required": true, "doc": "New status value. Allowed values: 'active', 'archived'" }
+      },
+      "returns": {
+        "type": "object",
+        "doc": "Updated contact status object",
+        "properties": {
+          "id": { "type": "string", "doc": "Contact record ID" },
+          "status": { "type": "string", "doc": "New status (active or archived)" }
+        }
+      },
+      "errors": [
+        { "code": "INVALID_STATUS0", "message": "Status must be either 'active' or 'archived'", "http_status": 400 },
+        { "code": "CONACT_NOT_EXIST", "message": "No contact found with the given contact_id", "http_status": 404 }
+      ]
     },
+
+    "join": {
+      "doc": "Join a contact network via an invitation token received in an invitation email. Validates the token, creates the contact relationship, and returns the newly created contact record.",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "params": {
+        "token": { "type": "string", "required": true, "doc": "Invitation token received in the invitation email link" }
+      },
+      "returns": {
+        "type": "object",
+        "doc": "Contact record created via the invitation token",
+        "properties": {
+          "id": { "type": "string", "doc": "Contact record ID" },
+          "status": { "type": "string", "doc": "Contact status after joining" },
+          "email": { "type": "array", "doc": "Email address objects associated with the contact" }
+        }
+      },
+      "errors": [
+        { "code": "INVALID_TOKEN", "message": "The provided invitation token is invalid or does not exist", "http_status": 400 },
+        { "code": "EXPIRIED_TOKEN", "message": "The invitation token has expired and is no longer active", "http_status": 410 }
+      ]
+    },
+
+    "summary": {
+      "doc": "Get a contact summary for a hub node. Returns the count of active contacts and the timestamp of the most recent contact modification. Requires owner-level access to the specified node.",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "params": {
+        "hub_id": { "type": "string", "required": true, "doc": "Hub ID containing the target node" },
+        "nid": { "type": "string", "required": true, "doc": "Node ID to retrieve the contact summary for" }
+      },
+      "returns": {
+        "type": "object",
+        "doc": "Contact summary data for the specified node",
+        "properties": {
+          "contact_count": { "type": "number", "doc": "Number of active contacts associated with this node" },
+          "last_updated": { "type": "number", "doc": "Unix timestamp of the most recent contact modification" }
+        }
+      },
+      "errors": [
+        { "code": "FOLDER_NOT_FOUND", "message": "The specified node does not exist in this hub", "http_status": 404 },
+        { "code": "PERMISSION_DENIED", "message": "Only the node owner can retrieve the contact summary", "http_status": 403 }
+      ]
+    },
+
+    "google_auth": {
+      "doc": "Initiate the Google OAuth authorization flow to import contacts from Google Contacts. Returns a Google authorization URL that the user must visit to grant read-only access to their Google Contacts.",
+      "scope": "hub",
+      "permission": {
+        "src": "anonymous"
+      },
+      "params": {},
+      "returns": {
+        "type": "object",
+        "doc": "Google OAuth redirect URL",
+        "properties": {
+          "url": { "type": "string", "doc": "Google OAuth 2.0 authorization URL. Redirect the user to this URL to begin the consent flow." }
+        }
+      },
+      "errors": []
+    },
+
+    "invitation_status": {
+      "doc": "Check the status of a contact invitation using its token. Public endpoint (no authentication required) used to display the invitation landing page before the recipient logs in.",
+      "scope": "hub",
+      "permission": {
+        "src": "anonymous"
+      },
+      "params": {
+        "token": { "type": "string", "required": true, "doc": "Invitation token from the invitation email URL" },
+        "uid": { "type": "string", "required": false, "doc": "Optional Drumee user ID to provide additional context about the recipient" }
+      },
+      "returns": {
+        "type": "object",
+        "doc": "Invitation status and sender details",
+        "properties": {
+          "status": { "type": "string", "doc": "Current invitation status (active, expired, used, etc.)" },
+          "sender": { "type": "object", "doc": "Information about the user who sent the invitation" },
+          "email": { "type": "string", "doc": "Email address the invitation was sent to" }
+        }
+      },
+      "errors": []
+    },
+
+    "load": {
+      "doc": "Import contacts from an uploaded CSV or VCF (vCard) file. Processes the file and reports real-time import progress via WebSocket using socket_id. Each entry requires at least one email address. Supports .csv and .vcf formats.",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "params": {
+        "socket_id": { "type": "string", "required": true, "doc": "WebSocket session ID for streaming real-time progress updates during import" },
+        "uploaded_id": { "type": "string", "required": false, "doc": "ID of the file from an upload operation. Mutually exclusive with secret." },
+        "secret": { "type": "string", "required": false, "doc": "Legacy file ID. Mutually exclusive with uploaded_id." },
+        "service": { "type": "string", "required": false, "doc": "Optional service tag used in WebSocket progress messages" }
+      },
+      "returns": {
+        "type": "object",
+        "doc": "Import result summary",
+        "properties": {
+          "total": { "type": "number", "doc": "Total number of contact entries found in the file" },
+          "loaded": { "type": "number", "doc": "Number of contacts successfully imported" },
+          "noemail": { "type": "number", "doc": "Number of entries skipped because they had no email address" },
+          "alreadyincontact": { "type": "number", "doc": "Number of entries skipped because they already exist in the contact list" }
+        }
+      },
+      "errors": [
+        { "code": "NO_FILE", "message": "No file ID was provided; either uploaded_id or secret is required", "http_status": 400 },
+        { "code": "INVALID_INPUT", "message": "Both uploaded_id and secret were provided; only one is allowed at a time", "http_status": 400 },
+        { "code": "WRONG_FORMAT", "message": "The uploaded file is not a supported format; only .csv and .vcf are accepted", "http_status": 415 }
+      ]
+    },
+
     "connection_status": {
+      "doc": "Retrieve the current online/offline presence state of all contacts. Used to display real-time presence indicators in the contact list.",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "params": {},
+      "returns": {
+        "type": "array",
+        "doc": "List of contact presence state records",
+        "items": {
+          "uid": { "type": "string", "doc": "Drumee user ID of the contact" },
+          "online": { "type": "boolean", "doc": "Whether the contact is currently online" },
+          "last_seen": { "type": "number", "doc": "Unix timestamp of the contact's last seen activity" }
+        }
+      },
+      "errors": []
+    },
+
+    "add_to_group": {
       "scope": "hub",
       "permission": {
         "src": "owner"
@@ -43,12 +615,6 @@
       }
     },
     "delete": {
-      "scope": "hub",
-      "permission": {
-        "src": "owner"
-      }
-    },
-    "delete_contact": {
       "scope": "hub",
       "permission": {
         "src": "owner"
@@ -90,49 +656,13 @@
         "src": "owner"
       }
     },
-    "get_contact": {
-      "scope": "hub",
-      "permission": {
-        "src": "owner"
-      }
-    },
     "get_group_avatar": {
       "scope": "hub",
       "permission": {
         "src": "owner"
       }
     },
-    "google_auth": {
-      "scope": "hub",
-      "permission": {
-        "src": "anonymous"
-      }
-    },
     "import": {
-      "scope": "hub",
-      "permission": {
-        "src": "owner"
-      }
-    },
-    "invitation_status": {
-      "scope": "hub",
-      "permission": {
-        "src": "anonymous"
-      }
-    },
-    "invite": {
-      "scope": "hub",
-      "permission": {
-        "src": "owner"
-      }
-    },
-    "invite_accept": {
-      "scope": "hub",
-      "permission": {
-        "src": "owner"
-      }
-    },
-    "invite_count": {
       "scope": "hub",
       "permission": {
         "src": "owner"
@@ -144,43 +674,7 @@
         "src": "owner"
       }
     },
-    "invite_get": {
-      "scope": "hub",
-      "permission": {
-        "src": "owner"
-      }
-    },
-    "invite_refuse": {
-      "scope": "hub",
-      "permission": {
-        "src": "owner"
-      }
-    },
-    "join": {
-      "scope": "hub",
-      "permission": {
-        "src": "owner"
-      }
-    },
-    "load": {
-      "scope": "hub",
-      "permission": {
-        "src": "owner"
-      }
-    },
-    "my_contacts": {
-      "scope": "hub",
-      "permission": {
-        "src": "owner"
-      }
-    },
     "remove_from_group": {
-      "scope": "hub",
-      "permission": {
-        "src": "owner"
-      }
-    },
-    "search": {
       "scope": "hub",
       "permission": {
         "src": "owner"
@@ -210,12 +704,6 @@
         "src": "owner"
       }
     },
-    "show_contact": {
-      "scope": "hub",
-      "permission": {
-        "src": "owner"
-      }
-    },
     "show_gmail_contacts": {
       "scope": "hub",
       "permission": {
@@ -233,19 +721,8 @@
       "permission": {
         "src": "owner"
       }
-    },
-    "unblock": {
-      "scope": "hub",
-      "permission": {
-        "src": "owner"
-      }
-    },
-    "update": {
-      "scope": "hub",
-      "permission": {
-        "src": "owner"
-      }
     }
+
   },
   "modules": {
     "private": "service/private/contact",

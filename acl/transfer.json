@@ -1,62 +1,409 @@
 {
   "services": {
     "create": {
+      "doc": "Create a new transfer folder node for the current hub. Generates a random folder name and token, creates an MFS folder node under the source-granted parent, grants public write permission on it, registers a guest cookie session, and sets up a DMZ grant. Returns the new node ID and privilege level. Sets a guest session cookie COOKIE_GUEST_SID on the response.",
       "scope": "hub",
       "permission": {
         "src": "write"
       },
-      "log": true
+      "log": true,
+      "params": {},
+      "returns": {
+        "type": "object",
+        "description": "Transfer folder creation result",
+        "properties": {
+          "nid": {
+            "type": "string",
+            "description": "ID of the newly created transfer folder node"
+          },
+          "privilege": {
+            "type": "integer",
+            "description": "Permission level granted on the node, always 7 (full access)",
+            "example": 7
+          }
+        }
+      },
+      "errors": []
     },
+
     "send_link": {
+      "doc": "Send a transfer download link to one or more email recipients. Spawns an offline background process (offline/media/transfer.js) that handles zipping, DMZ registration, and email delivery. The OTP verification step is currently disabled in the source code. Returns the transfer node ID on success.",
       "scope": "hub",
       "permission": {
         "src": "write"
       },
-      "log": true
+      "log": true,
+      "params": {
+        "email": {
+          "type": "string",
+          "required": true,
+          "description": "Sender or primary recipient email address used for OTP verification and acknowledgement emails"
+        },
+        "emails": {
+          "type": "array",
+          "required": true,
+          "description": "Array of recipient email addresses to send the transfer link to",
+          "items": {
+            "type": "string",
+            "description": "Recipient email address"
+          }
+        },
+        "password": {
+          "type": "string",
+          "required": false,
+          "default": "",
+          "description": "Optional password fingerprint to protect the transfer link"
+        },
+        "days": {
+          "type": "integer",
+          "required": false,
+          "default": 7,
+          "description": "Number of days the transfer link remains valid. Converted to hours internally (days * 24)."
+        },
+        "message": {
+          "type": "string",
+          "required": false,
+          "default": "",
+          "description": "Optional personal message to include in the transfer email"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Transfer send result",
+        "properties": {
+          "nid": {
+            "type": "string",
+            "description": "ID of the transfer node"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "INVALID_OTP",
+          "message": "OTP verification failed. Note: OTP check is currently commented out in source and this error is never triggered in production.",
+          "returns": {
+            "status": "INVALID_OTP"
+          }
+        }
+      ]
     },
+
     "create_link": {
+      "doc": "Package the source-granted transfer folder into a ZIP archive and generate a public download link. Reads the folder manifest, creates a symlink tree in the download directory, spawns an async archive process, creates a new ZIP node with expiry and password metadata, registers it in DMZ, and records analytics. Returns a shareable HTTPS link. The zip archive is created asynchronously in the background.",
       "scope": "hub",
       "permission": {
         "src": "write"
       },
-      "log": true
+      "log": true,
+      "params": {
+        "deviceId": {
+          "type": "string",
+          "required": false,
+          "description": "Sender device identifier for download analytics tracking"
+        },
+        "password": {
+          "type": "string",
+          "required": false,
+          "default": "",
+          "description": "Optional password fingerprint stored as metadata to protect the download link"
+        },
+        "days": {
+          "type": "integer",
+          "required": false,
+          "default": 7,
+          "description": "Number of days the link remains active. Converted to hours internally (days * 24)."
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Link creation result",
+        "properties": {
+          "link": {
+            "type": "string",
+            "description": "Shareable HTTPS download URL in the form https://vhost/path/zipnode_id/zipid"
+          },
+          "status": {
+            "type": "string",
+            "description": "Error status string when link creation fails. Present only on failure."
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "Failed to create zip dir",
+          "message": "Could not create the temporary download directory for the ZIP archive",
+          "returns": {
+            "status": "Failed to create zip dir"
+          }
+        }
+      ]
     },
+
     "download": {
+      "doc": "Stream the ZIP archive file to the requester. Validates the token against the node metadata, checks the physical zip file exists on disk, records download analytics, and sends an acknowledgement email to the sender. Responds with the drumee-transfer.zip file as an application/zip stream.",
       "scope": "hub",
       "permission": {
         "src": "read"
       },
-      "log": true
+      "log": true,
+      "params": {
+        "token": {
+          "type": "string",
+          "required": true,
+          "description": "Receiver token previously provided in the transfer link URL"
+        },
+        "deviceId": {
+          "type": "string",
+          "required": true,
+          "description": "Receiver device identifier recorded in download analytics"
+        }
+      },
+      "returns": {
+        "type": "file",
+        "description": "ZIP file stream served as application/zip with filename drumee-transfer.zip"
+      },
+      "errors": [
+        {
+          "code": "EXPIRED_TOKEN",
+          "message": "The transfer node ID is empty, meaning the link has expired or been deleted",
+          "returns": {
+            "status": "EXPIRED_TOKEN"
+          }
+        },
+        {
+          "code": "FILE_NOT_FOUND",
+          "message": "The zip archive file does not exist on the server filesystem",
+          "returns": {
+            "status": "FILE_NOT_FOUND"
+          }
+        }
+      ]
     },
+
     "remove": {
+      "doc": "Delete a transfer folder node and clean up all associated files on disk. Reads the node manifest, removes each physical file directory, then purges the node record from the database. Use this to cancel an upload before creating the final download link.",
       "scope": "hub",
       "permission": {
         "src": "read"
-      }
+      },
+      "params": {
+        "nid": {
+          "type": "string",
+          "required": true,
+          "description": "ID of the transfer folder node to remove"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Removal confirmation",
+        "properties": {
+          "nid": {
+            "type": "string",
+            "description": "ID of the removed node"
+          }
+        }
+      },
+      "errors": []
     },
+
     "link_info": {
+      "doc": "Retrieve metadata for a transfer download link. Validates the receiver token, checks session-based password clearance, updates session state, and returns link metadata including file branch info, analytics, remaining validity duration, and whether the token is the deletion token. Sensitive fields (fingerprint, deleteid, zipid, session, receiver_tokens) are stripped from the response.",
       "scope": "hub",
       "permission": {
         "src": "read"
-      }
+      },
+      "params": {
+        "token": {
+          "type": "string",
+          "required": true,
+          "description": "Receiver token from the transfer link URL"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Transfer link metadata. Sensitive fields are excluded from the response.",
+        "properties": {
+          "branch": {
+            "type": "array",
+            "description": "Array of file branch records describing the transferred files"
+          },
+          "analytic": {
+            "type": "object",
+            "description": "Download analytics metadata including download timestamps and counts"
+          },
+          "days": {
+            "type": "integer",
+            "description": "Number of full days remaining before the link expires"
+          },
+          "hours": {
+            "type": "integer",
+            "description": "Number of full hours remaining before the link expires"
+          },
+          "is_delete_token": {
+            "type": "integer",
+            "description": "1 if the provided token is the deletion token, 0 otherwise"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "EXPIRED_TOKEN",
+          "message": "The transfer node ID is empty, meaning the link has expired or been deleted",
+          "returns": {
+            "status": "EXPIRED_TOKEN"
+          }
+        },
+        {
+          "code": "WRONG_TOKEN",
+          "message": "The supplied token is not in the list of valid receiver tokens for this transfer",
+          "returns": {
+            "status": "WRONG_TOKEN"
+          }
+        },
+        {
+          "code": "PASSWORD_REQUIRED",
+          "message": "The transfer is password-protected and the current session has not yet been verified",
+          "returns": {
+            "status": "PASSWORD_REQUIRED"
+          }
+        }
+      ]
     },
+
     "chk_password": {
+      "doc": "Verify a password for a password-protected transfer link. Validates the token, checks that the zip file exists, then runs the fingerprint check against the stored password hash. On success, registers the current session as verified and returns the same metadata structure as link_info. On failure, returns an INVALID_PASSWORD status.",
       "scope": "hub",
       "permission": {
         "src": "read"
-      }
+      },
+      "params": {
+        "token": {
+          "type": "string",
+          "required": true,
+          "description": "Receiver token from the transfer link URL"
+        },
+        "password": {
+          "type": "string",
+          "required": false,
+          "default": "",
+          "description": "Password to verify against the stored fingerprint hash"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Transfer link metadata on successful password verification. Same structure as link_info returns.",
+        "properties": {
+          "branch": {
+            "type": "array",
+            "description": "Array of file branch records describing the transferred files"
+          },
+          "days": {
+            "type": "integer",
+            "description": "Number of full days remaining before the link expires"
+          },
+          "hours": {
+            "type": "integer",
+            "description": "Number of full hours remaining before the link expires"
+          },
+          "is_delete_token": {
+            "type": "integer",
+            "description": "1 if the provided token is the deletion token, 0 otherwise"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "EXPIRED_TOKEN",
+          "message": "The transfer node ID is empty, meaning the link has expired or been deleted",
+          "returns": {
+            "status": "EXPIRED_TOKEN"
+          }
+        },
+        {
+          "code": "WRONG_TOKEN",
+          "message": "The supplied token is not in receiver_tokens or the zip archive file does not exist on disk",
+          "returns": {
+            "status": "WRONG_TOKEN"
+          }
+        },
+        {
+          "code": "INVALID_PASSWORD",
+          "message": "The supplied password does not match the stored fingerprint hash",
+          "returns": {
+            "status": "INVALID_PASSWORD"
+          }
+        }
+      ]
     },
+
     "send_otp": {
+      "doc": "Generate and send a one-time password (OTP) to an email address for transfer verification. Creates a 6-character alphanumeric OTP, stores it in the node metadata alongside the recipient email, and dispatches an email via the butler/tranfer_otp template. Also accepts an emails array displayed in the OTP message body. Returns the transfer node ID on success.",
       "scope": "hub",
       "permission": {
         "src": "read"
-      }
+      },
+      "params": {
+        "email": {
+          "type": "string",
+          "required": true,
+          "description": "Email address to receive the OTP. Stored in node metadata as otp_mail."
+        },
+        "emails": {
+          "type": "array",
+          "required": true,
+          "description": "List of recipient email addresses displayed in the OTP message body",
+          "items": {
+            "type": "string",
+            "description": "Email address"
+          }
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "OTP send result",
+        "properties": {
+          "nid": {
+            "type": "string",
+            "description": "ID of the transfer node whose metadata was updated with the OTP"
+          }
+        }
+      },
+      "errors": []
     },
+
     "delete": {
+      "doc": "Permanently delete a transfer download link and its associated files. Validates that the supplied token matches the stored deleteid in node metadata. Revokes all permissions, purges the node, removes the DMZ registration, and deletes the zip directory from the filesystem. This action is irreversible.",
       "scope": "hub",
       "permission": {
         "src": "read"
-      }
+      },
+      "params": {
+        "token": {
+          "type": "string",
+          "required": true,
+          "description": "Deletion token (deleteid) embedded in the transfer management link"
+        }
+      },
+      "returns": {
+        "type": "string",
+        "description": "Filesystem path of the deleted download directory"
+      },
+      "errors": [
+        {
+          "code": "EXPIRED_TOKEN",
+          "message": "The transfer node ID is empty, meaning the link has already been deleted or expired",
+          "returns": {
+            "status": "EXPIRED_TOKEN"
+          }
+        },
+        {
+          "code": "token",
+          "message": "The supplied token does not match the stored deleteid for this transfer node",
+          "returns": {
+            "status": "token"
+          }
+        }
+      ]
     }
   },
   "modules": {

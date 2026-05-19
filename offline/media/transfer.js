@@ -328,7 +328,7 @@ class __offline_media_zip extends Offline {
     node.expiry = expiry;
     this.verbose = 1;
     let uid = 'ffffffffffffffff';
-    let data = await this.db.await_proc('mfs_manifest', this.nid, uid, 1);
+    let data = await this.db.await_proc('mfs_manifest', { nid: this.nid, uid, show_nodes: 1 });
     let files = data[0];
     let size = data[1];
     size = size.size

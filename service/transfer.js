@@ -90,7 +90,7 @@ class __transfer extends Mfs {
    */
   async remove() {
     let nid = this.input.need(Attr.nid);
-    let data = await this.db.await_proc("mfs_manifest", nid, this.uid, 1);
+    let data = await this.db.await_proc("mfs_manifest", { nid, uid: this.uid, show_nodes: 1 });
     let files = data[0];
     if (!isArray(files)) {
       files = [files];
@@ -210,7 +210,7 @@ class __transfer extends Mfs {
       let ext = new RegExp(`.${node.extension}`);
 
 
-      let data = await self.db.await_proc("mfs_manifest", nid, self.uid, 1);
+      let data = await self.db.await_proc("mfs_manifest", { nid, uid: self.uid, show_nodes: 1 });
       let files = data[0];
       let size = data[1];
       size = size.total_size;

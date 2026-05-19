@@ -24,15 +24,12 @@
     <title>
       <%= title %>
     </title>
-    <link rel="icon" href="<%= icon %>" type="image/png">
-    <link rel="stylesheet" href="/-/static/styles/loader.css" media="screen"></link>
-
-    <style nonce>
-    <%= renderer.include('fonts.tpl') %>
-    </style>
+    <link rel="icon" href="<%= icon %>" type="image/svg">
+    <link rel="stylesheet" href="/-/static/styles/loader.css?v=1.0.2" media="screen"></link>
+    <link rel="stylesheet" href="/-/static/fonts/Armin-Grotesk/stylesheet.css" media="screen"></link>
     
     <script>
-    <%= renderer.include('scripts.tpl') %>
+    <%= renderer.include('bootstrap.js.tpl') %>
     </script>
 
     <% if (typeof(loader) !== "undefined" && loader) { %>
@@ -42,6 +39,7 @@
     <% if (typeof(debugUi) !== "undefined" && debugUi) { %>
       <script>localStorage.logLevel = "3;</script>
     <% } %>
+
 
   </head>
 
@@ -54,7 +52,6 @@
     <%= renderer.include('warmup.html') %>
     </div>
     <div class="margin-auto" id="--wrapper"></div>
-    <script type="text/javascript" src="<%= app.location %>/app/<%= app.entry %>" crossorigin="true"></script> 
     <% if (typeof(debugUi) !== "undefined" && debugUi) { %>
       <script src="https://cdn.jsdelivr.net/npm/eruda"></script>
       <script>eruda.init();</script>

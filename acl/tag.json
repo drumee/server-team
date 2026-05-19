@@ -1,28 +1,133 @@
 {
   "services": {
     "list": {
+      "doc": "List tags paginated by language. Reads the language from the Xlang input or falls back to the session language. Only 'zh', 'fr', and 'en' are accepted; any other value defaults to 'en'. Calls tag_list_by_lang stored procedure.",
       "scope": "hub",
       "permission": {
         "src": "anonymous"
-      }
+      },
+      "params": {
+        "page": {
+          "type": "integer",
+          "required": false,
+          "default": 1,
+          "description": "Page number for paginated results. Defaults to 1."
+        },
+        "Xlang": {
+          "type": "string",
+          "required": false,
+          "description": "Language code for filtering tags. Accepted values: 'zh', 'fr', 'en'. Any other value falls back to 'en'. Falls back to session language if omitted."
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Paginated tag list from tag_list_by_lang stored procedure for the resolved language"
+      },
+      "errors": []
     },
+
     "get_by_name": {
+      "doc": "Search for tags by name with pagination. Calls tag_get_by_name stored procedure with the provided name and page number.",
       "scope": "hub",
       "permission": {
         "src": "anonymous"
-      }
+      },
+      "params": {
+        "name": {
+          "type": "string",
+          "required": true,
+          "description": "Tag name to search for"
+        },
+        "page": {
+          "type": "integer",
+          "required": false,
+          "default": 1,
+          "description": "Page number for paginated results. Defaults to 1."
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Paginated tag records matching the provided name from tag_get_by_name stored procedure"
+      },
+      "errors": []
     },
+
     "store": {
+      "doc": "Create or update a tag record. Resolves the tag identifier from hashtag input or falls back to id. Calls tag_save stored procedure with sys_id, tag id, lang_code array, type, and name. Returns the saved tag data on success. Throws INVALID_DATA if the tag ID is not found, or INTERNAL_ERROR for other failures.",
       "scope": "hub",
       "permission": {
         "src": "anonymous"
-      }
+      },
+      "params": {
+        "serial": {
+          "type": "integer",
+          "required": false,
+          "default": 0,
+          "description": "System serial ID of the tag for update operations. Defaults to 0 for new tag creation."
+        },
+        "hashtag": {
+          "type": "string",
+          "required": false,
+          "description": "Tag hashtag identifier. Used as the tag id if provided. Falls back to id if empty."
+        },
+        "id": {
+          "type": "string",
+          "required": false,
+          "description": "Tag ID used as fallback when hashtag is empty. Required if hashtag is not provided."
+        },
+        "lang_code": {
+          "type": "string",
+          "required": false,
+          "default": "[]",
+          "description": "JSON array string of language codes associated with this tag. Defaults to empty array string '[]'."
+        },
+        "type": {
+          "type": "string",
+          "required": true,
+          "description": "Tag type classification"
+        },
+        "name": {
+          "type": "string",
+          "required": true,
+          "description": "Tag name/label to store"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Saved tag data from tag_save stored procedure on success"
+      },
+      "errors": [
+        {
+          "code": "INVALID_DATA",
+          "message": "Tag ID was not found in the system",
+          "condition": "tag_save returns data with error equal to ID_NOT_FOUND constant"
+        },
+        {
+          "code": "INTERNAL_ERROR",
+          "message": "An internal server error occurred during tag save",
+          "condition": "tag_save returns empty data or an unexpected error"
+        }
+      ]
     },
+
     "delete": {
+      "doc": "Delete a tag by its system serial ID. Calls tag_delete stored procedure with the serial number.",
       "scope": "hub",
       "permission": {
         "src": "anonymous"
-      }
+      },
+      "params": {
+        "serial": {
+          "type": "integer",
+          "required": true,
+          "description": "System serial ID of the tag to delete"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Deletion confirmation data from tag_delete stored procedure"
+      },
+      "errors": []
     }
   },
   "modules": {

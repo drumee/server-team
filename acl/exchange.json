@@ -1,16 +1,173 @@
 {
   "services": {
     "server_export": {
+      "doc": "Initiate a server-side export of MFS nodes to a local filesystem destination. Spawns a detached background process (offline/media/serverexport.js) to perform the export asynchronously. Progress is reported via WebSocket using the provided socket_id. The export processes all nodes in the current request context, building a granted list of hub_id and nid pairs.",
       "scope": "domain",
       "permission": {
         "src": "delete"
-      }
+      },
+      "params": {
+        "socket_id": {
+          "type": "string",
+          "required": true,
+          "description": "WebSocket connection ID used to push real-time progress and completion notifications to the client"
+        },
+        "destination": {
+          "type": "string",
+          "required": true,
+          "description": "Absolute filesystem path on the server where the exported files will be written (e.g. /data/exports/backup-2024)"
+        },
+        "transactionid": {
+          "type": "string",
+          "required": true,
+          "description": "Unique transaction identifier to track and correlate this export operation across the background process and WebSocket notifications"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Initial job descriptor returned immediately after the background process is spawned. The actual export runs asynchronously.",
+        "properties": {
+          "granted": {
+            "type": "array",
+            "description": "List of node descriptors being exported, each containing nid and hub_id"
+          },
+          "dest_path": {
+            "type": "string",
+            "description": "Resolved destination path where files will be written, mirrors the destination input"
+          },
+          "uid": {
+            "type": "string",
+            "description": "User ID of the authenticated user who initiated the export"
+          },
+          "socket_id": {
+            "type": "string",
+            "description": "WebSocket ID echoed back, used by client to correlate notifications"
+          },
+          "transactionid": {
+            "type": "string",
+            "description": "Transaction ID echoed back for tracking purposes"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "MISSING_SOCKET_ID",
+          "message": "socket_id is required but was not provided",
+          "returns": {
+            "status": "MISSING_SOCKET_ID"
+          }
+        },
+        {
+          "code": "MISSING_DESTINATION",
+          "message": "destination is required but was not provided",
+          "returns": {
+            "status": "MISSING_DESTINATION"
+          }
+        },
+        {
+          "code": "MISSING_TRANSACTIONID",
+          "message": "transactionid is required but was not provided",
+          "returns": {
+            "status": "MISSING_TRANSACTIONID"
+          }
+        },
+        {
+          "code": "INTERNAL_ERROR",
+          "message": "Failed to spawn export background process",
+          "returns": {
+            "status": "INTERNAL_ERROR"
+          }
+        }
+      ]
     },
     "server_import": {
+      "doc": "Initiate a server-side import of files from local filesystem paths into an MFS hub. Spawns a detached background process (offline/media/serverimport.js) to perform the import asynchronously. Progress is reported via WebSocket using the provided socket_id. If no recipient hub is specified, defaults to the current user hub.",
       "scope": "domain",
       "permission": {
         "src": "delete"
-      }
+      },
+      "params": {
+        "socket_id": {
+          "type": "string",
+          "required": true,
+          "description": "WebSocket connection ID used to push real-time progress and completion notifications to the client"
+        },
+        "transactionid": {
+          "type": "string",
+          "required": true,
+          "description": "Unique transaction identifier to track and correlate this import operation across the background process and WebSocket notifications"
+        },
+        "source_list": {
+          "type": "array",
+          "required": false,
+          "description": "List of absolute filesystem paths on the server to import. Defaults to [\"/data/sample-1/\"] if not provided",
+          "default": ["/data/sample-1/"]
+        },
+        "pid": {
+          "type": "string",
+          "required": false,
+          "description": "Parent node ID in the destination hub where files will be placed. Defaults to \"0\" (hub root) if not provided",
+          "default": "0"
+        },
+        "recipient_id": {
+          "type": "string",
+          "required": false,
+          "description": "Target hub ID to import files into. Defaults to the current user hub ID if not provided"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Initial job descriptor returned immediately after the background process is spawned. The actual import runs asynchronously.",
+        "properties": {
+          "pid": {
+            "type": "string",
+            "description": "Parent node ID used as the import destination root, echoed from input or defaulted to 0"
+          },
+          "recipient_id": {
+            "type": "string",
+            "description": "Target hub ID where files are being imported, echoed from input or resolved from current hub"
+          },
+          "source_list": {
+            "type": "array",
+            "description": "List of source paths being imported, echoed from input or defaulted"
+          },
+          "uid": {
+            "type": "string",
+            "description": "User ID of the authenticated user who initiated the import"
+          },
+          "socket_id": {
+            "type": "string",
+            "description": "WebSocket ID echoed back, used by client to correlate notifications"
+          },
+          "transactionid": {
+            "type": "string",
+            "description": "Transaction ID echoed back for tracking purposes"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "MISSING_SOCKET_ID",
+          "message": "socket_id is required but was not provided",
+          "returns": {
+            "status": "MISSING_SOCKET_ID"
+          }
+        },
+        {
+          "code": "MISSING_TRANSACTIONID",
+          "message": "transactionid is required but was not provided",
+          "returns": {
+            "status": "MISSING_TRANSACTIONID"
+          }
+        },
+        {
+          "code": "INTERNAL_ERROR",
+          "message": "Failed to spawn import background process",
+          "returns": {
+            "status": "INTERNAL_ERROR"
+          }
+        }
+      ]
     }
   },
   "modules": {

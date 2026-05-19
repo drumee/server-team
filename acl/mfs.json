@@ -1,16 +1,261 @@
 {
   "services": {
     "server_export": {
+      "doc": "Export files/folders to server filesystem for cross-Drumee transfer or backup",
       "scope": "domain",
       "permission": {
         "src": "delete"
-      }
+      },
+      "params": {
+        "socket_id": {
+          "type": "string",
+          "required": true,
+          "doc": "WebSocket ID for progress notifications"
+        },
+        "destination": {
+          "type": "string",
+          "required": true,
+          "doc": "Server filesystem destination path"
+        },
+        "transactionid": {
+          "type": "string",
+          "required": true,
+          "doc": "Unique transaction identifier for tracking"
+        },
+        "nodes": {
+          "type": "array",
+          "required": true,
+          "doc": "Array of node objects with nid and hub_id",
+          "items": {
+            "type": "object",
+            "properties": {
+              "nid": {
+                "type": "string",
+                "doc": "Node ID or array of node IDs"
+              },
+              "hub_id": {
+                "type": "string",
+                "doc": "Hub ID containing the nodes"
+              }
+            }
+          }
+        }
+      },
+      "returns": {
+        "granted": {
+          "type": "array",
+          "doc": "Array of granted node objects",
+          "items": {
+            "type": "object",
+            "properties": {
+              "nid": {
+                "type": "string",
+                "doc": "Node ID"
+              },
+              "hub_id": {
+                "type": "string",
+                "doc": "Hub ID"
+              }
+            }
+          }
+        },
+        "dest_path": {
+          "type": "string",
+          "doc": "Destination path on server"
+        },
+        "uid": {
+          "type": "string",
+          "doc": "User ID executing export"
+        },
+        "socket_id": {
+          "type": "string",
+          "doc": "WebSocket ID for progress updates"
+        },
+        "transactionid": {
+          "type": "string",
+          "doc": "Transaction identifier"
+        }
+      },
+      "errors": [
+        {
+          "code": "PERMISSION_DENIED",
+          "message": "User does not have permission to export these nodes",
+          "http_status": 403
+        },
+        {
+          "code": "INVALID_DESTINATION",
+          "message": "Destination path is invalid or not writable",
+          "http_status": 400
+        },
+        {
+          "code": "NODE_NOT_FOUND",
+          "message": "One or more nodes do not exist",
+          "http_status": 404
+        }
+      ]
     },
     "server_import": {
+      "doc": "Import files/folders from server filesystem into MFS",
       "scope": "domain",
       "permission": {
         "src": "delete"
-      }
+      },
+      "params": {
+        "socket_id": {
+          "type": "string",
+          "required": true,
+          "doc": "WebSocket ID for progress notifications"
+        },
+        "source_list": {
+          "type": "array",
+          "required": false,
+          "default": ["/data/sample-1/"],
+          "doc": "Array of server filesystem source paths",
+          "items": {
+            "type": "string"
+          }
+        },
+        "transactionid": {
+          "type": "string",
+          "required": true,
+          "doc": "Unique transaction identifier for tracking"
+        },
+        "pid": {
+          "type": "string",
+          "required": false,
+          "default": "0",
+          "doc": "Parent node ID where files will be imported (0 for root)"
+        },
+        "recipient_id": {
+          "type": "string",
+          "required": false,
+          "doc": "Target hub ID (defaults to current hub)"
+        }
+      },
+      "returns": {
+        "pid": {
+          "type": "string",
+          "doc": "Parent node ID"
+        },
+        "recipient_id": {
+          "type": "string",
+          "doc": "Target hub ID"
+        },
+        "source_list": {
+          "type": "array",
+          "doc": "Source paths being imported",
+          "items": {
+            "type": "string"
+          }
+        },
+        "uid": {
+          "type": "string",
+          "doc": "User ID executing import"
+        },
+        "socket_id": {
+          "type": "string",
+          "doc": "WebSocket ID for progress updates"
+        },
+        "transactionid": {
+          "type": "string",
+          "doc": "Transaction identifier"
+        }
+      },
+      "errors": [
+        {
+          "code": "PERMISSION_DENIED",
+          "message": "User does not have write permission on target location",
+          "http_status": 403
+        },
+        {
+          "code": "INVALID_SOURCE",
+          "message": "Source path does not exist or is not readable",
+          "http_status": 400
+        },
+        {
+          "code": "PARENT_NOT_FOUND",
+          "message": "Parent node does not exist",
+          "http_status": 404
+        },
+        {
+          "code": "INSUFFICIENT_STORAGE",
+          "message": "Not enough storage quota available",
+          "http_status": 507
+        }
+      ]
+    },
+    "node_summary": {
+      "doc": "Get comprehensive node/folder information including file count, members, total size, and timestamps",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "params": {
+        "hub_id": {
+          "type": "string",
+          "required": true,
+          "doc": "Hub ID containing the node",
+          "pattern": "^[a-z0-9]{16}$"
+        },
+        "nid": {
+          "type": "string",
+          "required": true,
+          "doc": "Node ID (file or folder)",
+          "pattern": "^[a-z0-9]{16}$"
+        }
+      },
+      "returns": {
+        "file_count": {
+          "type": "number",
+          "doc": "Total number of files (recursive for folders)"
+        },
+        "members": {
+          "type": "array",
+          "doc": "Array of users with permission on this node",
+          "items": {
+            "type": "object",
+            "properties": {
+              "entity_id": {
+                "type": "string",
+                "doc": "User ID"
+              },
+              "permission": {
+                "type": "number",
+                "doc": "Permission level (0=none, 2=read, 4=write, 6=admin, 7=owner)"
+              }
+            }
+          }
+        },
+        "total_size": {
+          "type": "number",
+          "doc": "Total size in bytes (recursive for folders)"
+        },
+        "ctime": {
+          "type": "number",
+          "doc": "Creation timestamp (upload_time)"
+        },
+        "mtime": {
+          "type": "number",
+          "doc": "Most recent modification timestamp (publish_time)"
+        }
+      },
+      "errors": [
+        {
+          "code": "NODE_NOT_FOUND",
+          "message": "Node does not exist",
+          "http_status": 404
+        },
+        {
+          "code": "PERMISSION_DENIED",
+          "message": "User does not have read permission on this node",
+          "http_status": 403
+        },
+        {
+          "code": "INVALID_HUB_ID",
+          "message": "Hub ID format is invalid",
+          "http_status": 400
+        }
+      ]
     }
   },
   "modules": {

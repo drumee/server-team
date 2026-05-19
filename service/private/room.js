@@ -111,7 +111,7 @@ class __private_room extends __public_room {
    * 
    */
   async book() {
-    let lang = this.user.get(Attr.profile).lang || 'en';
+    let lang = this.user.get(Attr.profile).lang || this.input.ua_language();
     let name = this.user.get('fullname');
     const Moment = require('moment');
     Moment.locale(lang);

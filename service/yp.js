@@ -15,7 +15,7 @@
  * =============================================================================
  */
 const {
-  Attr, Constants, toArray, RedisStore, sysEnv
+  Attr, Constants, toArray, RedisStore, sysEnv, Cache
 } = require("@drumee/server-essentials");
 
 const {
@@ -163,20 +163,49 @@ class __yp extends Entity {
     this.output.data({ status: "NOT_IN_USE" });
   }
 
+
   /**
-   *
+   * 
    */
   async login() {
-    await this.session.login(this.input.use("vars"), this.input.use("resent"));
+    let vars = this.input.use("vars") || {};
+    vars.uid = (vars.username || vars.uid || vars.ident).trim();
+    vars.password = vars.password.trim();
+    if (!vars.uid.isEmail()) {
+      vars.username = vars.uid;
+      vars.host = this.input.get(Attr.vhost) || this.input.host();
+    }
+    let r = await this.session.signin(vars);
+    this.output.data(r);
   }
 
   /**
-   *
+   * 
    */
-  async signin() {
-    let res = await this.session.signin(this.input.use("vars"));
-    this.output.data(res)
+  async login_top() {
+    let uid = this.input.get(Attr.id) || this.input.get(Attr.uid);
+    let code = this.input.get(Attr.code) || {};
+    let secret = this.input.get(Attr.secret) || {};
+    this.debug('AAAA:189', Attr.uid, { uid, code, secret }, this.input.sid())
+    let user = await this.yp.await_proc(
+      "session_login_otp",
+      uid,
+      code,
+      secret,
+      this.input.sid()
+    );
+    this.debug('AAAA:189', user, this.input.sid())
+    user = await this.yp.await_proc('get_user', uid);
+    this.output.data(user);
   }
+
+  // /**
+  //  *
+  //  */
+  // async signin() {
+  //   let res = await this.session.signin(this.input.use("vars"));
+  //   this.output.data(res)
+  // }
 
   /**
    *
@@ -321,6 +350,16 @@ class __yp extends Entity {
   /**
    * 
    */
+  async host_exists() {
+    const host = this.input.use(Attr.host);
+    let h = await this.yp.await_proc("get_hub", host);
+    this.debug("AAA:327", host, h)
+    this.output.data(h)
+  }
+
+  /**
+   * 
+   */
   ident_exists() {
     const value = this.input.use(Attr.value);
     this.yp.call_proc("ident_exists", value, this.output.data);
@@ -432,8 +471,11 @@ class __yp extends Entity {
     let { type, nid } = this.input.data();
     switch (type) {
       case "debug":
-        this.output.data({ verbosity: global.verbosity, modules: global.debug });
-        await RedisStore.sendData(data);
+        const me = await this.yp.await_proc(`get_user`, this.uid);
+        let data = { verbosity: global.verbosity, modules: global.debug, me:me.profile }
+        this.output.data(data);
+        let recipients = await this.yp.await_proc('user_sockets', this.uid);
+        await RedisStore.sendData(this.payload(data), recipients);
         return
       case "test":
         let t1 = new Date().getTime()

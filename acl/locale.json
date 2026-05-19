@@ -1,59 +1,475 @@
 {
   "services": {
     "add": {
+      "doc": "Add a new internationalisation key with translations for all supported languages. The key_code is normalised before insertion: server category keys are lowercased and prefixed with underscore if missing, all other category keys are uppercased. Inserts one row per supported language via stored procedure intl_add_next, then returns the full newly created entry.",
       "scope": "plateform",
       "permission": {
         "src": "write"
-      }
+      },
+      "params": {
+        "values": {
+          "type": "object",
+          "required": true,
+          "description": "Object containing the key_code and translation strings keyed by language code (e.g. en, fr, vi). The key_code field is required inside the object and will be normalised based on the category."
+        },
+        "category": {
+          "type": "string",
+          "required": true,
+          "description": "Locale category to add the key under. Must be one of: ui, server, transfer, electron-web, electron-main, liceman, sandbox."
+        }
+      },
+      "returns": {
+        "type": "array",
+        "description": "Array of locale entry objects for the newly added key across all supported languages, returned by stored procedure intl_get_next",
+        "properties": {
+          "key_code": {
+            "type": "string",
+            "description": "Normalised key code as stored (lowercased and underscore-prefixed for server category, uppercased for others)"
+          },
+          "category": {
+            "type": "string",
+            "description": "Locale category of this entry"
+          },
+          "lng": {
+            "type": "string",
+            "description": "Language code for this row (e.g. en, fr, vi)"
+          },
+          "des": {
+            "type": "string",
+            "description": "Translation string for this language"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "MISSING_VALUES",
+          "message": "values parameter is required but was not provided",
+          "returns": {
+            "status": "MISSING_VALUES"
+          }
+        },
+        {
+          "code": "MISSING_CATEGORY",
+          "message": "category parameter is required but was not provided",
+          "returns": {
+            "status": "MISSING_CATEGORY"
+          }
+        },
+        {
+          "code": "INTERNAL_ERROR",
+          "message": "Failed to insert locale entries via stored procedure intl_add_next",
+          "returns": {
+            "status": "INTERNAL_ERROR"
+          }
+        }
+      ]
     },
     "build": {
+      "doc": "Rebuild all locale JSON files on the filesystem from the database. Iterates over all application types (ui, server, transfer, electron-web, electron-main, liceman, sandbox) and all supported languages, calling stored procedure get_locale_next for each combination, then writes the result to static_dir/locale/TYPE/LANG.json. Also writes the file format registry to static_dir/dataset/files-formats.json. This operation overwrites existing locale files.",
       "scope": "plateform",
       "permission": {
         "src": "modify"
-      }
+      },
+      "params": {},
+      "returns": {
+        "type": "object",
+        "description": "Map of application type names to the directory path where their locale files were written, plus a mimetype field pointing to the files-formats.json output path",
+        "properties": {
+          "ui": {
+            "type": "string",
+            "description": "Directory path where ui locale files were written"
+          },
+          "server": {
+            "type": "string",
+            "description": "Directory path where server locale files were written"
+          },
+          "transfer": {
+            "type": "string",
+            "description": "Directory path where transfer locale files were written"
+          },
+          "mimetype": {
+            "type": "string",
+            "description": "File path where the files-formats.json registry was written"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "INTERNAL_ERROR",
+          "message": "Failed to fetch locale data or write locale files to filesystem",
+          "returns": {
+            "status": "INTERNAL_ERROR"
+          }
+        }
+      ]
     },
     "delete": {
+      "doc": "Delete an internationalisation key and all its language entries from the database. Calls stored procedure intl_delete_next with the key and type. Returns the deleted key code.",
       "scope": "plateform",
       "permission": {
         "src": "modify"
-      }
+      },
+      "params": {
+        "key": {
+          "type": "string",
+          "required": true,
+          "description": "The key_code of the locale entry to delete (e.g. SAVE_BUTTON or _error_not_found)"
+        },
+        "type": {
+          "type": "string",
+          "required": false,
+          "description": "Locale category to delete from. Defaults to \"ui\" if not provided.",
+          "default": "ui"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Confirmation object containing the deleted key code",
+        "properties": {
+          "key_code": {
+            "type": "string",
+            "description": "The key_code that was deleted, echoed from the input key parameter"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "MISSING_KEY",
+          "message": "key parameter is required but was not provided",
+          "returns": {
+            "status": "MISSING_KEY"
+          }
+        },
+        {
+          "code": "INTERNAL_ERROR",
+          "message": "Failed to delete locale entry via stored procedure intl_delete_next",
+          "returns": {
+            "status": "INTERNAL_ERROR"
+          }
+        }
+      ]
     },
     "keys": {
+      "doc": "List available internationalisation key codes matching an optional filter string and category. Calls stored procedure intl_keys_next. Returns a flat list of matching key records.",
       "scope": "plateform",
       "permission": {
         "src": "write"
-      }
+      },
+      "params": {
+        "key": {
+          "type": "string",
+          "required": false,
+          "description": "Partial key string to filter results. Defaults to empty string (returns all keys) if not provided.",
+          "default": ""
+        },
+        "category": {
+          "type": "string",
+          "required": false,
+          "description": "Locale category to filter by. Defaults to \"ui\" if not provided.",
+          "default": "ui"
+        }
+      },
+      "returns": {
+        "type": "array",
+        "description": "Array of locale key records matching the filter, returned by stored procedure intl_keys_next",
+        "properties": {
+          "key_code": {
+            "type": "string",
+            "description": "The locale key code"
+          },
+          "category": {
+            "type": "string",
+            "description": "Category this key belongs to"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "INTERNAL_ERROR",
+          "message": "Failed to query locale keys via stored procedure intl_keys_next",
+          "returns": {
+            "status": "INTERNAL_ERROR"
+          }
+        }
+      ]
     },
     "get": {
+      "doc": "Retrieve a single internationalisation entry by key code and type. Calls stored procedure intl_get_next. The type parameter falls back to the category parameter if type is not provided.",
       "scope": "hub",
       "permission": {
         "src": "anonymous"
       },
-      "method": "show"
+      "method": "show",
+      "params": {
+        "key": {
+          "type": "string",
+          "required": false,
+          "description": "The key_code to retrieve. Defaults to empty string if not provided.",
+          "default": ""
+        },
+        "type": {
+          "type": "string",
+          "required": false,
+          "description": "Locale category to look up. Falls back to the category parameter if not provided. Defaults to \"ui\" if neither is set.",
+          "default": "ui"
+        },
+        "category": {
+          "type": "string",
+          "required": false,
+          "description": "Alternative to type. Used as fallback when type is not provided. Defaults to \"ui\".",
+          "default": "ui"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Locale entry object for the requested key and type returned by stored procedure intl_get_next",
+        "properties": {
+          "key_code": {
+            "type": "string",
+            "description": "The requested locale key code"
+          },
+          "category": {
+            "type": "string",
+            "description": "Category this key belongs to"
+          },
+          "lng": {
+            "type": "string",
+            "description": "Language code of the entry"
+          },
+          "des": {
+            "type": "string",
+            "description": "Translation string for this key and language"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "INTERNAL_ERROR",
+          "message": "Failed to query locale entry via stored procedure intl_get_next",
+          "returns": {
+            "status": "INTERNAL_ERROR"
+          }
+        }
+      ]
     },
     "group": {
+      "doc": "Retrieve all internationalisation entries belonging to a named group. Calls stored procedure intl_get_by_group using a synchronous callback pattern. Returns grouped locale data for the specified group name.",
       "scope": "hub",
       "permission": {
         "src": "anonymous"
-      }
+      },
+      "params": {
+        "name": {
+          "type": "string",
+          "required": true,
+          "description": "The group name to retrieve locale entries for. Used directly as the key argument to stored procedure intl_get_by_group."
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Grouped locale data for the requested group name, returned by stored procedure intl_get_by_group",
+        "properties": {
+          "key_code": {
+            "type": "string",
+            "description": "Locale key code within the group"
+          },
+          "category": {
+            "type": "string",
+            "description": "Category of the locale entries in this group"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "MISSING_NAME",
+          "message": "name parameter is required but was not provided",
+          "returns": {
+            "status": "MISSING_NAME"
+          }
+        },
+        {
+          "code": "INTERNAL_ERROR",
+          "message": "Failed to query locale group via stored procedure intl_get_by_group",
+          "returns": {
+            "status": "INTERNAL_ERROR"
+          }
+        }
+      ]
     },
     "list": {
+      "doc": "List internationalisation entries for a given category with pagination. Calls stored procedure intl_list_next and groups results by key_code so each returned object contains all language translations for that key.",
       "scope": "plateform",
       "permission": {
         "src": "anonymous"
-      }
+      },
+      "params": {
+        "page": {
+          "type": "integer",
+          "required": false,
+          "description": "Page number for pagination. Defaults to 1 if not provided.",
+          "default": 1
+        },
+        "category": {
+          "type": "string",
+          "required": false,
+          "description": "Locale category to list. Defaults to \"ui\" if not provided.",
+          "default": "ui"
+        }
+      },
+      "returns": {
+        "type": "array",
+        "description": "Array of grouped locale objects, one per key_code, each containing the key code and nested per-language translation objects",
+        "properties": {
+          "key_code": {
+            "type": "string",
+            "description": "The locale key code shared across all language entries"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "INTERNAL_ERROR",
+          "message": "Failed to query locale list via stored procedure intl_list_next",
+          "returns": {
+            "status": "INTERNAL_ERROR"
+          }
+        }
+      ]
     },
     "search": {
+      "doc": "Search internationalisation entries by value string and category with pagination. Calls stored procedure intl_search_next and groups results by key_code, returning one object per matching key containing all language translations.",
       "scope": "hub",
       "permission": {
         "src": "anonymous"
-      }
+      },
+      "params": {
+        "value": {
+          "type": "string",
+          "required": false,
+          "description": "Search string to match against translation values. Defaults to empty string (matches all) if not provided.",
+          "default": ""
+        },
+        "category": {
+          "type": "string",
+          "required": false,
+          "description": "Locale category to search within. Defaults to \"ui\" if not provided.",
+          "default": "ui"
+        },
+        "page": {
+          "type": "integer",
+          "required": false,
+          "description": "Page number for pagination. Defaults to 1 if not provided.",
+          "default": 1
+        }
+      },
+      "returns": {
+        "type": "array",
+        "description": "Array of grouped locale objects matching the search query, one per key_code, each containing the key code and nested per-language translation objects",
+        "properties": {
+          "key_code": {
+            "type": "string",
+            "description": "The locale key code matching the search query"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "INTERNAL_ERROR",
+          "message": "Failed to query locale search via stored procedure intl_search_next",
+          "returns": {
+            "status": "INTERNAL_ERROR"
+          }
+        }
+      ]
     },
     "update": {
+      "doc": "Update an internationalisation entry value. When id is provided, updates the entry directly by ID via stored procedure intl_update_by_id_next. When id is not provided, first creates the entry via intl_add_next using category, lang, and code, then updates it. Returns the entry context with previous, current, and next sibling records for navigation.",
       "scope": "plateform",
       "permission": {
         "src": "modify"
-      }
+      },
+      "params": {
+        "value": {
+          "type": "string",
+          "required": true,
+          "description": "New translation string to set for the locale entry"
+        },
+        "id": {
+          "type": "string",
+          "required": false,
+          "description": "ID of the existing locale entry to update. If not provided, a new entry is created first using category, lang, and code."
+        },
+        "category": {
+          "type": "string",
+          "required": false,
+          "description": "Locale category. Required when id is not provided in order to create the entry before updating."
+        },
+        "lang": {
+          "type": "string",
+          "required": false,
+          "description": "Language code (e.g. en, fr, vi). Required when id is not provided."
+        },
+        "code": {
+          "type": "string",
+          "required": false,
+          "description": "Key code for the new entry. Required when id is not provided."
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Contextual navigation object containing the updated entry and its adjacent sibling entries in the dataset",
+        "properties": {
+          "previous": {
+            "type": "object",
+            "description": "The locale entry immediately before the updated entry in the ordered dataset"
+          },
+          "current": {
+            "type": "object",
+            "description": "The updated locale entry in its new state"
+          },
+          "next": {
+            "type": "object",
+            "description": "The locale entry immediately after the updated entry in the ordered dataset"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "MISSING_VALUE",
+          "message": "value parameter is required but was not provided",
+          "returns": {
+            "status": "MISSING_VALUE"
+          }
+        },
+        {
+          "code": "MISSING_CATEGORY",
+          "message": "category is required when id is not provided",
+          "returns": {
+            "status": "MISSING_CATEGORY"
+          }
+        },
+        {
+          "code": "MISSING_LANG",
+          "message": "lang is required when id is not provided",
+          "returns": {
+            "status": "MISSING_LANG"
+          }
+        },
+        {
+          "code": "MISSING_CODE",
+          "message": "code is required when id is not provided",
+          "returns": {
+            "status": "MISSING_CODE"
+          }
+        },
+        {
+          "code": "INTERNAL_ERROR",
+          "message": "Failed to update locale entry via stored procedure intl_update_by_id_next",
+          "returns": {
+            "status": "INTERNAL_ERROR"
+          }
+        }
+      ]
     }
   },
   "modules": {

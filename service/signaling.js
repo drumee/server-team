@@ -236,7 +236,7 @@ class __service_signaling extends Entity {
     };
 
     let mydata = await this.yp.await_proc('forward_proc', my,
-      'channel_post_message_next',
+      'channel_post_message',
       `'${stringify(myinput)}','${msg_type}'`
     );
 
@@ -254,7 +254,7 @@ class __service_signaling extends Entity {
     };
     //this.debug("AAAAA:383", hisinput);
     let hisdata = await this.yp.await_proc('forward_proc', his,
-      'channel_post_message_next',
+      'channel_post_message',
       `'${stringify(hisinput)}','${msg_type}'`
     );
 

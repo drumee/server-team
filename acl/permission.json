@@ -1,36 +1,257 @@
 {
   "services": {
     "add_users": {
+      "doc": "Add users to hub with owner privileges. Grants owner-level access to specified users, allowing them to manage the hub. Users are added with optional expiry and invitation message.",
       "scope": "hub",
       "permission": {
         "src": "admin"
-      }
+      },
+      "params": {
+        "users": {
+          "type": "array",
+          "required": true,
+          "description": "Array of user IDs to add as hub members with owner privileges",
+          "items": {
+            "type": "string",
+            "description": "User ID (uid)"
+          }
+        },
+        "expiry": {
+          "type": "integer",
+          "required": false,
+          "default": 0,
+          "description": "Permission expiry timestamp (Unix time). 0 means no expiry."
+        },
+        "message": {
+          "type": "string",
+          "required": false,
+          "default": "",
+          "description": "Invitation message to send to users"
+        },
+        "permission": {
+          "type": "integer",
+          "required": false,
+          "description": "Permission level to grant (defaults to hub's default_privilage setting if not specified)"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Result with list of added users",
+        "properties": {
+          "users": {
+            "type": "array",
+            "description": "Array of user IDs that were added",
+            "items": {
+              "type": "string",
+              "description": "User ID"
+            }
+          }
+        }
+      },
+      "errors": []
     },
+
     "grant": {
+      "doc": "Grant permissions to users for a specific node or entire hub. Assigns access privileges (read, write, admin, owner) to users for files, folders, or the whole hub. Supports expiry and custom invitation messages.",
       "scope": "hub",
       "permission": {
         "src": "admin"
-      }
+      },
+      "params": {
+        "users": {
+          "type": "array",
+          "required": true,
+          "description": "Array of user IDs to grant permissions to",
+          "items": {
+            "type": "string",
+            "description": "User ID (uid)"
+          }
+        },
+        "permission": {
+          "type": "integer",
+          "required": true,
+          "description": "Permission level: 1=read, 2=comment, 4=write, 8=admin, 16=owner"
+        },
+        "nid": {
+          "type": "string",
+          "required": false,
+          "default": "*",
+          "description": "Node ID to grant permissions for. '*' means entire hub."
+        },
+        "expiry": {
+          "type": "integer",
+          "required": false,
+          "default": 0,
+          "description": "Permission expiry timestamp (Unix time). 0 means no expiry."
+        },
+        "message": {
+          "type": "string",
+          "required": false,
+          "default": "",
+          "description": "Message to send with permission grant notification"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "ACL data showing all users with their permissions for the specified node",
+        "properties": {
+          "nid": {
+            "type": "string",
+            "description": "Node ID"
+          },
+          "users": {
+            "type": "array",
+            "description": "List of users with their permission levels",
+            "items": {
+              "type": "object",
+              "properties": {
+                "uid": {
+                  "type": "string",
+                  "description": "User ID"
+                },
+                "privilege": {
+                  "type": "integer",
+                  "description": "Permission level granted"
+                },
+                "firstname": {
+                  "type": "string",
+                  "description": "User's first name"
+                },
+                "lastname": {
+                  "type": "string",
+                  "description": "User's last name"
+                },
+                "expiry": {
+                  "type": "integer",
+                  "description": "Permission expiry timestamp"
+                }
+              }
+            }
+          }
+        }
+      },
+      "errors": []
     },
+
     "revoke": {
+      "doc": "Revoke permissions from users for a specific node. Removes access privileges from specified users. Supports batch revocation for multiple users at once.",
       "scope": "hub",
       "permission": {
         "src": "admin"
-      }
+      },
+      "params": {
+        "users": {
+          "type": "array",
+          "required": true,
+          "description": "Array of user IDs to revoke permissions from",
+          "items": {
+            "type": "string",
+            "description": "User ID (uid)"
+          }
+        },
+        "nid": {
+          "type": "string",
+          "required": true,
+          "description": "Node ID to revoke permissions for"
+        },
+        "expiry": {
+          "type": "integer",
+          "required": false,
+          "default": 0,
+          "description": "Optional expiry parameter (for audit/logging purposes)"
+        },
+        "message": {
+          "type": "string",
+          "required": false,
+          "default": "",
+          "description": "Optional message for revocation notification"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Result with list of users whose permissions were revoked",
+        "properties": {
+          "users": {
+            "type": "array",
+            "description": "Array of user IDs that had permissions revoked",
+            "items": {
+              "type": "string",
+              "description": "User ID"
+            }
+          }
+        }
+      },
+      "errors": []
     },
+
     "settings": {
+      "doc": "Get or update permission settings for the hub. Manages default permission levels and access control configuration.",
       "scope": "hub",
       "permission": {
         "src": "admin"
       }
     },
+
     "show_users": {
+      "doc": "Show all users with permissions for a specific node. Lists users who have access to a file, folder, or hub along with their permission levels and expiry dates.",
       "scope": "hub",
       "permission": {
         "src": "admin"
-      }
+      },
+      "params": {
+        "nid": {
+          "type": "string",
+          "required": true,
+          "description": "Node ID to show users for"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "ACL data with list of users and their permissions",
+        "properties": {
+          "nid": {
+            "type": "string",
+            "description": "Node ID"
+          },
+          "users": {
+            "type": "array",
+            "description": "List of users with access to this node",
+            "items": {
+              "type": "object",
+              "properties": {
+                "uid": {
+                  "type": "string",
+                  "description": "User ID"
+                },
+                "privilege": {
+                  "type": "integer",
+                  "description": "Permission level (1=read, 2=comment, 4=write, 8=admin, 16=owner)"
+                },
+                "firstname": {
+                  "type": "string",
+                  "description": "User's first name"
+                },
+                "lastname": {
+                  "type": "string",
+                  "description": "User's last name"
+                },
+                "email": {
+                  "type": "string",
+                  "description": "User's email"
+                },
+                "expiry": {
+                  "type": "integer",
+                  "description": "Permission expiry timestamp (0 = no expiry)"
+                }
+              }
+            }
+          }
+        }
+      },
+      "errors": []
     }
   },
+
   "modules": {
     "private": "service/private/permission"
   }

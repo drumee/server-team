@@ -1,159 +1,851 @@
 {
   "services": {
     "check_domain": {
+      "doc": "Check if a domain is associated with an organization. Validates domain, retrieves organization details, hub information, and user data. Used for organization-specific login flows and domain verification.",
       "scope": "hub",
       "permission": {
         "src": "anonymous"
-      }
+      },
+      "params": {
+        "domain": {
+          "type": "string",
+          "required": false,
+          "description": "Domain URL to check. If not provided, uses request host. Can be full URL or just hostname."
+        }
+      },
+      "returns": {
+        "type": "object",
+        "properties": {
+          "isvalid": {
+            "type": "integer",
+            "description": "1 if valid organization domain, 0 otherwise",
+            "example": 1
+          },
+          "url": {
+            "type": "string",
+            "description": "Normalized domain URL (only present if invalid)",
+            "example": "example.com"
+          },
+          "organization": {
+            "type": "object",
+            "description": "Organization details (only if valid)",
+            "properties": {
+              "url": {
+                "type": "string",
+                "description": "Organization URL/link"
+              },
+              "name": {
+                "type": "string",
+                "description": "Organization name"
+              },
+              "domain_id": {
+                "type": "string",
+                "description": "Domain ID"
+              },
+              "username": {
+                "type": "string",
+                "description": "User's username in this organization"
+              },
+              "uid": {
+                "type": "string",
+                "description": "User ID"
+              }
+            }
+          },
+          "hub": {
+            "type": "object",
+            "description": "Hub data for the organization"
+          },
+          "user": {
+            "type": "object",
+            "description": "Current user data or anonymous user object"
+          },
+          "platform": {
+            "type": "object",
+            "description": "Platform configuration"
+          },
+          "main_domain": {
+            "type": "string",
+            "description": "Main Drumee domain",
+            "example": "drumee.org"
+          }
+        }
+      },
+      "errors": []
     },
+
     "check_token": {
+      "doc": "Validate a token (used for password reset, email verification, etc.). Checks token validity and returns associated metadata. Also generates a unique identifier suggestion based on the email address.",
       "scope": "hub",
       "permission": {
         "src": "anonymous"
-      }
+      },
+      "params": {
+        "secret": {
+          "type": "string",
+          "required": true,
+          "description": "Token/secret to validate (sent via email link)"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string",
+            "description": "Error code if token is invalid",
+            "example": "INVALID_LINK"
+          },
+          "email": {
+            "type": "string",
+            "description": "Email associated with the token"
+          },
+          "method": {
+            "type": "string",
+            "description": "Token method (forgot_password, email_verification, etc.)"
+          },
+          "status": {
+            "type": "string",
+            "description": "Token status (active, expired, used)"
+          },
+          "metadata": {
+            "type": "object",
+            "description": "Token metadata (masked sensitive data like mobile number last 4 digits)"
+          },
+          "ident": {
+            "type": "string",
+            "description": "Suggested unique identifier based on email",
+            "example": "jameslee123"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "INVALID_LINK",
+          "message": "Token is invalid or malformed",
+          "returns": {
+            "error": "INVALID_LINK"
+          }
+        },
+        {
+          "code": "LINK_EXPIRES",
+          "message": "Token has expired or is not active",
+          "returns": {
+            "error": "LINK_EXPIRES"
+          }
+        }
+      ]
     },
+
     "complete_signup": {
+      "doc": "Complete the signup process. Final step in multi-stage registration flow to finalize account creation.",
       "scope": "hub",
       "permission": {
         "src": "anonymous"
       }
     },
+
     "get_reset_token": {
+      "doc": "Generate and send a password reset token via email. Creates a secret token and emails it to the user for password reset flow. Token is valid for 12 hours.",
       "scope": "hub",
       "permission": {
         "src": "anonymous"
-      }
+      },
+      "params": {
+        "email": {
+          "type": "string",
+          "required": true,
+          "description": "Email address to send reset link to"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string",
+            "description": "Email address where reset link was sent (only on success)",
+            "example": "user@example.com"
+          },
+          "rejected": {
+            "type": "string",
+            "description": "Error code if request rejected",
+            "example": "INVALID_EMAIL_FORMAT"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "INVALID_EMAIL_FORMAT",
+          "message": "Email format is invalid",
+          "returns": {
+            "rejected": "INVALID_EMAIL_FORMAT"
+          }
+        },
+        {
+          "code": "USER_NOT_FOUND",
+          "message": "No user found with this email (returns empty object for security)",
+          "returns": {}
+        }
+      ]
     },
+
     "hello": {
+      "doc": "Get geographic IP information for the current request. Uses geoip-lite to lookup location data based on client IP address. Useful for localization and analytics.",
       "scope": "hub",
       "permission": {
         "src": "anonymous"
-      }
+      },
+      "params": {},
+      "returns": {
+        "type": "object",
+        "properties": {
+          "ip": {
+            "type": "string",
+            "description": "Client IP address",
+            "example": "203.0.113.42"
+          },
+          "range": {
+            "type": "array",
+            "description": "IP range for this location"
+          },
+          "country": {
+            "type": "string",
+            "description": "Country code (ISO 3166-1 alpha-2)",
+            "example": "US"
+          },
+          "region": {
+            "type": "string",
+            "description": "Region/state code",
+            "example": "CA"
+          },
+          "eu": {
+            "type": "string",
+            "description": "EU membership status (0 or 1)"
+          },
+          "timezone": {
+            "type": "string",
+            "description": "Timezone identifier",
+            "example": "America/Los_Angeles"
+          },
+          "city": {
+            "type": "string",
+            "description": "City name",
+            "example": "San Francisco"
+          },
+          "ll": {
+            "type": "array",
+            "description": "Latitude and longitude coordinates",
+            "example": [37.7749, -122.4194]
+          },
+          "metro": {
+            "type": "integer",
+            "description": "Metro code"
+          },
+          "area": {
+            "type": "integer",
+            "description": "Area code"
+          }
+        }
+      },
+      "errors": []
     },
+
     "ping": {
+      "doc": "Health check endpoint. Returns visitor information and debug data. Used for testing server connectivity and basic functionality.",
       "scope": "hub",
       "permission": {
         "src": "anonymous"
-      }
+      },
+      "params": {},
+      "returns": {
+        "type": "mixed",
+        "description": "Returns visitor data via output.data() and debug array via output.list()",
+        "note": "This method returns both data and list outputs for debugging purposes"
+      },
+      "errors": []
     },
+
+    "unsubscribe": {
+      "doc": "Unsubscribe an email from mailing list. Updates the emailing table to mark the email as unsubscribed.",
+      "scope": "hub",
+      "permission": {
+        "src": "anonymous"
+      },
+      "params": {
+        "email": {
+          "type": "string",
+          "required": true,
+          "description": "Email address to unsubscribe"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "properties": {
+          "unsubscribe": {
+            "type": "string",
+            "description": "Email that was unsubscribed",
+            "example": "user@example.com"
+          }
+        }
+      },
+      "errors": []
+    },
+
     "set_pass_phrase": {
+      "doc": "Set new password through reset link. Validates the reset token and updates user password. Token must be used within 12 hours and is deleted after successful password change.",
       "scope": "hub",
       "permission": {
         "src": "anonymous"
-      }
+      },
+      "params": {
+        "secret": {
+          "type": "string",
+          "required": true,
+          "description": "Password reset token (from email link)"
+        },
+        "id": {
+          "type": "string",
+          "required": true,
+          "description": "Drumate user ID"
+        },
+        "password": {
+          "type": "string",
+          "required": true,
+          "description": "New password (must meet password requirements: min 8 chars, uppercase, lowercase, number)"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "properties": {
+          "rejected": {
+            "type": "integer",
+            "description": "1 if request rejected, absent if successful",
+            "example": 1
+          },
+          "reason": {
+            "type": "string",
+            "description": "Rejection reason (only present if rejected)",
+            "example": "bad_pass"
+          },
+          "id": {
+            "type": "string",
+            "description": "User ID (only on success)"
+          },
+          "email": {
+            "type": "string",
+            "description": "User email (only on success)"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "BAD_PASSWORD",
+          "message": "Password does not meet requirements",
+          "returns": {
+            "rejected": 1,
+            "reason": "bad_pass"
+          }
+        },
+        {
+          "code": "USER_NOT_FOUND",
+          "message": "User does not exist",
+          "returns": {
+            "rejected": 1,
+            "reason": "not_found"
+          }
+        },
+        {
+          "code": "TOKEN_EXPIRED",
+          "message": "Reset token expired (older than 12 hours)",
+          "returns": {
+            "rejected": 1,
+            "reason": "expired"
+          }
+        }
+      ]
     },
+
     "signup": {
+      "doc": "Create a new Drumee account. Validates socket binding, checks for existing user, creates account schema from pool, and automatically logs in the new user. Sends welcome email upon successful signup.",
       "scope": "hub",
       "permission": {
         "src": "anonymous"
       },
-      "log": true
+      "log": true,
+      "params": {
+        "socket_id": {
+          "type": "string",
+          "required": true,
+          "description": "WebSocket connection ID for binding verification"
+        },
+        "password": {
+          "type": "string",
+          "required": true,
+          "description": "User password (must meet password requirements)"
+        },
+        "email": {
+          "type": "string",
+          "required": true,
+          "description": "User email address (becomes login identifier)"
+        },
+        "firstname": {
+          "type": "string",
+          "required": false,
+          "description": "User's first name (optional, extracted from email if not provided)"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "On success, returns session data from auto-login. On error, returns status object.",
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "Status code on error",
+            "example": "user_exists"
+          },
+          "email": {
+            "type": "string",
+            "description": "Email address (present when user_exists)"
+          },
+          "error": {
+            "type": "integer",
+            "description": "1 if error occurred, 0 if successful"
+          },
+          "failed": {
+            "type": "integer",
+            "description": "Error code from account creation: 0=success, 2=server_busy, other=error"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "NOT_BOUND",
+          "message": "Socket ID not bound to session",
+          "returns": {
+            "status": "not_bound"
+          }
+        },
+        {
+          "code": "USER_EXISTS",
+          "message": "Email already registered",
+          "returns": {
+            "status": "user_exists",
+            "email": "user@example.com"
+          }
+        },
+        {
+          "code": "SERVER_BUSY",
+          "message": "No available schema pools",
+          "returns": {
+            "status": "server_busy"
+          }
+        },
+        {
+          "code": "SERVER_ERROR",
+          "message": "Database or internal error during signup",
+          "returns": {
+            "status": "server_error"
+          }
+        }
+      ]
     },
+
     "google_auth": {
+      "doc": "Initiate Google OAuth authentication flow. Redirects user to Google login page for authorization.",
       "scope": "hub",
       "permission": {
         "src": "anonymous"
       }
     },
+
     "google_callback": {
+      "doc": "Handle Google OAuth callback. Processes authorization code from Google and completes authentication or signup.",
       "scope": "hub",
       "permission": {
         "src": "anonymous"
       }
     },
+
     "b2b_signup_company": {
+      "doc": "B2B signup step 1: Collect company information. First step in business account registration flow.",
       "scope": "hub",
       "permission": {
         "src": "anonymous"
       }
     },
+
     "b2b_signup_password": {
+      "doc": "B2B signup step 2: Set account password. Create password for business account after company info provided.",
       "scope": "hub",
       "permission": {
         "src": "anonymous"
       },
       "log": true
     },
+
     "b2b_signup_personaldata": {
+      "doc": "B2B signup step 3: Collect personal data. Gather user's personal information for business account.",
       "scope": "hub",
       "permission": {
         "src": "anonymous"
       }
     },
+
     "b2b_signup_otpverify": {
+      "doc": "B2B signup step 4: Verify OTP code. Validate one-time password sent via SMS to complete B2B registration.",
       "scope": "hub",
       "permission": {
         "src": "anonymous"
       }
     },
+
     "b2b_signup_otpresend": {
+      "doc": "B2B signup: Resend OTP code. Request a new one-time password if previous code expired or not received.",
       "scope": "hub",
       "permission": {
         "src": "anonymous"
       }
     },
+
     "b2c_signup_skip_otpverify": {
+      "doc": "B2C signup: Skip OTP verification. Allow user to complete registration without SMS verification.",
       "scope": "hub",
       "permission": {
         "src": "anonymous"
       }
     },
+
     "b2c_signup_password": {
+      "doc": "B2C signup: Set account password. Create password for consumer account during registration.",
       "scope": "hub",
       "permission": {
         "src": "anonymous"
       },
       "log": true
     },
+
     "b2c_signup_otpverify": {
+      "doc": "B2C signup: Verify OTP code. Validate one-time password sent via SMS to complete consumer registration.",
       "scope": "hub",
       "permission": {
         "src": "anonymous"
       }
     },
+
     "get_otp": {
+      "doc": "Get OTP (One-Time Password) code. Generates and sends OTP via SMS to the user's registered mobile number. Used for two-factor authentication.",
       "scope": "hub",
       "permission": {
         "src": "owner"
-      }
+      },
+      "params": {},
+      "returns": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "ok if OTP sent successfully, error if failed",
+            "example": "ok"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "SMS_SEND_FAILED",
+          "message": "Failed to send SMS (invalid receiver or SMS service error)",
+          "returns": {
+            "status": "error"
+          }
+        }
+      ]
     },
+
     "b2c_signup_otpresend": {
+      "doc": "B2C signup: Resend OTP code. Request a new one-time password if previous code expired or not received.",
       "scope": "hub",
       "permission": {
         "src": "anonymous"
       }
     },
+
     "set_password": {
+      "doc": "Set password in forgot password flow. Part of multi-step password reset process. Validates token, sets new password, and either sends OTP for verification or auto-logs in user based on OTP settings.",
       "scope": "hub",
       "permission": {
         "src": "anonymous"
-      }
+      },
+      "params": {
+        "secret": {
+          "type": "string",
+          "required": true,
+          "description": "Password reset token"
+        },
+        "password": {
+          "type": "string",
+          "required": true,
+          "description": "New password (must meet requirements: min 8 chars, uppercase, lowercase, number)"
+        },
+        "id": {
+          "type": "string",
+          "required": true,
+          "description": "Drumate user ID"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "Status code (only on error)",
+            "example": "BAD_PASSWORD"
+          },
+          "connection": {
+            "type": "string",
+            "description": "Connection type: 'otp' (OTP verification needed), 'online' (auto-logged in), 'offline' (default)",
+            "example": "otp"
+          },
+          "metadata": {
+            "type": "object",
+            "description": "Token metadata with next step information",
+            "properties": {
+              "step": {
+                "type": "string",
+                "description": "Next step: 'otpverify', 'complete'",
+                "example": "otpverify"
+              },
+              "mobile": {
+                "type": "string",
+                "description": "Last 4 digits of mobile (masked for security)",
+                "example": "1234"
+              }
+            }
+          },
+          "id": {
+            "type": "string",
+            "description": "User ID"
+          },
+          "email": {
+            "type": "string",
+            "description": "User email"
+          },
+          "method": {
+            "type": "string",
+            "description": "Token method",
+            "example": "forgot_password"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "BAD_PASSWORD",
+          "message": "Password does not meet requirements",
+          "returns": {
+            "status": "BAD_PASSWORD"
+          }
+        },
+        {
+          "code": "DRUMATE_NOT_EXISTS",
+          "message": "User does not exist",
+          "returns": {
+            "status": "DRUMATE_NOT_EXISTS"
+          }
+        },
+        {
+          "code": "INVALID_SECRET",
+          "message": "Token is invalid or expired",
+          "returns": {
+            "status": "INVALID_SECRET"
+          }
+        },
+        {
+          "code": "INVALID_METHOD",
+          "message": "Token method is not forgot_password",
+          "returns": {
+            "status": "INVALID_METHOD"
+          }
+        },
+        {
+          "code": "INVALID_STEP",
+          "message": "Token step is not 'password'",
+          "returns": {
+            "status": "INVALID_STEP"
+          }
+        }
+      ]
     },
+
     "password_otpverify": {
+      "doc": "Verify OTP code for password reset flow. Final step in forgot password with OTP. Validates OTP code, marks email and mobile as verified, logs in user, and completes the password reset process.",
       "scope": "hub",
       "permission": {
         "src": "anonymous"
-      }
+      },
+      "params": {
+        "secret": {
+          "type": "string",
+          "required": true,
+          "description": "Password reset token"
+        },
+        "code": {
+          "type": "string",
+          "required": true,
+          "description": "OTP code received via SMS"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "Status code (only on error)",
+            "example": "INVALID_SECRET"
+          },
+          "metadata": {
+            "type": "object",
+            "description": "Token metadata with step information",
+            "properties": {
+              "step": {
+                "type": "string",
+                "description": "Next step: 'complete' (on success), 'otpresend' (on wrong code)",
+                "example": "complete"
+              },
+              "mobile": {
+                "type": "string",
+                "description": "Last 4 digits of mobile (masked)",
+                "example": "1234"
+              }
+            }
+          },
+          "method": {
+            "type": "string",
+            "description": "Token method",
+            "example": "forgot_password"
+          },
+          "email": {
+            "type": "string",
+            "description": "User email"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "INVALID_SECRET",
+          "message": "Token is invalid or expired",
+          "returns": {
+            "status": "INVALID_SECRET"
+          }
+        },
+        {
+          "code": "INVALID_METHOD",
+          "message": "Token method is not forgot_password",
+          "returns": {
+            "status": "INVALID_METHOD"
+          }
+        },
+        {
+          "code": "INVALID_STEP",
+          "message": "Token step is not 'otpverify'",
+          "returns": {
+            "status": "INVALID_STEP"
+          }
+        },
+        {
+          "code": "INVALID_OTP",
+          "message": "OTP code is incorrect (step changes to 'otpresend' for retry)",
+          "returns": {
+            "metadata": {
+              "step": "otpresend"
+            }
+          }
+        }
+      ]
     },
+
     "password_otpresend": {
+      "doc": "Resend OTP code for password reset. Generates a new OTP and sends it via SMS. Used when user doesn't receive the first OTP or it expires.",
       "scope": "hub",
       "permission": {
         "src": "anonymous"
-      }
+      },
+      "params": {
+        "secret": {
+          "type": "string",
+          "required": true,
+          "description": "Password reset token"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "Status code (only on error)",
+            "example": "INVALID_SECRET"
+          },
+          "metadata": {
+            "type": "object",
+            "description": "Token metadata with updated OTP info",
+            "properties": {
+              "step": {
+                "type": "string",
+                "description": "Next step (always 'otpverify' after resend)",
+                "example": "otpverify"
+              },
+              "mobile": {
+                "type": "string",
+                "description": "Last 4 digits of mobile (masked)",
+                "example": "1234"
+              }
+            }
+          },
+          "method": {
+            "type": "string",
+            "description": "Token method",
+            "example": "forgot_password"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "INVALID_SECRET",
+          "message": "Token is invalid or expired",
+          "returns": {
+            "status": "INVALID_SECRET"
+          }
+        },
+        {
+          "code": "INVALID_METHOD",
+          "message": "Token method is not forgot_password",
+          "returns": {
+            "status": "INVALID_METHOD"
+          }
+        },
+        {
+          "code": "INVALID_STEP",
+          "message": "Token step must be 'otpresend' or 'otpverify'",
+          "returns": {
+            "status": "INVALID_STEP"
+          }
+        }
+      ]
     },
+
     "transferbox_files_send": {
+      "doc": "Send files via transferbox. Transfer files to external recipients without requiring them to have Drumee accounts.",
       "scope": "hub",
       "permission": {
         "src": "anonymous"
       }
     },
+
     "transferbox_files_delete": {
+      "doc": "Delete files from transferbox. Remove previously sent files from transferbox storage.",
       "scope": "hub",
       "permission": {
         "src": "anonymous"
       }
     }
   },
+
   "modules": {
     "private": "service/butler",
     "public": "service/butler"

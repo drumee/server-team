@@ -1,10 +1,57 @@
 {
   "services": {
     "read": {
+      "doc": "Read paginated entries from the server debug log file (log_dir/instance_name/debug.log). Reads the file, splits by newline, reverses the array to return most recent entries first, and returns a page of 20 entries starting from the requested page offset. Each line is parsed as JSON via parseJSON. Requires special_access precheck: the authenticated user must have remit >= 2 in the visitor table.",
       "scope": "hub",
       "permission": {
         "src": "anonymous"
-      }
+      },
+      "params": {
+        "page": {
+          "type": "integer",
+          "required": false,
+          "description": "Page number for pagination. Each page returns up to 20 log entries in reverse chronological order (most recent first). Defaults to 1 if not provided.",
+          "default": 1
+        }
+      },
+      "returns": {
+        "type": "array",
+        "description": "Array of up to 20 parsed log entry objects from the debug log file, in reverse chronological order",
+        "properties": {
+          "level": {
+            "type": "string",
+            "description": "Log level of the entry (e.g. debug, info, warn, error)"
+          },
+          "message": {
+            "type": "string",
+            "description": "Log message text"
+          },
+          "module": {
+            "type": "string",
+            "description": "Name of the module or class that produced the log entry"
+          },
+          "timestamp": {
+            "type": "string",
+            "description": "Timestamp of the log entry as recorded in the log file"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "DENIED",
+          "message": "User does not have sufficient remit level (remit < 2) to access logs",
+          "returns": {
+            "status": "DENIED"
+          }
+        },
+        {
+          "code": "INTERNAL_ERROR",
+          "message": "Failed to read the debug log file from the filesystem",
+          "returns": {
+            "status": "INTERNAL_ERROR"
+          }
+        }
+      ]
     }
   },
   "modules": {

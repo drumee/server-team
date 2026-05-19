@@ -28,3 +28,4 @@ node_modules/*
 package-lock.json
 /package-lock.json
 .dev-tools.rc
+.claude/

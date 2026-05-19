@@ -1,101 +1,817 @@
 {
   "services": {
     "acknowledge": {
+      "doc": "Mark a specific channel message as read/acknowledged by the current user. Broadcasts the updated message state to all other participants in the hub via WebSocket, excluding the sender's socket.",
       "scope": "hub",
       "permission": {
         "src": "read"
-      }
+      },
+      "params": {
+        "message_id": {
+          "type": "string",
+          "required": false,
+          "doc": "ID of the message to acknowledge"
+        },
+        "socket_id": {
+          "type": "string",
+          "required": true,
+          "doc": "Caller's WebSocket socket ID. Used to exclude the caller from the broadcast recipients."
+        }
+      },
+      "returns": {
+        "type": "object",
+        "doc": "Acknowledgement result from acknowledge_message procedure"
+      },
+      "errors": []
     },
     "acknowledge_ticket": {
+      "doc": "Mark a support ticket message as read/acknowledged. Broadcasts the acknowledgement to all support domain members and to the current user's own sockets.",
       "scope": "hub",
       "permission": {
         "src": "read"
-      }
+      },
+      "params": {
+        "message_id": {
+          "type": "string",
+          "required": false,
+          "doc": "ID of the ticket message to acknowledge"
+        },
+        "ticket_id": {
+          "type": "string",
+          "required": true,
+          "doc": "ID of the ticket that contains the message"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "doc": "Acknowledgement result from acknowledge_message procedure executed on the ticket owner's sharebox hub"
+      },
+      "errors": []
     },
     "clear_notifications": {
+      "doc": "Clear all channel notifications for the current user. Broadcasts an empty payload to the user's sockets and clears the notification records in the database.",
       "scope": "hub",
       "permission": {
         "src": "write"
-      }
+      },
+      "params": {},
+      "returns": {
+        "type": "object",
+        "doc": "Result from channel_clear_notifications procedure"
+      },
+      "errors": []
     },
     "delete": {
+      "doc": "Delete one or more channel messages. Supports two deletion modes: me (hide from the current user only) or all (delete for all participants, restricted to message author). Broadcasts deletions to hub participants and cleans up any attached files from the file system.",
       "scope": "hub",
       "permission": {
         "src": "read"
-      }
+      },
+      "params": {
+        "option": {
+          "type": "string",
+          "required": true,
+          "doc": "Deletion scope. Must be me (hide for current user only) or all (delete for all, author only)."
+        },
+        "messages": {
+          "type": "array",
+          "required": true,
+          "doc": "Array of message IDs to delete"
+        }
+      },
+      "returns": {
+        "type": "array",
+        "doc": "List of deleted message records after processing, including attachment cleanup results"
+      },
+      "errors": [
+        { "code": "INVALID_OPTION", "message": "option is not me or all, or option is all but current user is not the message author", "http_status": 400 },
+        { "code": "INVALID_MESSAGES", "message": "One or more provided message IDs do not exist", "http_status": 404 }
+      ]
     },
     "enter": {
+      "doc": "Public channel entry point. Accepts an optional message payload and echoes it back. Used for DMZ or guest-level channel access.",
       "scope": "hub",
       "permission": {
         "src": "write"
-      }
+      },
+      "params": {
+        "message": {
+          "type": "string",
+          "required": false,
+          "doc": "Optional message content. Defaults to empty string."
+        }
+      },
+      "returns": {
+        "type": "object",
+        "doc": "Echo object containing the message",
+        "properties": {
+          "message": {
+            "type": "string",
+            "doc": "The message value as provided (or empty string)"
+          }
+        }
+      },
+      "errors": []
     },
     "list_tickets": {
+      "doc": "List support tickets for the current user with optional status filter, pagination, and ticket ID search. Retrieves tickets from the user's sharebox (wicket) hub.",
       "scope": "hub",
       "permission": {
         "src": "read"
-      }
+      },
+      "params": {
+        "status": {
+          "type": "array",
+          "required": false,
+          "doc": "Array of status values to filter by. Defaults to new."
+        },
+        "page": {
+          "type": "number",
+          "required": false,
+          "doc": "Page number for pagination (default: 1)"
+        },
+        "ticket_id": {
+          "type": "string",
+          "required": false,
+          "doc": "Optional ticket ID to search for a specific ticket within the results"
+        }
+      },
+      "returns": {
+        "type": "array",
+        "doc": "List of ticket records with metadata parsed from JSON"
+      },
+      "errors": []
     },
     "live_message": {
+      "doc": "Public live message endpoint. Accepts an optional message payload and echoes it back. Used for real-time guest or DMZ channel interactions.",
       "scope": "hub",
       "permission": {
         "src": "write"
-      }
+      },
+      "params": {
+        "message": {
+          "type": "string",
+          "required": false,
+          "doc": "Optional message content. Defaults to empty string."
+        }
+      },
+      "returns": {
+        "type": "object",
+        "doc": "Echo object containing the message",
+        "properties": {
+          "message": {
+            "type": "string",
+            "doc": "The message value as provided (or empty string)"
+          }
+        }
+      },
+      "errors": []
     },
     "messages": {
+      "doc": "Retrieve paginated channel messages for the current hub. Enriches each message with author contact information, thread context for replies, and broadcasts an acknowledge signal to all other hub participants.",
       "scope": "hub",
       "permission": {
         "src": "read"
-      }
+      },
+      "params": {
+        "order": {
+          "type": "string",
+          "required": false,
+          "doc": "Sort order for messages. asc for oldest first, desc for newest first. Defaults to asc."
+        },
+        "page": {
+          "type": "number",
+          "required": false,
+          "doc": "Page number for pagination (default: 1)"
+        }
+      },
+      "returns": {
+        "type": "array",
+        "doc": "Paginated list of enriched message objects",
+        "items": {
+          "type": "object",
+          "properties": {
+            "entity": {
+              "type": "object",
+              "doc": "Author contact information from shareroom_contact_get procedure. For messages by the current user, contains only id."
+            },
+            "thread": {
+              "type": "object",
+              "doc": "Thread context object if the message is a reply (only present when thread_id is set)"
+            }
+          }
+        }
+      },
+      "errors": []
     },
     "notify": {
+      "doc": "Retrieve channel notification data for the current user. Alias for notify_chat.",
       "scope": "hub",
       "permission": {
         "src": "write"
       },
-      "method": "notify_chat"
+      "method": "notify_chat",
+      "params": {},
+      "returns": {
+        "type": "object",
+        "doc": "Notification data from channel_notify_messages procedure for the current user"
+      },
+      "errors": []
     },
     "post": {
-      "scope": "hub",
-      "permission": {
-        "src": "read"
-      }
-    },
-    "post_ticket": {
-      "scope": "hub",
-      "permission": {
-        "src": "read"
-      }
-    },
-    "read": {
-      "scope": "hub",
-      "permission": {
-        "src": "read"
-      }
-    },
-    "send_ticket": {
-      "scope": "hub",
-      "permission": {
-        "src": "read"
-      }
-    },
-    "show_ticket": {
-      "scope": "hub",
-      "permission": {
-        "src": "read"
-      }
-    },
-    "to_read": {
+      "doc": "Post a new message to the current hub channel. Supports text messages, threaded replies, and file attachments. Moves attachment files to the appropriate sharebox directory and broadcasts the new message to all hub participants except the sender.",
       "scope": "hub",
       "permission": {
         "src": "read"
       },
-      "method": "pages_to_read"
+      "params": {
+        "message": {
+          "type": "string",
+          "required": false,
+          "doc": "Text content of the message. Defaults to empty string. Single quotes are automatically escaped."
+        },
+        "thread_id": {
+          "type": "string",
+          "required": false,
+          "doc": "Message ID of the parent message to reply to. Creates a threaded reply when provided."
+        },
+        "attachment": {
+          "type": "array",
+          "required": false,
+          "doc": "Array of file node IDs to attach to the message. Files are moved to the message directory in the sharebox hub."
+        },
+        "socket_id": {
+          "type": "string",
+          "required": true,
+          "doc": "Caller's WebSocket socket ID. Used to exclude the caller from the broadcast recipients."
+        },
+        "echoId": {
+          "type": "string",
+          "required": false,
+          "doc": "Client-side echo identifier for optimistic UI updates"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "doc": "Posted message record",
+        "properties": {
+          "is_attachment": {
+            "type": "number",
+            "doc": "1 if the message has attachments, 0 otherwise"
+          },
+          "thread": {
+            "type": "object",
+            "doc": "Thread context if thread_id was provided"
+          },
+          "firstname": {
+            "type": "string",
+            "doc": "First name of the message author"
+          },
+          "lastname": {
+            "type": "string",
+            "doc": "Last name of the message author"
+          },
+          "hub_id": {
+            "type": "string",
+            "doc": "ID of the hub where the message was posted"
+          },
+          "echoId": {
+            "type": "string",
+            "doc": "Echoed client-side echo identifier"
+          }
+        }
+      },
+      "errors": []
+    },
+    "post_ticket": {
+      "doc": "Post a reply message to an existing support ticket. Supports threaded replies and file attachments. Broadcasts the new message to the ticket owner and all support domain members.",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "params": {
+        "ticket_id": {
+          "type": "string",
+          "required": true,
+          "doc": "ID of the ticket to post a reply to"
+        },
+        "message": {
+          "type": "string",
+          "required": false,
+          "doc": "Text content of the reply. Defaults to empty string."
+        },
+        "thread_id": {
+          "type": "string",
+          "required": false,
+          "doc": "Message ID of the parent message to reply to within the ticket thread"
+        },
+        "attachment": {
+          "type": "array",
+          "required": false,
+          "doc": "Array of file node IDs to attach to the ticket reply"
+        },
+        "echoId": {
+          "type": "string",
+          "required": false,
+          "doc": "Client-side echo identifier for optimistic UI updates"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "doc": "Posted ticket reply record",
+        "properties": {
+          "is_attachment": {
+            "type": "number",
+            "doc": "1 if the reply has attachments, 0 otherwise"
+          },
+          "thread": {
+            "type": "object",
+            "doc": "Thread context if thread_id was provided"
+          },
+          "ticket_id": {
+            "type": "string",
+            "doc": "ID of the ticket this reply belongs to"
+          },
+          "echoId": {
+            "type": "string",
+            "doc": "Echoed client-side echo identifier"
+          }
+        }
+      },
+      "errors": [
+        { "code": "INVALID_TICKET", "message": "No ticket found with the given ticket_id", "http_status": 404 }
+      ]
+    },
+    "read": {
+      "doc": "Mark all messages in a channel as read up to a given message ID for the current user.",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "params": {
+        "id": {
+          "type": "string",
+          "required": false,
+          "doc": "Message ID up to which all messages are marked as read via channel_read_messages procedure"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "doc": "Result from channel_read_messages procedure"
+      },
+      "errors": []
+    },
+    "send_ticket": {
+      "doc": "Create a new support ticket with an initial message. Optionally includes file attachments, category tags, affected areas, and recurrence flag. Automatically sends an auto-reply, broadcasts to the ticket owner and all support domain members.",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "params": {
+        "message": {
+          "type": "string",
+          "required": true,
+          "doc": "Initial ticket message content. Single quotes are automatically escaped."
+        },
+        "category": {
+          "type": "array",
+          "required": true,
+          "doc": "Array of category tags for the ticket (e.g. tech, design, enhancement, notunderstand)"
+        },
+        "attachment": {
+          "type": "array",
+          "required": false,
+          "doc": "Array of file node IDs to attach to the ticket. Defaults to empty array."
+        },
+        "where": {
+          "type": "array",
+          "required": false,
+          "doc": "Array of platform area identifiers where the issue occurred (e.g. desktop, chat, teamroom). Defaults to empty array."
+        },
+        "alltime": {
+          "type": "number",
+          "required": false,
+          "doc": "Flag indicating if the issue is recurring. Defaults to 0."
+        },
+        "echoId": {
+          "type": "string",
+          "required": false,
+          "doc": "Client-side echo identifier for optimistic UI updates"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "doc": "Created ticket message record",
+        "properties": {
+          "ticket_id": {
+            "type": "string",
+            "doc": "ID of the newly created ticket"
+          },
+          "is_attachment": {
+            "type": "number",
+            "doc": "1 if the ticket has attachments, 0 otherwise"
+          },
+          "firstname": {
+            "type": "string",
+            "doc": "First name of the ticket submitter"
+          },
+          "lastname": {
+            "type": "string",
+            "doc": "Last name of the ticket submitter"
+          },
+          "org_name": {
+            "type": "string",
+            "doc": "Organisation name of the ticket submitter"
+          },
+          "metadata": {
+            "type": "object",
+            "doc": "Ticket metadata including status, category, where, and attachment info"
+          },
+          "echoId": {
+            "type": "string",
+            "doc": "Echoed client-side echo identifier"
+          }
+        }
+      },
+      "errors": []
+    },
+    "show_ticket": {
+      "doc": "Retrieve the full message thread for a support ticket including author contact enrichment, metadata parsing, category and location display labels, and thread context for replies. Broadcasts acknowledgement signals to support members for newly read messages.",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "params": {
+        "ticket_id": {
+          "type": "string",
+          "required": true,
+          "doc": "ID of the ticket whose messages to retrieve"
+        },
+        "page": {
+          "type": "number",
+          "required": false,
+          "doc": "Page number for pagination (default: 1)"
+        }
+      },
+      "returns": {
+        "type": "array",
+        "doc": "List of enriched ticket message records",
+        "items": {
+          "type": "object",
+          "properties": {
+            "entity": {
+              "type": "object",
+              "doc": "Author contact information from shareroom_contact_get procedure"
+            },
+            "metadata": {
+              "type": "object",
+              "doc": "Parsed message metadata including category_display and where_display label arrays for ticket messages"
+            },
+            "thread": {
+              "type": "object",
+              "doc": "Thread context object if the message is a reply"
+            }
+          }
+        }
+      },
+      "errors": []
+    },
+    "to_read": {
+      "doc": "Get the number of unread message pages for the current user in the channel. Alias for pages_to_read.",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "method": "pages_to_read",
+      "params": {},
+      "returns": {
+        "type": "object",
+        "doc": "Unread page count result from pages_to_read procedure"
+      },
+      "errors": []
     },
     "update_ticket": {
+      "doc": "Update the metadata (e.g. status) of an existing support ticket. Restricted to users belonging to the configured support domain. Broadcasts the updated ticket to the ticket owner and all support domain members.",
       "scope": "hub",
       "permission": {
         "src": "write"
+      },
+      "params": {
+        "ticket_id": {
+          "type": "string",
+          "required": true,
+          "doc": "ID of the ticket to update"
+        },
+        "status": {
+          "type": "string",
+          "required": false,
+          "doc": "New status value to set on the ticket metadata"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "doc": "Updated ticket record with metadata parsed from JSON"
+      },
+      "errors": [
+        { "code": "INVALID_DOMAIN", "message": "Current user does not belong to the configured support domain", "http_status": 403 },
+        { "code": "INVALID_TICKET", "message": "No ticket found with the given ticket_id", "http_status": 404 }
+      ]
+    },
+    "write": {
+      "doc": "Post a new message to a share hub channel. Intended for use in DMZ (share hub) context where the author may be an anonymous guest identified via yp.dmz_user. Requires chat permission (read + write combined, value 6). Supports threaded replies and file attachments. Broadcasts the new message to all hub participants except the sender.",
+      "scope": "hub",
+      "permission": {
+        "src": "chat"
+      },
+      "params": {
+        "message_id": {
+          "type": "string",
+          "required": true,
+          "doc": "Client-generated unique message ID (16-char hex). Must be unique across the channel table."
+        },
+        "message": {
+          "type": "string",
+          "required": false,
+          "doc": "Text content of the message. Defaults to empty string."
+        },
+        "thread_id": {
+          "type": "string",
+          "required": false,
+          "doc": "Message ID of the parent message to reply to. Creates a threaded reply when provided."
+        },
+        "attachment": {
+          "type": "array",
+          "required": false,
+          "doc": "Array of file node IDs to attach to the message."
+        },
+        "is_forward": {
+          "type": "number",
+          "required": false,
+          "doc": "Forward flag. Set to 1 if this message is forwarded from another source. Defaults to 0."
+        },
+        "socket_id": {
+          "type": "string",
+          "required": true,
+          "doc": "Caller's WebSocket socket ID. Used to exclude the caller from the broadcast recipients."
+        },
+        "echoId": {
+          "type": "string",
+          "required": false,
+          "doc": "Client-side echo identifier for optimistic UI updates."
+        }
+      },
+      "returns": {
+        "type": "object",
+        "doc": "Posted message record returned from channel_write procedure",
+        "properties": {
+          "sys_id": {
+            "type": "number",
+            "doc": "Auto-incremented message sequence ID"
+          },
+          "author_id": {
+            "type": "string",
+            "doc": "ID of the message author — yp.drumate.id for authenticated users, yp.dmz_user.id for anonymous guests"
+          },
+          "is_attachment": {
+            "type": "number",
+            "doc": "1 if the message has attachments, 0 otherwise"
+          },
+          "firstname": {
+            "type": "string",
+            "doc": "First name of the author (from yp.drumate) or display name (from yp.dmz_user) for anonymous guests"
+          },
+          "lastname": {
+            "type": "string",
+            "doc": "Last name of the author (from yp.drumate), empty string for anonymous guests"
+          },
+          "fullname": {
+            "type": "string",
+            "doc": "Full name of the author — concatenated from drumate or from dmz_user.name for anonymous guests"
+          },
+          "echoId": {
+            "type": "string",
+            "doc": "Echoed client-side echo identifier"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "MISSING_PARAM",
+          "message": "message_id or socket_id is missing",
+          "http_status": 400
+        }
+      ]
+    },
+    "list_notifications": {
+      "doc": "Retrieve paginated notification list for the current user aggregated across all their hubs. Supports filtering by type (all, mention, share) and an unread-only toggle. Iterates all active hubs owned by the current user, calls channel_list_notifications per hub, merges and sorts results by ctime DESC. Returns only messages where the current user is in the delivered recipients list, excluding own messages and soft-deleted messages.",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "params": {
+        "type": {
+          "type": "string",
+          "required": false,
+          "doc": "Notification filter type. Accepted values: all (default) — all activity directed at current user; mention — messages where current user's ID is in mention_ids; share — forwarded messages (is_forward = 1) or messages with file attachments."
+        },
+        "unread_only": {
+          "type": "number",
+          "required": false,
+          "doc": "Set to 1 to return only unread notifications (current user not yet in _seen_). Defaults to 0 (return all)."
+        },
+        "page": {
+          "type": "number",
+          "required": false,
+          "doc": "Page number for pagination (default: 1)."
+        }
+      },
+      "returns": {
+        "type": "array",
+        "doc": "Paginated list of notification objects.",
+        "items": {
+          "type": "object",
+          "properties": {
+            "sys_id": { "type": "number", "doc": "Message sequence ID" },
+            "author_id": { "type": "string", "doc": "ID of the message author" },
+            "message": { "type": "string", "doc": "Message text content" },
+            "message_id": { "type": "string", "doc": "Unique message identifier" },
+            "thread_id": { "type": "string", "doc": "Parent message ID if this is a reply" },
+            "is_forward": { "type": "number", "doc": "1 if message is forwarded, 0 otherwise" },
+            "attachment": { "type": "string", "doc": "JSON-encoded attachment array, null if none" },
+            "is_attachment": { "type": "number", "doc": "1 if message has attachments, 0 otherwise" },
+            "mention_ids": { "type": "array",  "doc": "Array of user IDs mentioned in this message, null if none" },
+            "ctime": { "type": "number", "doc": "Unix timestamp when the message was posted" },
+            "firstname": { "type": "string", "doc": "Author first name (from yp.drumate) or display name (from yp.dmz_user for anonymous guests)" },
+            "lastname": { "type": "string", "doc": "Author last name, empty string for anonymous guests" },
+            "fullname": { "type": "string", "doc": "Author full name" },
+            "is_read": { "type": "number", "doc": "1 if current user has seen this message, 0 if unread" }
+          }
+        }
+      },
+      "errors": []
+    },
+    "bookmark_add": {
+      "doc": "Pin a notification message for quick access. Bookmarks live in the caller's drumate DB so any authenticated user with read access to the hub may bookmark a message they can see.",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "log": false,
+      "params": {
+        "message_id": {
+          "type": "string",
+          "required": true,
+          "doc": "Unique message ID to bookmark (from channel table)"
+        },
+        "hub_id": {
+          "type": "string",
+          "required": true,
+          "doc": "Hub ID where the message lives"
+        }
+      },
+      "returns": {
+        "id": { "type": "number", "doc": "Bookmark record ID" },
+        "message_id": { "type": "string", "doc": "Bookmarked message ID" },
+        "hub_id": { "type": "string", "doc": "Hub the message belongs to" },
+        "ctime": { "type": "number", "doc": "Bookmark creation timestamp" }
+      }
+    },
+    "bookmark_remove": {
+      "doc": "Unpin a previously bookmarked notification. Per-user storage, requires only read access to the hub.",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "log": false,
+      "params": {
+        "message_id": {
+          "type": "string",
+          "required": true,
+          "doc": "Unique message ID to remove from bookmarks"
+        }
+      },
+      "returns": {
+        "affected": { "type": "number", "doc": "Number of rows deleted (0 or 1)" }
+      }
+    },
+    "bookmark_list": {
+      "doc": "Get paginated list of bookmarked notifications for the current user. Per-user storage, requires read access only.",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "log": false,
+      "params": {
+        "page": {
+          "type": "number",
+          "required": false,
+          "default": 1,
+          "min": 1,
+          "doc": "Page number for pagination"
+        }
+      },
+      "returns": {
+        "items": {
+          "type": "array",
+          "doc": "Bookmarked notifications sorted by ctime DESC",
+          "items": {
+            "type": "object",
+            "properties": {
+              "message_id": { "type": "string" },
+              "hub_id": { "type": "string" },
+              "ctime": { "type": "number" }
+            }
+          }
+        }
+      }
+    },
+    "dm_init": {
+      "doc": "Get or create a 1-on-1 DM conversation hub with a specific user",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "log": false,
+      "params": {
+        "recipient_id": {
+          "type": "string",
+          "required": true,
+          "doc": "UID of the user to start a DM conversation with"
+        }
+      },
+      "returns": {
+        "hub_id": { "type": "string", "doc": "DM hub ID" },
+        "home_id": { "type": "string", "doc": "DM hub home directory node ID" },
+        "db_name": { "type": "string", "doc": "DM hub database name" },
+        "is_new": { "type": "number", "doc": "1 if newly created, 0 if existing" }
+      }
+    },
+    "list_conversations": {
+      "doc": "List all DM conversations for the current user, sorted by last message time DESC",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "log": false,
+      "params": {
+        "page": {
+          "type": "number",
+          "required": false,
+          "default": 1,
+          "min": 1,
+          "doc": "Page number (20 conversations per page)"
+        }
+      },
+      "returns": {
+        "items": {
+          "type": "array",
+          "doc": "DM conversation list sorted by last_message_time DESC",
+          "items": {
+            "type": "object",
+            "properties": {
+              "hub_id": { "type": "string" },
+              "other_uid": { "type": "string", "doc": "UID of the other party" },
+              "other_user": { "type": "object", "doc": "Other user profile (name, avatar)" },
+              "last_message": { "type": "string", "doc": "Last message preview (max 100 chars), or '[File]' for attachments" },
+              "last_message_time": { "type": "number", "doc": "Unix timestamp of last message" },
+              "unread_count": { "type": "number", "doc": "Number of unread messages from other party" }
+            }
+          }
+        }
+      }
+    },
+    "list_by_file": {
+      "doc": "Get all channel messages in the current hub that have a specific file attached. Powers the See Chat Threads feature from the file context menu. Searches the attachment JSON array for the given file_nid.",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "params": {
+        "file_nid": {
+          "type": "string",
+          "required": true,
+          "doc": "Media node ID of the file to search for in message attachment arrays"
+        }
+      },
+      "returns": {
+        "type": "array",
+        "doc": "Channel messages that contain the file in their attachment array, ordered by ctime DESC",
+        "items": {
+          "type": "object",
+          "properties": {
+            "sys_id": { "type": "number", "doc": "Auto-incremented message sequence ID" },
+            "author_id": { "type": "string", "doc": "UID of the message author" },
+            "message": { "type": "string", "doc": "Message text content" },
+            "message_id": { "type": "string", "doc": "Unique message identifier" },
+            "thread_id": { "type": "string", "doc": "Parent message ID if this is a reply, null otherwise" },
+            "attachment": { "type": "string", "doc": "JSON array of attached file nids" },
+            "is_forward": { "type": "number", "doc": "1 if message is forwarded, 0 otherwise" },
+            "mention_ids": { "type": "array",  "doc": "Array of user IDs mentioned in this message" },
+            "status": { "type": "string", "doc": "Message status: active" },
+            "ctime": { "type": "number", "doc": "Unix timestamp when the message was posted" },
+            "metadata": { "type": "string", "doc": "Additional message metadata JSON, null if not set" }
+          }
+        }
       }
     }
   },

@@ -1,25 +1,239 @@
 {
   "services": {
     "set_password": {
+      "doc": "Set a new password for a user after verifying a one-time password code. Verifies the OTP code and secret against the user identified by uid via the internal _verify helper (which also validates socket binding). If verification succeeds, updates the password, signs in the user, deletes the used secret, and returns the session result. Returns an error object if the OTP code is wrong.",
       "scope": "hub",
       "permission": {
         "src": "anonymous",
         "fast_check": "public-api"
-      }
+      },
+      "params": {
+        "uid": {
+          "type": "string",
+          "required": true,
+          "description": "User ID to set the new password for. Also used as the identity for OTP verification."
+        },
+        "code": {
+          "type": "string",
+          "required": true,
+          "description": "One-time password code received by the user (e.g. via email). Must match the stored secret entry."
+        },
+        "secret": {
+          "type": "string",
+          "required": true,
+          "description": "Secret token paired with the OTP code, obtained from the send endpoint response."
+        },
+        "password": {
+          "type": "string",
+          "required": true,
+          "description": "New password to set for the user account."
+        },
+        "socket_id": {
+          "type": "string",
+          "required": true,
+          "description": "WebSocket connection ID that must be bound to the current session. Validated internally by _verify before allowing the operation."
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "On success: session signin result object with status ok. On failure: error object with error code and status.",
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "ok on success, wrong-otp on OTP mismatch, no-socket or no-user on verification failure"
+          },
+          "error": {
+            "type": "integer",
+            "description": "Present and set to 1 on failure"
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable error message on failure (e.g. Wrong otp)"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "no-socket",
+          "message": "WebSocket socket_id is not bound to the current session",
+          "returns": {
+            "error": 1,
+            "status": "no-socket"
+          }
+        },
+        {
+          "code": "no-user",
+          "message": "No user found for the provided uid",
+          "returns": {
+            "error": 1,
+            "status": "no-user"
+          }
+        },
+        {
+          "code": "wrong-otp",
+          "message": "Wrong otp",
+          "returns": {
+            "error": 1,
+            "status": "wrong-otp",
+            "message": "Wrong otp"
+          }
+        },
+        {
+          "code": "INTERNAL_ERROR",
+          "message": "Failed to update password or create session",
+          "returns": {
+            "status": "INTERNAL_ERROR"
+          }
+        }
+      ]
     },
     "verify": {
+      "doc": "Verify an OTP code for the given email address. Validates that the WebSocket socket_id is bound to the current session, checks that the user exists, and verifies the code against the stored secret via stored procedure secret_check. Returns the OTP record with the user ID on success, or an error status object on failure.",
       "scope": "hub",
       "permission": {
         "src": "anonymous",
         "fast_check": "public-api"
-      }
+      },
+      "params": {
+        "email": {
+          "type": "string",
+          "required": true,
+          "description": "Email address of the user to verify the OTP for"
+        },
+        "code": {
+          "type": "string",
+          "required": true,
+          "description": "One-time password code to verify against the stored secret"
+        },
+        "secret": {
+          "type": "string",
+          "required": true,
+          "description": "Secret token paired with the OTP code, obtained from the send endpoint response"
+        },
+        "socket_id": {
+          "type": "string",
+          "required": true,
+          "description": "WebSocket connection ID that must be bound to the current session via stored function is_socket_bound"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "On success: OTP record object from stored procedure secret_check with uid field added. On failure: error status object.",
+        "properties": {
+          "uid": {
+            "type": "string",
+            "description": "User ID of the verified user, added to the OTP record on successful verification"
+          },
+          "code": {
+            "type": "string",
+            "description": "The OTP code as stored in the secret record"
+          },
+          "error": {
+            "type": "integer",
+            "description": "Present and set to 1 on failure"
+          },
+          "status": {
+            "type": "string",
+            "description": "Error status string on failure: no-socket, no-user, or wrong-code"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "no-socket",
+          "message": "WebSocket socket_id is not bound to the current session",
+          "returns": {
+            "error": 1,
+            "status": "no-socket"
+          }
+        },
+        {
+          "code": "no-user",
+          "message": "No user found for the provided email address",
+          "returns": {
+            "error": 1,
+            "status": "no-user"
+          }
+        },
+        {
+          "code": "wrong-code",
+          "message": "OTP code does not match the stored secret entry",
+          "returns": {
+            "error": 1,
+            "status": "wrong-code"
+          }
+        }
+      ]
     },
     "send": {
+      "doc": "Send an OTP code to the user identified by email. Validates socket binding, checks the user exists, generates a secret and code via stored procedure secret_create (or otp_create if method is otp), then sends the code to the user email using the OTP email template. Returns the secret and user info for use in subsequent verify or set_password calls. The sent field indicates whether the email was delivered successfully.",
       "scope": "hub",
       "permission": {
         "src": "anonymous",
         "fast_check": "public-api"
-      }
+      },
+      "params": {
+        "email": {
+          "type": "string",
+          "required": true,
+          "description": "Email address of the user to send the OTP code to"
+        },
+        "socket_id": {
+          "type": "string",
+          "required": true,
+          "description": "WebSocket connection ID that must be bound to the current session. Returns INVALID_SOCKET error if not bound."
+        },
+        "method": {
+          "type": "string",
+          "required": false,
+          "description": "OTP generation method. If set to \"otp\", uses stored procedure otp_create. Otherwise uses secret_create. Defaults to secret_create if not provided."
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "On success: user info merged with status, sent flag, secret, and email. On user-not-found: status no-user object.",
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "ok on success, no-user if no account found for the email"
+          },
+          "sent": {
+            "type": "integer",
+            "description": "1 if the OTP email was sent successfully, 0 if the email delivery failed (operation still succeeds)"
+          },
+          "secret": {
+            "type": "string",
+            "description": "Secret token to be passed back with the code when calling verify or set_password"
+          },
+          "email": {
+            "type": "string",
+            "description": "Email address the OTP was sent to, echoed from input"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "INVALID_SOCKET",
+          "message": "WebSocket socket_id is not bound to the current session",
+          "returns": {
+            "status": "INVALID_SOCKET"
+          }
+        },
+        {
+          "code": "no-user",
+          "message": "No user account found for the provided email address",
+          "returns": {
+            "status": "no-user"
+          }
+        },
+        {
+          "code": "INTERNAL_ERROR",
+          "message": "Failed to generate secret or send OTP email",
+          "returns": {
+            "status": "INTERNAL_ERROR"
+          }
+        }
+      ]
     }
   },
   "modules": {

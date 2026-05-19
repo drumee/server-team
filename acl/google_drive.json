@@ -5,21 +5,217 @@
       "scope": "hub",
       "permission": {
         "src": "read"
-      }
+      },
+      "params": {
+        "folder_id": {
+          "type": "string",
+          "required": false,
+          "description": "Google Drive folder ID to list contents from. Defaults to \"root\" (the user's My Drive root) if not provided.",
+          "default": "root"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Result object containing the list of files and folders found in the specified Google Drive folder",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "description": "Always true on successful response"
+          },
+          "files": {
+            "type": "array",
+            "description": "Array of file and folder metadata objects returned by the Google Drive API (pageSize: 100, excludes trashed items)",
+            "items": {
+              "id": {
+                "type": "string",
+                "description": "Google Drive file or folder ID"
+              },
+              "name": {
+                "type": "string",
+                "description": "File or folder display name"
+              },
+              "mimeType": {
+                "type": "string",
+                "description": "MIME type of the file (e.g. application/vnd.google-apps.folder, image/png)"
+              },
+              "iconLink": {
+                "type": "string",
+                "description": "URL of the file type icon provided by Google Drive"
+              },
+              "size": {
+                "type": "string",
+                "description": "File size in bytes as a string (absent for Google Workspace files)"
+              },
+              "fileExtension": {
+                "type": "string",
+                "description": "File extension without leading dot (absent for Google Workspace files)"
+              },
+              "webViewLink": {
+                "type": "string",
+                "description": "URL to view the file in Google Drive web interface"
+              },
+              "webContentLink": {
+                "type": "string",
+                "description": "Direct download URL for the file (absent for Google Workspace native formats)"
+              }
+            }
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "OAUTH_TOKEN_EXPIRED",
+          "message": "OAuth Token is invalid or expired. Please re-authenticate.",
+          "returns": {
+            "status": "OAUTH_TOKEN_EXPIRED"
+          }
+        },
+        {
+          "code": "INTERNAL_ERROR",
+          "message": "Failed to list Google Drive files.",
+          "returns": {
+            "status": "INTERNAL_ERROR"
+          }
+        }
+      ]
     },
     "import_file": {
       "doc": "Import a single file from Google Drive",
       "scope": "hub",
       "permission": {
         "src": "write"
-      }
+      },
+      "params": {
+        "file_id": {
+          "type": "string",
+          "required": true,
+          "description": "Google Drive file ID of the file to import. Can be obtained from list_files response (files[].id)."
+        },
+        "nid": {
+          "type": "string",
+          "required": true,
+          "description": "Destination folder node ID in Drumee MFS where the imported file will be placed"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Result object containing the newly created Drumee MFS node for the imported file",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "description": "Always true on successful import"
+          },
+          "node": {
+            "type": "object",
+            "description": "The newly created MFS node object in Drumee representing the imported file, including nid, file_name, mimetype, and filesize"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "MISSING_PARAMETERS",
+          "message": "Missing 'file_id' or 'nid' (destination folder ID) parameter.",
+          "returns": {
+            "status": "MISSING_PARAMETERS"
+          }
+        },
+        {
+          "code": "INVALID_DESTINATION",
+          "message": "Invalid destination folder ID (nid).",
+          "returns": {
+            "status": "INVALID_DESTINATION"
+          }
+        },
+        {
+          "code": "FILE_NOT_EXPORTABLE",
+          "message": "This file type is not directly downloadable or exportable.",
+          "returns": {
+            "status": "FILE_NOT_EXPORTABLE"
+          }
+        },
+        {
+          "code": "METADATA_FETCH_FAILED",
+          "message": "Failed to get Google file metadata.",
+          "returns": {
+            "status": "METADATA_FETCH_FAILED"
+          }
+        },
+        {
+          "code": "OAUTH_TOKEN_EXPIRED",
+          "message": "OAuth Token is invalid or expired. Please re-authenticate.",
+          "returns": {
+            "status": "OAUTH_TOKEN_EXPIRED"
+          }
+        }
+      ]
     },
     "import_directory": {
       "doc": "Import entire directory recursively from Google Drive",
       "scope": "hub",
       "permission": {
         "src": "write"
-      }
+      },
+      "params": {
+        "folder_id": {
+          "type": "string",
+          "required": true,
+          "description": "Google Drive folder ID of the directory to import recursively. Can be obtained from list_files response (files[].id where mimeType is application/vnd.google-apps.folder)."
+        },
+        "nid": {
+          "type": "string",
+          "required": true,
+          "description": "Destination folder node ID in Drumee MFS where the imported directory tree will be created"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Import statistics object summarising the recursive import operation",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "description": "Always true when the operation completes (even if some files were skipped or had errors)"
+          },
+          "folders": {
+            "type": "integer",
+            "description": "Total number of folders created in Drumee MFS during the recursive import"
+          },
+          "files": {
+            "type": "integer",
+            "description": "Total number of files successfully imported from Google Drive"
+          },
+          "skipped": {
+            "type": "integer",
+            "description": "Number of files skipped because they are not downloadable or exportable (e.g. unsupported Google Workspace types)"
+          },
+          "errors": {
+            "type": "array",
+            "description": "Array of per-file or per-item error objects for non-fatal failures encountered during the recursive import. Each entry contains file or item name and the error message."
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "MISSING_PARAMETERS",
+          "message": "Missing 'folder_id' or 'nid' (destination folder ID) parameter.",
+          "returns": {
+            "status": "MISSING_PARAMETERS"
+          }
+        },
+        {
+          "code": "INVALID_DESTINATION",
+          "message": "Invalid destination folder ID.",
+          "returns": {
+            "status": "INVALID_DESTINATION"
+          }
+        },
+        {
+          "code": "INTERNAL_ERROR",
+          "message": "Failed to import directory due to a fatal error during the recursive import process.",
+          "returns": {
+            "status": "INTERNAL_ERROR"
+          }
+        }
+      ]
     }
   },
   "modules": {

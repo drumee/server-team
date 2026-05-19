@@ -1,27 +1,313 @@
 {
   "services": {
     "create_token": {
-      "doc": "Create a new MFS export token for sharing data across Drumee instances",
+      "doc": "Create a new MFS export token for sharing data across Drumee instances. Generates a secure token that allows external access to specific nodes/resources with configurable permissions and expiry. Used for Drumee-to-Drumee data import/export.",
       "scope": "hub",
       "permission": {
         "src": "admin"
-      }
+      },
+      "params": {
+        "hub_id": {
+          "type": "string",
+          "required": true,
+          "description": "Hub ID containing the resource to share"
+        },
+        "nid": {
+          "type": "string",
+          "required": true,
+          "description": "Node ID (resource) to grant access to via token"
+        },
+        "expiry_hours": {
+          "type": "integer",
+          "required": false,
+          "default": 24,
+          "description": "Token expiry time in hours. 0 = no expiry, max 8760 (1 year)"
+        },
+        "permission": {
+          "type": "integer",
+          "required": false,
+          "default": 2,
+          "description": "Permission level for token access. Range: 1-63. Default 2 (read-only)"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Token creation result with token details",
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "Operation status (ok or error)",
+            "example": "ok"
+          },
+          "token": {
+            "type": "string",
+            "description": "Generated token string for external access",
+            "example": "mfs_abc123xyz..."
+          },
+          "pseudo_entity_uid": {
+            "type": "string",
+            "description": "Pseudo entity identifier for this token"
+          },
+          "hub_id": {
+            "type": "string",
+            "description": "Hub ID containing the resource"
+          },
+          "node_id": {
+            "type": "string",
+            "description": "Node ID accessible via this token"
+          },
+          "expiry_time": {
+            "type": "integer",
+            "description": "Unix timestamp when token expires (0 = never expires)",
+            "example": 1735689600
+          },
+          "ctime": {
+            "type": "integer",
+            "description": "Unix timestamp when token was created"
+          },
+          "message": {
+            "type": "string",
+            "description": "Success message from creation"
+          },
+          "error": {
+            "type": "string",
+            "description": "Error code (only present on failure)"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "missing_parameters",
+          "message": "hub_id and nid are required",
+          "returns": {
+            "status": "error",
+            "error": "missing_parameters",
+            "message": "hub_id and nid are required"
+          }
+        },
+        {
+          "code": "unauthorized",
+          "message": "User not authenticated",
+          "returns": {
+            "status": "error",
+            "error": "unauthorized",
+            "message": "User not authenticated"
+          }
+        },
+        {
+          "code": "invalid_expiry",
+          "message": "expiry_hours must be between 0 and 8760 (1 year)",
+          "returns": {
+            "status": "error",
+            "error": "invalid_expiry",
+            "message": "expiry_hours must be between 0 and 8760 (1 year)"
+          }
+        },
+        {
+          "code": "invalid_permission",
+          "message": "permission must be between 1 and 63",
+          "returns": {
+            "status": "error",
+            "error": "invalid_permission",
+            "message": "permission must be between 1 and 63"
+          }
+        },
+        {
+          "code": "token_creation_failed",
+          "message": "Database procedure returned error",
+          "returns": {
+            "status": "error",
+            "error": "token_creation_failed",
+            "message": "Specific failure reason from database"
+          }
+        },
+        {
+          "code": "internal_error",
+          "message": "Exception occurred during token creation",
+          "returns": {
+            "status": "error",
+            "error": "internal_error",
+            "message": "Failed to create token: {error details}"
+          }
+        }
+      ]
     },
+
     "revoke": {
-      "doc": "Revoke an existing MFS export token",
+      "doc": "Revoke an existing MFS export token. Invalidates the token immediately, preventing further access to the associated resource. Only the token creator can revoke their own tokens.",
       "scope": "hub",
       "permission": {
         "src": "write"
-      }
+      },
+      "params": {
+        "token": {
+          "type": "string",
+          "required": true,
+          "description": "Token string to revoke (previously created MFS export token)"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Revocation result",
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "Operation status (ok or error)",
+            "example": "ok"
+          },
+          "token": {
+            "type": "string",
+            "description": "Token that was revoked"
+          },
+          "hub_id": {
+            "type": "string",
+            "description": "Hub ID of the revoked token"
+          },
+          "node_id": {
+            "type": "string",
+            "description": "Node ID that was accessible via this token"
+          },
+          "message": {
+            "type": "string",
+            "description": "Success message from revocation"
+          },
+          "error": {
+            "type": "string",
+            "description": "Error code (only present on failure)"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "missing_token",
+          "message": "token parameter is required",
+          "returns": {
+            "status": "error",
+            "error": "missing_token",
+            "message": "token parameter is required"
+          }
+        },
+        {
+          "code": "unauthorized",
+          "message": "User not authenticated",
+          "returns": {
+            "status": "error",
+            "error": "unauthorized",
+            "message": "User not authenticated"
+          }
+        },
+        {
+          "code": "revocation_failed",
+          "message": "Token not found or user is not the creator",
+          "returns": {
+            "status": "error",
+            "error": "revocation_failed",
+            "message": "Specific failure reason from database"
+          }
+        },
+        {
+          "code": "internal_error",
+          "message": "Exception occurred during revocation",
+          "returns": {
+            "status": "error",
+            "error": "internal_error",
+            "message": "Failed to revoke token: {error details}"
+          }
+        }
+      ]
     },
+
     "list": {
-      "doc": "List all MFS export tokens created by current user",
+      "doc": "List all MFS export tokens created by current user. Returns all active and expired tokens with their details including resource information, permissions, and expiry status. Useful for token management and auditing.",
       "scope": "hub",
       "permission": {
         "src": "read"
-      }
+      },
+      "params": {},
+      "returns": {
+        "type": "object",
+        "description": "List of user's tokens",
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "Operation status (ok or error)",
+            "example": "ok"
+          },
+          "tokens": {
+            "type": "array",
+            "description": "Array of token objects created by current user",
+            "items": {
+              "type": "object",
+              "properties": {
+                "token": {
+                  "type": "string",
+                  "description": "Token string"
+                },
+                "pseudo_entity_uid": {
+                  "type": "string",
+                  "description": "Pseudo entity UID"
+                },
+                "hub_id": {
+                  "type": "string",
+                  "description": "Hub ID"
+                },
+                "node_id": {
+                  "type": "string",
+                  "description": "Node ID accessible via token"
+                },
+                "permission": {
+                  "type": "integer",
+                  "description": "Permission level granted"
+                },
+                "expiry_time": {
+                  "type": "integer",
+                  "description": "Unix timestamp of expiry (0 = never)"
+                },
+                "ctime": {
+                  "type": "integer",
+                  "description": "Unix timestamp when created"
+                },
+                "status": {
+                  "type": "string",
+                  "description": "Token status (active, expired, revoked)"
+                }
+              }
+            }
+          },
+          "count": {
+            "type": "integer",
+            "description": "Total number of tokens",
+            "example": 5
+          },
+          "error": {
+            "type": "string",
+            "description": "Error code (only present on failure)"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "unauthorized",
+          "message": "User not authenticated",
+          "returns": {
+            "status": "error",
+            "error": "unauthorized",
+            "message": "User not authenticated"
+          }
+        },
+        {
+          "code": "internal_error",
+          "message": "Exception occurred while listing tokens",
+          "returns": {
+            "status": "error",
+            "error": "internal_error",
+            "message": "Failed to list tokens: {error details}"
+          }
+        }
+      ]
     }
   },
+
   "modules": {
     "private": "service/private/mfs_api"
   }

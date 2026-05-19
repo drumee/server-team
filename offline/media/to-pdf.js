@@ -31,7 +31,8 @@ class __pdf_builder extends Offline {
   // initialize
   // ========================
   initialize() {
-    this.syslog(`Starting PDF builder`);
+    this.onCompletion = this.onCompletion.bind(this)
+    console.log(`Starting PDF builder`);
     this.info = this.checkSanity();
     if (this.info.locked) {
       this.syslog(`${this.info.origFile} is locked since ${this.info.locked}`);
@@ -55,7 +56,7 @@ class __pdf_builder extends Offline {
               await this.build();
             } catch (e) {
               this.syslog("Failed to build - gave up", e);
-              rmSync(this.lockFile);
+              rmSync(this.lockFile, { force: true });
               process.exit(1);
             }
           };
@@ -83,7 +84,7 @@ class __pdf_builder extends Offline {
     await this.onCompletion();
     this.syslog(`Build completed successfully. ${this._preview}`);
     setTimeout(() => {
-      rmSync(this.lockFile);
+      rmSync(this.lockFile, { force: true });
       process.exit(0);
     }, 3000);
   }
@@ -92,6 +93,16 @@ class __pdf_builder extends Offline {
  * 
  */
   async onCompletion() {
+    if (!this._payload) {
+      this._payload = {
+        service: this.service,
+        keys: [Attr.nid, Attr.hub_id],
+        message: 'PREVIEW_GENERATION',
+        progress: 0,
+        options: {}
+      };
+    }
+    console.log("AAA:130", this._payload)
     this._payload.options.message = "PREVIEW_DONE";
     this._payload.options.progress = 100;
     await RedisStore.sendData(this._payload, this.recipients);
@@ -106,16 +117,23 @@ class __pdf_builder extends Offline {
     const argv = Minimist(process.argv.slice(2));
     let { node, socket_id, uid, noSocket } = JSON.parse(argv._[0]);
     this.noSocket = noSocket;
-    if (!node.mfs_root) node.mfs_root = resolve(node.home_dir, '__storage__');
+    if (!node.mfs_root) {
+      if (!/__storage__/.test(node.home_dir)) {
+        node.mfs_root = resolve(node.home_dir, '__storage__');
+      } else {
+        node.mfs_root = node.home_dir;
+      }
+    }
+
     const mfs_dir = resolve(node.mfs_root, node.id);
     this.socket_id = socket_id;
     this.uid = uid;
-    this.lockFile = resolve(mfs_dir, `lock.json`);
+    this.lockFile = join(mfs_dir, `lock.json`);
     this.node = node;
     this.mfs_dir = node.mfs_root;
 
     this.yp = new Mariadb({ user: process.env.USER });
-    let origFile = resolve(mfs_dir, `orig.${node.ext}`);
+    let origFile = resolve(mfs_dir, `orig.${node.extension || node.ext}`);
     this.origFile = origFile;
     if (existsSync(this.lockFile)) {
       return readFileSync(this.lockFile);
@@ -206,23 +224,32 @@ class __pdf_builder extends Offline {
     let node = this.node;
     let mfs_root = node.mfs_root || this.mfs_dir;
     const mfs_dir = resolve(mfs_root, node.id);
-    const pdf = join(mfs_dir, 'orig.pdf');
+    const orig_pdf = join(mfs_dir, 'orig.pdf');
+    const preview = join(mfs_dir, 'preview.pdf');
 
-    let preview = join(mfs_dir);
-    let cmd = `${Script.soffice} ${preview} ${this.info.origFile}`;
+    let cmd = `${Script.soffice} ${mfs_dir} ${this.info.origFile}`;
+    console.log("AAA:231", cmd)
     this.exec(cmd);
-    if (!existsSync(pdf)) {
+
+    if (!existsSync(orig_pdf)) {
       throw `Failed to build preview with CMD=${cmd}`;
     }
-    let json = getPdfInfo(pdf);
-    json.pdf = pdf;
+
+    let json = getPdfInfo(orig_pdf);
+    json.pdf = preview;
     json.buildState = 'done';
     this.infoFile = resolve(mfs_dir, `info.json`);
     writeFileSync(this.infoFile, json);
-    if (!existsSync(json.pdf)) {
-      throw `NOENT : buildFromOrig file=${json.pdf}`;
+
+    // Add rename operation
+    this.syslog(`Renaming ${orig_pdf} to ${preview}`);
+    renameSync(orig_pdf, preview);
+
+    if (!existsSync(preview)) {
+      throw `NOENT : buildFromOrig file=${preview}`;
     }
-    this._preview = json.pdf;
+
+    this._preview = preview;
   }
 }
 
