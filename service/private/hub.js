@@ -674,7 +674,13 @@ class __private_hub extends Hub {
     const lang = this.user.language() || this.input.app_language();
     const username = this.user.get("fullname");
     const hubId = this.hub.get(Attr.id);
-    const hubname = this.hub.get(Attr.name);
+    // mfs_home reads yp.hub.name directly (the actual display name);
+    // this.hub.get(Attr.name/hubname) returns yp.hub.hubname (a technical id).
+    const mfs_home = await this.db.await_proc("mfs_home");
+    const hubname = (mfs_home && mfs_home.name)
+      || this.hub.get(Attr.hubname)
+      || this.hub.get(Attr.name)
+      || hubId;
     const homepath = this.input.homepath();
     const area = this.hub.get(Attr.area);
     const isShareLink = (area === "share");
@@ -682,7 +688,6 @@ class __private_hub extends Hub {
     const expiryTs = Math.floor(Date.now() / 1000) + EXPIRY_DAYS * 86400;
     const message = this.input.use(Attr.message)
       || Cache.message("_x_add_you_to_team", lang).format(username, hubname);
-    const mfs_home = await this.db.await_proc("mfs_home");
     const results = [];
 
     for (const email of invitees) {

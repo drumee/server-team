@@ -1,44 +1,233 @@
-<!DOCTYPE html>
+<%
+var _avatar = (inviter_name || '?').replace(/\s+/g, ' ').split(' ').filter(Boolean).map(function (s) { return s.charAt(0).toUpperCase(); }).slice(0, 2).join('') || '?';
+%><!DOCTYPE html>
 <html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="x-apple-disable-message-reformatting">
   <title><%= inviter_name %> invited you to join <%= workspace_name %> on Drumee</title>
 </head>
-<body style="background: #f4f5f8; padding: 20px;">
-  <div style="max-width: 600px; margin: 0 auto; font-family: Arial, sans-serif; color: #333;">
-    <div style="background: #4b6cb7; padding: 20px; text-align: center; border-radius: 10px 10px 0 0;">
-      <h1 style="color: white; margin: 0;">Drumee</h1>
-    </div>
-    <div style="padding: 30px; background: #ffffff;">
-      <h2 style="color: #4b6cb7; text-align: center;">
-        You've been invited to join Drumee
-      </h2>
-      <p style="line-height: 1.6; text-align: left;">
-        Hello,
-      </p>
-      <p style="line-height: 1.6; text-align: left;">
-        <strong><%= inviter_name %></strong> has invited you to join <strong><%= workspace_name %></strong> on Drumee — a sovereign workspace for files, chat, and collaboration.
-      </p>
-      <p style="line-height: 1.6; text-align: left;">
-        Create your free account to get started and access the workspace.
-      </p>
-      <div style="text-align: center; margin: 30px 0;">
-        <a href="<%= link %>"
-          style="display: inline-block; background: #4b6cb7; color: white; padding: 12px 30px; text-decoration: none; border-radius: 30px; font-weight: bold;">
-          Sign up
-        </a>
-      </div>
-      <p style="color: #999; font-size: 13px; text-align: left;">
-        If you did not expect this invitation, you can safely ignore this email.
-      </p>
-      <p style="color: #666; text-align: left;">
-        The Drumee Team
-      </p>
-    </div>
-    <div style="background: #f0f0f0; padding: 20px; text-align: center; font-size: 14px; color: #666; border-radius: 0 0 10px 10px;">
-      <p>&copy; <%= new Date().getFullYear() %> Drumee. All rights reserved.</p>
-    </div>
-  </div>
+<body style="margin:0;padding:0;background:#f2f2f7;-webkit-font-smoothing:antialiased;font-family:'Geist','SF Pro Display',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f2f2f7;">
+    <tr>
+      <td align="center" style="padding:20px 8px;">
+        <table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0" style="width:600px;max-width:100%;background:#fff;border-radius:8px;overflow:hidden;">
+
+          <!-- Header: purple signature -->
+          <tr>
+            <td bgcolor="#433cc5" align="center" style="padding:24px;background:#433cc5;">
+              <table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr><td align="center" style="line-height:0;">
+                <img src="https://content.app.drumee.com/icons/logo.png" width="170" height="36" alt="Drumee" style="display:block;border:0;outline:0;text-decoration:none;-ms-interpolation-mode:bicubic;">
+              </td></tr></table>
+            </td>
+          </tr>
+
+          <!-- Main content -->
+          <tr>
+            <td style="padding:32px;">
+
+              <!-- Headline -->
+              <h1 style="margin:0 0 8px 0;padding:0;font-family:'Geist','SF Pro Display',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;font-weight:600;font-size:24px;line-height:1.1;color:#282538;">
+                <%= inviter_name %> invited you to join Drumee
+              </h1>
+              <p style="margin:0;padding:0;font-family:'Geist','SF Pro Display',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;font-weight:400;font-size:16px;line-height:1.4;color:#282538;">
+                You've been invited to collaborate on the <strong style="color:#433cc5;font-weight:700;"><%= workspace_name %></strong> workspace &mdash; a sovereign space for files, chat and team collaboration. Create your free account to get started.
+              </p>
+
+              <!-- 40px gap -->
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td style="height:40px;line-height:40px;font-size:0;">&nbsp;</td></tr></table>
+
+              <!-- Workspace preview card (restricted: blurred + Access Restricted badge) -->
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f2f2f7;border:1px solid rgba(71,69,84,0.1);border-radius:8px;">
+                <tr><td style="padding:25px;">
+
+                  <!-- Folder header row -->
+                  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+                    <tr>
+                      <td align="left" valign="middle">
+                        <table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr>
+                          <td valign="middle" style="padding-right:12px;line-height:0;width:17px;">
+                            <img src="https://content.app.drumee.com/icons/restricted.png" width="20" height="16" alt="" style="display:block;border:0;outline:0;text-decoration:none;-ms-interpolation-mode:bicubic;">
+                          </td>
+                          <td valign="middle">
+                            <span style="font-family:'Manrope','SF Pro Display',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;font-weight:700;font-size:18px;line-height:28px;color:#282538;letter-spacing:-0.45px;"><%= workspace_name %></span>
+                          </td>
+                        </tr></table>
+                      </td>
+                      <td align="right" valign="middle" style="white-space:nowrap;">
+                        <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:rgba(20,17,35,0.4);margin-right:4px;line-height:8px;font-size:0;">&nbsp;</span>
+                        <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:rgba(20,17,35,0.4);margin-right:4px;line-height:8px;font-size:0;">&nbsp;</span>
+                        <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:rgba(20,17,35,0.4);line-height:8px;font-size:0;">&nbsp;</span>
+                      </td>
+                    </tr>
+                  </table>
+
+                  <!-- 24px gap -->
+                  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td style="height:24px;line-height:24px;font-size:0;">&nbsp;</td></tr></table>
+
+                  <!-- 3 redacted folder rows (opacity:0.4 stands in for blur) -->
+                  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="opacity:0.4;">
+                    <tr>
+                      <td valign="middle" style="padding:8px 0 9px 0;width:36px;line-height:0;">
+                        <img src="https://content.app.drumee.com/icons/restricted.png" width="16" height="16" alt="" style="display:block;border:0;outline:0;text-decoration:none;-ms-interpolation-mode:bicubic;">
+                      </td>
+                      <td valign="middle" style="padding:8px 0 9px 0;border-bottom:1px solid rgba(71,69,84,0.1);">
+                        <div style="background:#363246;height:16px;border-radius:2px;width:128px;line-height:16px;font-size:0;">&nbsp;</div>
+                      </td>
+                      <td valign="middle" align="right" style="padding:8px 0 9px 0;border-bottom:1px solid rgba(71,69,84,0.1);">
+                        <div style="background:#2b273b;height:12px;border-radius:2px;width:64px;display:inline-block;line-height:12px;font-size:0;">&nbsp;</div>
+                      </td>
+                    </tr>
+                    <tr>
+                      <td valign="middle" style="padding:8px 0 9px 0;width:36px;line-height:0;">
+                        <img src="https://content.app.drumee.com/icons/files.png" width="16" height="16" alt="" style="display:block;border:0;outline:0;text-decoration:none;-ms-interpolation-mode:bicubic;">
+                      </td>
+                      <td valign="middle" style="padding:8px 0 9px 0;border-bottom:1px solid rgba(71,69,84,0.1);">
+                        <div style="background:#363246;height:16px;border-radius:2px;width:192px;line-height:16px;font-size:0;">&nbsp;</div>
+                      </td>
+                      <td valign="middle" align="right" style="padding:8px 0 9px 0;border-bottom:1px solid rgba(71,69,84,0.1);">
+                        <div style="background:#2b273b;height:12px;border-radius:2px;width:48px;display:inline-block;line-height:12px;font-size:0;">&nbsp;</div>
+                      </td>
+                    </tr>
+                    <tr>
+                      <td valign="middle" style="padding:8px 0 9px 0;width:36px;line-height:0;">
+                        <img src="https://content.app.drumee.com/icons/image.png" width="16" height="16" alt="" style="display:block;border:0;outline:0;text-decoration:none;-ms-interpolation-mode:bicubic;">
+                      </td>
+                      <td valign="middle" style="padding:8px 0 9px 0;border-bottom:1px solid rgba(71,69,84,0.1);">
+                        <div style="background:#363246;height:16px;border-radius:2px;width:96px;line-height:16px;font-size:0;">&nbsp;</div>
+                      </td>
+                      <td valign="middle" align="right" style="padding:8px 0 9px 0;border-bottom:1px solid rgba(71,69,84,0.1);">
+                        <div style="background:#2b273b;height:12px;border-radius:2px;width:80px;display:inline-block;line-height:12px;font-size:0;">&nbsp;</div>
+                      </td>
+                    </tr>
+                  </table>
+
+                  <!-- Access Restricted badge -->
+                  <table role="presentation" cellpadding="0" cellspacing="0" border="0" align="center" style="margin:16px auto 0 auto;background:#ffffff;border:1px solid #d65f59;border-radius:12px;">
+                    <tr>
+                      <td style="padding:13px 25px;" valign="middle">
+                        <table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr>
+                          <td valign="middle" style="padding-right:12px;line-height:0;">
+                            <img src="https://content.app.drumee.com/icons/lock.png" width="16" height="20" alt="" style="display:block;border:0;outline:0;text-decoration:none;-ms-interpolation-mode:bicubic;">
+                          </td>
+                          <td valign="middle">
+                            <span style="font-family:'Manrope','SF Pro Display',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;font-weight:600;font-size:14px;line-height:20px;color:#0b0a21;">Access Restricted</span>
+                          </td>
+                        </tr></table>
+                      </td>
+                    </tr>
+                  </table>
+
+                  <!-- 24px gap -->
+                  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td style="height:24px;line-height:24px;font-size:0;">&nbsp;</td></tr></table>
+
+                  <!-- Recent Activity label -->
+                  <p style="margin:0 0 12px 0;padding:0;font-family:'Geist Mono','SF Mono',Menlo,Consolas,monospace;font-weight:600;font-size:12px;line-height:1.4;letter-spacing:4px;text-transform:uppercase;color:rgba(67,60,197,0.6);">Recent Activity</p>
+
+                  <!-- Chat snippet 1: inviter (left) -->
+                  <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:12px;">
+                    <tr>
+                      <td valign="top" style="padding-right:12px;width:32px;">
+                        <table cellpadding="0" cellspacing="0" border="0"><tr>
+                          <td bgcolor="#6c5ce7" align="center" valign="middle" width="32" height="32" style="width:32px;height:32px;background:#6c5ce7;border-radius:8px;color:#faf6ff;font-family:'Inter','SF Pro Display',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;font-weight:600;font-size:10px;line-height:32px;text-align:center;"><%= _avatar %></td>
+                        </tr></table>
+                      </td>
+                      <td valign="top">
+                        <table cellpadding="0" cellspacing="0" border="0">
+                          <tr>
+                            <td bgcolor="#e5e5ea" style="background:#e5e5ea;padding:12px 16px;border-radius:0 12px 12px 12px;font-size:0;line-height:0;width:280px;">
+                              <div style="background:#b9b8c0;height:8px;border-radius:2px;width:240px;margin-bottom:6px;line-height:8px;font-size:0;">&nbsp;</div>
+                              <div style="background:#b9b8c0;height:8px;border-radius:2px;width:160px;line-height:8px;font-size:0;">&nbsp;</div>
+                            </td>
+                          </tr>
+                        </table>
+                      </td>
+                    </tr>
+                  </table>
+
+                  <!-- Chat snippet 2: collaborator (right) -->
+                  <table role="presentation" cellpadding="0" cellspacing="0" border="0" align="right">
+                    <tr>
+                      <td valign="top">
+                        <table cellpadding="0" cellspacing="0" border="0">
+                          <tr>
+                            <td bgcolor="#d65f59" style="background:#d65f59;padding:12px 16px;border-radius:12px 12px 0 12px;font-size:0;line-height:0;width:260px;">
+                              <div style="background:#e4a4a0;height:8px;border-radius:2px;width:220px;margin-bottom:6px;line-height:8px;font-size:0;">&nbsp;</div>
+                              <div style="background:#e4a4a0;height:8px;border-radius:2px;width:140px;line-height:8px;font-size:0;">&nbsp;</div>
+                            </td>
+                          </tr>
+                        </table>
+                      </td>
+                      <td valign="top" style="padding-left:12px;width:32px;">
+                        <table cellpadding="0" cellspacing="0" border="0"><tr>
+                          <td bgcolor="#363246" align="center" valign="middle" width="32" height="32" style="width:32px;height:32px;background:#363246;border-radius:8px;color:#c8c4d7;font-family:'Inter','SF Pro Display',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;font-weight:600;font-size:10px;line-height:32px;text-align:center;"></td>
+                        </tr></table>
+                      </td>
+                    </tr>
+                  </table>
+
+                </td></tr>
+              </table>
+
+              <!-- 40px gap before CTA -->
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td style="height:40px;line-height:40px;font-size:0;">&nbsp;</td></tr></table>
+
+              <!-- CTA button -->
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+                <tr>
+                  <td align="center" bgcolor="#433cc5" style="background:#433cc5;border-radius:4px;">
+                    <a href="<%= link %>" style="display:block;width:100%;background:#433cc5;color:#ffffff;text-decoration:none;font-family:'Geist','SF Pro Display',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;font-weight:600;font-size:16px;line-height:24px;text-align:center;padding:16px 24px;border-radius:4px;box-sizing:border-box;">
+                      Join Drumee to view workspace &rarr;
+                    </a>
+                  </td>
+                </tr>
+              </table>
+
+              <!-- Tagline -->
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td style="height:24px;line-height:24px;font-size:0;">&nbsp;</td></tr></table>
+              <p style="margin:0;padding:0;text-align:center;font-family:'Geist Mono','SF Mono',Menlo,Consolas,monospace;font-weight:600;font-size:10px;line-height:1;letter-spacing:4px;text-transform:uppercase;color:#433cc5;">
+                No credit card required. Free for up to 3 guests.
+              </p>
+
+            </td>
+          </tr>
+
+          <!-- Footer -->
+          <tr>
+            <td bgcolor="#f2f2f7" style="background:#fff;border-top:1px solid #d1d1d6;padding:33px 32px 32px 32px;">
+              <table role="presentation" cellpadding="0" cellspacing="0" border="0" align="center">
+                <tr>
+                  <td style="padding:0 16px;font-family:'Geist','SF Pro Display',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;font-size:10px;line-height:1.4;color:#84848c;">
+                    <a href="https://drumee.com/privacy/" style="color:#84848c;text-decoration:none;">Privacy Policy</a>
+                  </td>
+                  <td style="padding:0 16px;font-family:'Geist','SF Pro Display',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;font-size:10px;line-height:1.4;color:#84848c;">
+                    <a href="https://drumee.com/terms/" style="color:#84848c;text-decoration:none;">Terms of Service</a>
+                  </td>
+                  <td style="padding:0 16px;font-family:'Geist','SF Pro Display',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;font-size:10px;line-height:1.4;color:#84848c;">
+                    <a href="https://drumee.com/about" style="color:#84848c;text-decoration:none;">Support</a>
+                  </td>
+                </tr>
+              </table>
+
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td style="height:32px;line-height:32px;font-size:0;">&nbsp;</td></tr></table>
+
+              <p style="margin:0 0 7px 0;padding:0;text-align:center;font-family:'Geist','SF Pro Display',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;font-weight:700;font-size:12px;line-height:1.4;color:#84848c;">DRUMEE WORKSPACE</p>
+              <table role="presentation" cellpadding="0" cellspacing="0" border="0" align="center" style="max-width:320px;">
+                <tr><td style="text-align:center;font-family:'Geist','SF Pro Display',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;font-weight:400;font-size:10px;line-height:1.4;color:#84848c;">
+                  You received this because <%= inviter_name %> invited you to <%= workspace_name %> on Drumee. If you did not expect this invitation, you can safely ignore this email.
+                </td></tr>
+              </table>
+
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td style="height:32px;line-height:32px;font-size:0;">&nbsp;</td></tr></table>
+
+              <p style="margin:0;padding:0;text-align:center;font-family:'Geist','SF Pro Display',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;font-weight:400;font-size:8px;line-height:1.4;color:#84848c;">&copy; <%= new Date().getFullYear() %> Drumee. All rights reserved.</p>
+            </td>
+          </tr>
+
+        </table>
+      </td>
+    </tr>
+  </table>
 </body>
 </html>
