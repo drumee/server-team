@@ -433,16 +433,20 @@ class __admin extends Entity {
     let hub_id  = this.input.need(Attr.hub_id);
     let node_id = this.input.use(Attr.node_id, null);
     let page    = this.input.use(Attr.page, 1);
+    let query   = this.input.safe_string(Attr.query) || '';
     let hub_db  = await this.yp.await_func('get_db_name', hub_id);
     if (!hub_db) return this.output.status('HUB_NOT_FOUND');
     // Use the dedicated single-result-set SP. mfs_show_node_by works for
     // the desk surface but its internal UPDATE/ALTER traffic on temp
     // tables makes the mariadb wrapper here pick the wrong chunk, returning
     // an empty array even when folders exist.
+    // When query is non-empty the SP drops the parent_id filter and
+    // searches by name across the whole workspace.
     let res = await this.yp.await_proc(
       `${hub_db}.hub_list_folders`,
       node_id,
-      page
+      page,
+      query
     );
     this.output.list(res);
   }

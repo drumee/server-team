@@ -517,7 +517,7 @@
       "errors": []
     },
     "get_hub_folders": {
-      "doc": "List folders within a specific workspace for the Permission tab. Calls mfs_show_node_by with type='node' to return folder nodes only. Defaults to the hub root if node_id is not provided.",
+      "doc": "List folders within a specific workspace for the Permission tab. Calls hub_list_folders to return folder/hub nodes. Defaults to the hub root if node_id is not provided. When query is non-empty, searches by user_filename across the whole workspace and drops the parent_id constraint.",
       "scope": "hub",
       "permission": { "src": "admin" },
       "params": {
@@ -529,12 +529,17 @@
         "node_id": {
           "type": "string",
           "required": false,
-          "description": "Parent folder node ID to list from. Defaults to hub root if omitted."
+          "description": "Parent folder node ID to list from. Defaults to hub root if omitted. Ignored when query is set."
         },
         "page": {
           "type": "integer",
           "required": false,
           "description": "Page number, 1-based. Defaults to 1."
+        },
+        "query": {
+          "type": "string",
+          "required": false,
+          "description": "Optional name filter. When non-empty, performs a workspace-wide LIKE search on user_filename (LIKE wildcards in the query are escaped). When empty/omitted, listing is restricted to direct children of node_id."
         }
       },
       "returns": {
