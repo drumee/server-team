@@ -545,10 +545,10 @@
       ]
     },
     "member_delete": {
-      "doc": "Move a member to the Free plan (domain_id=1) instead of deleting them permanently. The member leaves all paid domain hubs; hub ownership is transferred to domain admins where applicable. Sends a removal notification email and broadcasts the change via WebSocket.",
+      "doc": "Move a member to the Free plan (domain_id=1) instead of deleting them permanently. The member leaves all paid domain hubs; hub ownership is transferred to domain admins where applicable. Sends a removal notification email and broadcasts the change via WebSocket. Caller must have admin privilege and must outrank the target member.",
       "scope": "domain",
       "permission": {
-        "src": "owner"
+        "src": "admin"
       },
       "params": {
         "user_id": {
@@ -577,14 +577,16 @@
       },
       "errors": [
         { "code": "NO_ORG", "message": "Sanity check failed: user not found, missing db_name, or domain mismatch", "http_status": 404 },
-        { "code": "NO_MEMBER", "message": "Target user is not a member of the organisation", "http_status": 404 }
+        { "code": "NO_MEMBER", "message": "Target user is not a member of the organisation", "http_status": 404 },
+        { "code": "NOT_ENOUGH_PRIVILEGE", "message": "Caller's privilege is lower than the target member's privilege", "http_status": 403 },
+        { "code": "INCORRECT_DOMAIN", "message": "Target member has no domain privilege record", "http_status": 403 }
       ]
     },
     "member_disconnect": {
-      "doc": "Permanently remove a member who has never connected (connected=0) from the organisation. Removes them from all hubs, transfers hub ownership to eligible members, and deletes their home directory. This is a destructive, irreversible operation.",
+      "doc": "Permanently remove a member who has never connected (connected=0) from the organisation. Removes them from all hubs, transfers hub ownership to eligible members, and deletes their home directory. This is a destructive, irreversible operation. Caller must have admin privilege and must outrank the target member.",
       "scope": "domain",
       "permission": {
-        "src": "owner"
+        "src": "admin"
       },
       "params": {
         "user_id": {

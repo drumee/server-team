@@ -1783,6 +1783,14 @@ class __private_adminpanel extends Mfs {
     let { my_org } = await this._check_sanity(user_id) || {}
     if (!my_org) return;
 
+    let my_privilege = await this.yp.await_proc('domain_privilege', my_org.domain_id, this.uid);
+    if (my_privilege.privilege < Remit.dom_admin) return this.output.status('NOT_ENOUGH_PRIVILEGE');
+
+    let his_privilege = await this.yp.await_proc('domain_privilege', my_org.domain_id, user_id);
+    if (isEmpty(his_privilege)) return this.output.status('INCORRECT_DOMAIN');
+
+    if (my_privilege.privilege < his_privilege.privilege) return this.output.status('NOT_ENOUGH_PRIVILEGE');
+
     let member = await this.yp.await_proc('show_member_detail', user_id, my_org.id);
     if (isEmpty(member)) return this.output.status('NO_MEMBER');
 

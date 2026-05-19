@@ -158,22 +158,15 @@ class __private_channel extends Entity {
   }
 
 
-  /**
-   * 
-   * @param {*} sbox 
-   * @param {*} desdir 
-   * @param {*} attachment 
-   * @param {*} message_id 
-   * @returns 
-   */
-  async move_attachemnt(sbox, desdir, attachment, message_id) {
+  async move_attachemnt(sbox, desdir, attachment, message_id, copy_only = false) {
     let src = []
     message_id = [message_id]
     for (let media of attachment) {
       src.push({ nid: media, hub_id: this.hub.get(Attr.id) })
     }
 
-    let data = await this.db.call_proc('mfs_move_all', stringify(src), this.hub.get(Attr.id), desdir.id, sbox.hub_id);
+    const proc = copy_only ? 'mfs_copy_all' : 'mfs_move_all';
+    let data = await this.db.call_proc(proc, stringify(src), this.hub.get(Attr.id), desdir.id, sbox.hub_id);
     data = toArray(data);
 
     let tempattachment = []
@@ -184,7 +177,11 @@ class __private_channel extends Entity {
           src = { nid: node.nid, mfs_root: node.src_mfs_root };
           dest = { nid: node.des_id, hub_id: sbox.hub_id, mfs_root: node.des_mfs_root };
           tempattachment.push({ hub_id: sbox.hub_id, nid: node.des_id })
-          await move_node(src, dest);
+          if (copy_only) {
+            await copy_node(src, dest, 1);
+          } else {
+            await move_node(src, dest);
+          }
           break;
         case 'copy':
           src = { nid: node.nid, mfs_root: node.src_mfs_root };
@@ -194,14 +191,18 @@ class __private_channel extends Entity {
       }
     }
 
-    for (let node of data) {
-      switch (node.action) {
-        case 'delete':
-          src = { nid: node.nid, hub_id: sbox.hub_id, mfs_root: node.src_mfs_root };
-          await remove_node(src, 1);
+    if (!copy_only) {
+      for (let node of data) {
+        switch (node.action) {
+          case 'delete':
+            src = { nid: node.nid, hub_id: sbox.hub_id, mfs_root: node.src_mfs_root };
+            await remove_node(src, 1);
+        }
       }
     }
-    if (this.hub.get(Attr.id) != this.uid) {
+    // In copy_only mode the originals still exist alongside the sbox copies;
+    // pushing both here would render each attachment twice in the chat.
+    if (!copy_only && this.hub.get(Attr.id) != this.uid) {
       for (let media of attachment) {
         tempattachment.push({ nid: media, hub_id: this.hub.get(Attr.id) })
       }
@@ -583,9 +584,13 @@ class __private_channel extends Entity {
     else {
       sbox = await this.db.call_proc('mfs_home')
     }
+    const nid = this.input.use(Attr.nid);
+    // Folder-scoped posts upload into the folder; copy (not move) so the
+    // originals remain visible in the folder's Files tab.
+    const copy_only = !isEmpty(nid);
     if (!isEmpty(attachment)) {
       let desdir = await this.yp.await_proc('forward_proc', sbox.hub_id, 'mfs_make_dir', `'${sbox.chat_id}','${stringify([message_id])}',1`)
-      attachment = await this.move_attachemnt(sbox, desdir, attachment, message_id)
+      attachment = await this.move_attachemnt(sbox, desdir, attachment, message_id, copy_only)
     }
     input.author_id = this.uid
     input.uid = this.uid
@@ -593,7 +598,6 @@ class __private_channel extends Entity {
     if (!isEmpty(attachment)) { input.attachment = attachment }
     if (!isEmpty(message)) { message = message.replace(/'/gi, "''"); }
     if (!isEmpty(thread_id)) { input.thread_id = thread_id }
-    const nid = this.input.use(Attr.nid);
     if (!isEmpty(nid)) { input.metadata = { _scope_nid: `${nid}` }; }
     input.message_id = message_id
     let data = await this.yp.await_proc('forward_proc', this.hub.get(Attr.id),

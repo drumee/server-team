@@ -428,6 +428,9 @@ class privateChat extends Entity {
         mydata.total = mycount.total;
         mydata.to_id = this.uid;
         mydata.echoId = this.input.get("echoId");
+        let profile = this.user.get("profile") || {};
+        mydata.firstname = this.user.get(Attr.firstname);
+        mydata.lastname = profile.lastname;
 
         /** Update sibling sessions */
         let myDest = await this.yp.await_proc("user_sockets", this.uid);

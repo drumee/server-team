@@ -1584,10 +1584,10 @@
     },
     "relocate": {
       "scope": "hub",
+      "method": "move_all",
       "permission": {
         "src": "read",
         "dest": "write",
-        "method": "move_all",
         "preproc": {
           "checker": "pre_transact",
           "action": "move"
