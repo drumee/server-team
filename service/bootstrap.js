@@ -35,9 +35,20 @@ class __bootstrap extends RuntimeEnv {
     this.set({ data });
     this.output.setAuthorization(auth);
     const template_dir = resolve(__dirname, '..', TPL_BASE);
+    // let bundles = {}
+    // for (let m of ["core", "sprite", "locale", "entry"]) {
+    //   bundles[m] = data.app[m]
+    // }
+    // data.bundles = bundles;
     let bundles = {}
-    for (let m of ["core", "vendor", "sprite", "locale", "entry"]) {
-      bundles[m] = data.app[m]
+    if (data.app.manifest) {
+      for (let m of ["runtime", "core", "sprite", "locale", "main"]) {
+        bundles[m] = data.app.manifest[`${m}.js`]
+      }
+    } else {
+      for (let m of ["core", "sprite", "locale", "entry"]) {
+        bundles[m] = data.app[m]
+      }
     }
     data.bundles = bundles;
     data.isPlugin = 1;

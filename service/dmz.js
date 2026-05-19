@@ -171,7 +171,11 @@ class __dmz extends Mfs {
       }
     }
     let rows = await this.yp.await_proc('forward_proc', info.hub_id, 'dmz_settings', ``);
-    if (rows[0] && rows[0].hours !== null) {
+    // dmz_expiry (infinity / active / expired) must be forwarded even when
+    // days/hours are NULL — duration_hours() returns NULL for an *expired*
+    // share, and the old `hours !== null` guard dropped the status exactly
+    // when it mattered. days/hours being null is tolerated downstream.
+    if (rows[0]) {
       info.hours = rows[0].hours;
       info.days = rows[0].days;
       info.dmz_expiry = rows[0].dmz_expiry;
