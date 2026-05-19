@@ -1,50 +1,97 @@
 <!DOCTYPE html>
 <html>
-
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>
-    <%= heading %>
-  </title>
+  <meta name="x-apple-disable-message-reformatting">
+  <title><%= heading %></title>
 </head>
+<body style="margin:0;padding:0;background:#f2f2f7;-webkit-font-smoothing:antialiased;font-family:'Geist','SF Pro Display',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f2f2f7;">
+    <tr>
+      <td align="center" style="padding:20px 8px;">
+        <table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0" style="width:600px;max-width:100%;background:#fff;border-radius:8px;overflow:hidden;">
 
-<body style="background: #f4f5f8; padding: 20px;">
+          <!-- Header: purple signature -->
+          <tr>
+            <td bgcolor="#433cc5" align="center" style="padding:24px;background:#433cc5;">
+              <table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr><td align="center" style="line-height:0;">
+                <img src="https://content.app.drumee.com/icons/logo.png" width="170" height="36" alt="Drumee" style="display:block;border:0;outline:0;text-decoration:none;-ms-interpolation-mode:bicubic;">
+              </td></tr></table>
+            </td>
+          </tr>
 
-  <div style="max-width: 600px; margin: 0 auto; font-family: 'Comic Sans MS', cursive, sans-serif; color: #333;">
-    <div style="background: #9d31ef; padding: 20px; text-align: center; border-radius: 10px 10px 0 0;">
-      <h1 style="color: white; margin: 0;">Drumee</h1>
-    </div>
+          <!-- Main content -->
+          <tr>
+            <td style="padding:32px;">
 
-    <div style="padding: 30px; background: #fffde7;">
-      <h2 style="color: #9d31ef; text-align: center;">
-        <%= heading %>
-      </h2>
-      <p style="line-height: 1.6; text-align: left;">
-        <%= hello %>
-      </p>
-      <p style="line-height: 1.6; text-align: left;">
-        <%= message %>
-      </p>
+              <!-- Headline -->
+              <h1 style="margin:0 0 8px 0;padding:0;font-family:'Geist','SF Pro Display',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;font-weight:600;font-size:20px;line-height:1.1;color:#282538;display: flex;justify-content: center;align-items: center;">
+                <%= heading %>
+              </h1>
 
-      <div style="text-align: center; margin: 30px 0;">
-        <a href="<%= link %>"
-          style="display: inline-block; background: #9d31ef; color: white; padding: 12px 30px; text-decoration: none; border-radius: 30px; font-weight: bold;">
-          <%= workspace %>
-        </a>
-      </div>
+              <p style="margin:16px 0 0 0;padding:0;font-family:'Geist','SF Pro Display',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;font-weight:400;font-size:16px;line-height:1.4;color:#282538;">
+                <%= hello %>
+              </p>
+              <p style="margin:16px 0 0 0;padding:0;font-family:'Geist','SF Pro Display',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;font-weight:400;font-size:16px;line-height:1.4;color:#282538;">
+                <%= message %>
+              </p>
 
-      <p style="color: #666; text-align: left;"><br>
-        <%= signature %>
-      </p>
-    </div>
+              <!-- 40px gap before CTA -->
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td style="height:40px;line-height:40px;font-size:0;">&nbsp;</td></tr></table>
 
-    <div
-      style="background: #ffe; padding: 20px; text-align: center; font-size: 14px; color: #666; border-radius: 0 0 10px 10px;">
-      <p><%= reminder %></p>
-    </div>
-  </div>
+              <!-- CTA button -->
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+                <tr>
+                  <td align="center" bgcolor="#433cc5" style="background:#433cc5;border-radius:4px;">
+                    <a href="<%= link %>" style="display:block;width:100%;background:#433cc5;color:#ffffff;text-decoration:none;font-family:'Geist','SF Pro Display',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;font-weight:600;font-size:16px;line-height:24px;text-align:center;padding:16px 24px;border-radius:4px;box-sizing:border-box;">
+                      <%= workspace %>
+                    </a>
+                  </td>
+                </tr>
+              </table>
 
+              <!-- 24px gap -->
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td style="height:24px;line-height:24px;font-size:0;">&nbsp;</td></tr></table>
+
+              <!-- Signature -->
+              <p style="margin:0;padding:0;font-family:'Geist','SF Pro Display',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;font-weight:400;font-size:16px;line-height:1.4;color:#282538;">
+                <%= signature %>
+              </p>
+
+            </td>
+          </tr>
+
+          <!-- Footer -->
+          <tr>
+            <td bgcolor="#f2f2f7" style="background:#fff;border-top:1px solid #d1d1d6;padding:33px 32px 32px 32px;">
+              <table role="presentation" cellpadding="0" cellspacing="0" border="0" align="center">
+                <tr>
+                  <td style="padding:0 16px;font-family:'Geist','SF Pro Display',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;font-size:10px;line-height:1.4;color:#84848c;">
+                    <a href="https://drumee.com/privacy/" style="color:#84848c;text-decoration:none;">Privacy Policy</a>
+                  </td>
+                  <td style="padding:0 16px;font-family:'Geist','SF Pro Display',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;font-size:10px;line-height:1.4;color:#84848c;">
+                    <a href="https://drumee.com/terms/" style="color:#84848c;text-decoration:none;">Terms of Service</a>
+                  </td>
+                  <td style="padding:0 16px;font-family:'Geist','SF Pro Display',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;font-size:10px;line-height:1.4;color:#84848c;">
+                    <a href="https://drumee.com/about" style="color:#84848c;text-decoration:none;">Support</a>
+                  </td>
+                </tr>
+              </table>
+
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td style="height:32px;line-height:32px;font-size:0;">&nbsp;</td></tr></table>
+
+              <p style="margin:0 0 7px 0;padding:0;text-align:center;font-family:'Geist','SF Pro Display',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;font-weight:700;font-size:12px;line-height:1.4;color:#84848c;">DRUMEE WORKSPACE</p>
+
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td style="height:32px;line-height:32px;font-size:0;">&nbsp;</td></tr></table>
+
+              <p style="margin:0;padding:0;text-align:center;font-family:'Geist','SF Pro Display',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;font-weight:400;font-size:8px;line-height:1.4;color:#84848c;"><%= reminder %></p>
+            </td>
+          </tr>
+
+        </table>
+      </td>
+    </tr>
+  </table>
 </body>
-
 </html>
