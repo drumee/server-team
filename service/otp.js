@@ -18,8 +18,6 @@
 const { Attr, Messenger, Cache, uniqueId } = require("@drumee/server-essentials");
 const { Entity } = require("@drumee/server-core");
 const { resolve } = require("path");
-const { readFileSync } = require("fs");
-const { template } = require("lodash");
 
 class Otp extends Entity {
 
@@ -86,30 +84,21 @@ class Otp extends Entity {
       code,
       why_this_otp: lex._why_this_otp,
     }
-    // Render the local styled OTP template ourselves and hand the
-    // resulting HTML to Messenger via its html: constructor option.
-    // The bundled butler/otp.tpl expects a different data shape
-    // (recipient/text via block includes); the local template is the
-    // designed UI for this email.
-    let html;
-    try {
-      const tpl = resolve(__dirname, "./templates/otp.html");
-      html = template(readFileSync(tpl, "utf8"))(data);
-    } catch (e) {
-      this.warn(`OTP template render failed: ${e}`);
-    }
-
     const msg = new Messenger({
       subject: lex._your_otp,
       recipient: user.email,
-      html,
       handler: this.exception.email,
     });
-
+    const tplPath = resolve(__dirname, "./templates/otp.html");
+    const html = msg.renderFrom(tplPath, data);
     let sent = 0;
     try {
-      await msg.send();
-      sent = 1;
+      const result = await msg.send({ html });
+      if (result && result.error) {
+        this.warn(`OTP email delivery failed: ${result.error}`);
+      } else {
+        sent = 1;
+      }
     } catch (e) {
       this.warn(e);
     }
