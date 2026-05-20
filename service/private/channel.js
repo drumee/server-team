@@ -620,7 +620,7 @@ class __private_channel extends Entity {
     data.firstname = this.user.attributes.firstname;
     data.lastname = profile.lastname;
     data.hub_id = this.hub.get(Attr.id);
-
+    if (nid) data.nid = nid;
     data.echoId = this.input.get('echoId');
     let hub_id = this.hub.get(Attr.id);
     let recipients = await this.yp.await_proc('entity_sockets', { exclude, hub_id });
@@ -726,7 +726,7 @@ class __private_channel extends Entity {
     if (!VALID_TYPES.includes(type)) type = 'all';
     const unread_only = this.input.use('unread_only', 0) ? 1 : 0;
     const page = this.input.use(Attr.page, 1);
- 
+
     // Get all active hubs for the current user via their drumate media table.
     // yp.entity does not have an owner_id column; the user's drumate DB (this.db)
     // tracks all hubs they own/belong to via the media table (category='hub').
@@ -744,7 +744,7 @@ class __private_channel extends Entity {
     } catch (e) {
       this.warn('[channel.list_notifications] hub list query failed:', e && e.message);
     }
- 
+
     // Query channel_list_notifications per hub and aggregate results
     let all_notifications = [];
     for (const hub of hubs) {
@@ -770,7 +770,7 @@ class __private_channel extends Entity {
         this.warn(`[channel.list_notifications] hub ${hub.id} query failed:`, e && e.message);
       }
     }
- 
+
     // Include P2P mentions from yp.contact_activity for mention/all tabs
     if (type === 'mention' || type === 'all') {
       try {
@@ -807,11 +807,11 @@ class __private_channel extends Entity {
 
     // Sort merged results by ctime DESC then apply pagination
     all_notifications.sort((a, b) => b.ctime - a.ctime);
- 
+
     const PAGE_SIZE = 45;
     const offset = (page - 1) * PAGE_SIZE;
     const paged = all_notifications.slice(offset, offset + PAGE_SIZE);
- 
+
     this.output.list(paged);
   }
 
@@ -995,10 +995,10 @@ class __private_channel extends Entity {
   async bookmark_add() {
     const message_id = this.input.need('message_id');
     const hub_id = this.input.need('hub_id');
- 
+
     const user_db = await this.yp.await_func('get_db_name', this.uid);
     if (!user_db) return this.exception.server('USER_DB_NOT_FOUND');
- 
+
     const data = await this.yp.await_proc(
       `${user_db}.notification_bookmark_add`,
       message_id,
@@ -1012,10 +1012,10 @@ class __private_channel extends Entity {
    */
   async bookmark_remove() {
     const message_id = this.input.need('message_id');
- 
+
     const user_db = await this.yp.await_func('get_db_name', this.uid);
     if (!user_db) return this.exception.server('USER_DB_NOT_FOUND');
- 
+
     const data = await this.yp.await_proc(
       `${user_db}.notification_bookmark_remove`,
       message_id
@@ -1028,10 +1028,10 @@ class __private_channel extends Entity {
    */
   async bookmark_list() {
     const page = this.input.use(Attr.page, 1);
- 
+
     const user_db = await this.yp.await_func('get_db_name', this.uid);
     if (!user_db) return this.exception.server('USER_DB_NOT_FOUND');
- 
+
     const data = await this.yp.await_proc(
       `${user_db}.notification_bookmark_list`,
       page
@@ -1054,15 +1054,15 @@ class __private_channel extends Entity {
     if (!recipient_id || recipient_id === this.uid) {
       return this.exception.user('Invalid recipient_id.');
     }
- 
+
     // Get user's drumate DB explicitly
     const user_db = await this.yp.await_func('get_db_name', this.uid);
     if (!user_db) return this.exception.server('USER_DB_NOT_FOUND');
- 
+
     // Deterministic filename
     const [uid_a, uid_b] = [this.uid, recipient_id].sort();
     const dm_filename = `_inbox_${uid_a}_${uid_b}`;
- 
+
     // 1. Check if DM hub already exists in user's drumate media table
     const existing = toArray(
       await this.yp.await_query(
@@ -1076,27 +1076,27 @@ class __private_channel extends Entity {
         dm_filename
       )
     )[0];
- 
+
     if (existing && existing.hub_id) {
       existing.is_new = 0;
       return this.output.data(existing);
     }
- 
+
     // 2. Create new DM hub — desk_create_hub runs in drumate DB context
     const domain = this.user.get(Attr.domain);
     const owner_id = this.uid;
- 
+
     // Sanitise filename for hostname
     let hostname = dm_filename.replace(/[ \.,;:!&~#'|@*\$><\?\(\)\[\]\{\}\"\/]/g, '');
     hostname = await this.yp.await_func('strip_accents', hostname);
     hostname = hostname.replace(/\-$/, '').trim().toLowerCase();
     hostname = new URL(`http://${hostname}`).hostname;
- 
+
     const args = { hostname, area: 'private', filename: dm_filename, owner_id, domain };
- 
+
     // Call desk_create_hub in user's drumate DB
     const rows = await this.yp.await_proc(`${user_db}.desk_create_hub`, args, {});
- 
+
     let hub_id, hub_db, home_id;
     for (const r of toArray(rows)) {
       if (r && r.failed) {
@@ -1104,7 +1104,7 @@ class __private_channel extends Entity {
         return this.exception.server('DM_HUB_CREATION_FAILED');
       }
       if (r.db_name && r.filesize != null && r.actual_home_id) {
-        hub_db  = r.db_name;
+        hub_db = r.db_name;
         home_id = r.actual_home_id;
       }
       if (r.db_name && r.home_dir) {
@@ -1112,11 +1112,11 @@ class __private_channel extends Entity {
         hub_db = hub_db || r.db_name;
       }
     }
- 
+
     if (!hub_id || !hub_db) {
       return this.exception.server('DM_HUB_CREATION_FAILED');
     }
- 
+
     // 3. Add recipient as member with Edit+Chat privilege
     //    add_member(member_id, privilege, expiry_time) — expiry_time=0 = no expiry
     try {
@@ -1125,7 +1125,7 @@ class __private_channel extends Entity {
       // Non-fatal: hub created, recipient can be added later
       this.warn('[dm_init] add_member failed:', e && e.message);
     }
- 
+
     // 4. Notify recipient via WebSocket
     try {
       const recipients = await this.yp.await_proc('user_sockets', recipient_id);
@@ -1139,7 +1139,7 @@ class __private_channel extends Entity {
     } catch (e) {
       this.warn('[dm_init] notify failed:', e && e.message);
     }
- 
+
     this.output.data({ hub_id, home_id, db_name: hub_db, is_new: 1 });
   }
 
@@ -1156,7 +1156,7 @@ class __private_channel extends Entity {
     const page = this.input.use(Attr.page, 1);
     const PAGE_SIZE = 20;
     const offset = (page - 1) * PAGE_SIZE;
- 
+
     // 1. Find all DM hubs in current user's media table
     const hubs = toArray(
       await this.db.await_query(
@@ -1169,30 +1169,30 @@ class __private_channel extends Entity {
          ORDER BY m.upload_time DESC`
       )
     );
- 
+
     if (!hubs.length) {
       return this.output.list([]);
     }
- 
+
     // 2. For each DM hub: get last message + unread count
     const conversations = [];
- 
+
     for (const hub of hubs) {
       if (!hub.db_name) continue;
- 
+
       // Derive other_uid from filename: _inbox_{uid_a}_{uid_b}
       // Current user is one of them; the other is the recipient
       const parts = hub.filename.split('_').filter(Boolean);
       // parts: ['inbox', uid_a, uid_b]
       const other_uid = parts.find(p => p !== 'inbox' && p !== this.uid) || null;
- 
+
       let last_message = null;
       let last_message_time = 0;
       let unread_count = 0;
- 
+
       try {
         const db_name = hub.db_name;
- 
+
         // Last message
         const lastMsgs = toArray(
           await this.yp.await_proc(`${db_name}.channel_list_messages`, this.uid, 'date', 'desc', 1)
@@ -1203,7 +1203,7 @@ class __private_channel extends Entity {
           last_message_time = lm.ctime || 0;
           if (!last_message && lm.is_attachment) last_message = '[File]';
         }
- 
+
         // Unread count
         const unreadRow = toArray(
           await this.yp.await_query(
@@ -1219,11 +1219,11 @@ class __private_channel extends Entity {
           )
         )[0];
         unread_count = unreadRow ? (unreadRow.cnt || 0) : 0;
- 
+
       } catch (e) {
         this.warn(`[list_conversations] hub ${hub.hub_id} query failed:`, e && e.message);
       }
- 
+
       // Get other user's profile
       let other_user = { id: other_uid };
       if (other_uid) {
@@ -1233,7 +1233,7 @@ class __private_channel extends Entity {
           this.warn('[list_conversations] get_user failed:', e && e.message);
         }
       }
- 
+
       conversations.push({
         hub_id: hub.hub_id,
         db_name: hub.db_name,
@@ -1244,11 +1244,11 @@ class __private_channel extends Entity {
         unread_count,
       });
     }
- 
+
     // 3. Sort by last_message_time DESC, apply pagination
     conversations.sort((a, b) => b.last_message_time - a.last_message_time);
     const paged = conversations.slice(offset, offset + PAGE_SIZE);
- 
+
     this.output.list(paged);
   }
 

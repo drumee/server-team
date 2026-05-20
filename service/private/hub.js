@@ -703,7 +703,7 @@ class __private_hub extends Hub {
           await this._grantMembership(drumate.id, privilege, 0, message, mfs_home, hubname, username);
           await this._sendInviteEmail("hub-invite-added", email,
             `You've been added to ${hubname}`,
-            { inviter_name: username, workspace_name: hubname, link: `${homepath}#/desk/@${hubId}` });
+            { inviter_name: username, workspace_name: hubname, link: `${homepath}#/welcome/signup?email=${encodeURIComponent(email)}` });
           results.push({ email, branch: "B", status: "ok" });
         } else {
           await this.yp.await_proc(
