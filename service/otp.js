@@ -36,7 +36,7 @@ class Otp extends Entity {
     }
 
     let user = await this.yp.await_proc("drumate_exists", ident);
-    if (!user && !user.id) {
+    if (!user || !user.id) {
       return { error: 1, status: "no-user", user };
     }
 

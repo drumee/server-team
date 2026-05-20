@@ -565,7 +565,7 @@ class __private_hub extends Hub {
         hub.message = message;
         hub.ownpath = '/';
         hub.hub_id = hub.actual_hub_id;
-        hub.db_name = hub.actual_db_name;
+        hub.db_name = hub.actual_db;
         let sockets = await this.yp.await_proc("user_sockets", recipient.id);
         await RedisStore.sendData(
           this.payload(hub, { service: "hub.invite_received" }),
@@ -696,11 +696,29 @@ class __private_hub extends Hub {
         if (isArray(drumate)) drumate = drumate[0];
         const isDrumate = drumate && drumate.id;
 
-        if (isShareLink) {
+        if (isShareLink && !isDrumate) {
           await this._inviteViaToken(email, hubId, privilege, expiryTs, username, hubname);
           results.push({ email, branch: "A", status: "ok" });
         } else if (isDrumate) {
-          await this._grantMembership(drumate.id, privilege, 0, message, mfs_home, hubname, username);
+          const r = await this._grantMembership(drumate.id, privilege, 0, message, mfs_home, hubname, username);
+          if (r) {
+            try {
+              const hub = await this.yp.await_proc(
+                `${r.db_name}.mfs_access_node`, drumate.id, hubId
+              );
+              if (hub) {
+                hub.message = message;
+                hub.ownpath = '/';
+                hub.hub_id = hub.actual_hub_id;
+                hub.db_name = hub.actual_db;
+                const sockets = await this.yp.await_proc('user_sockets', drumate.id);
+                await RedisStore.sendData(this.payload(hub, { service: "hub.invite_received" }), sockets);
+                await RedisStore.sendData(this.payload(hub, { service: "hub.add_contributors" }), sockets);
+              }
+            } catch (err) {
+              this.warn("[hub] invite: ws notify failed for", drumate.id, err && err.message);
+            }
+          }
           await this._sendInviteEmail("hub-invite-added", email,
             `You've been added to ${hubname}`,
             { inviter_name: username, workspace_name: hubname, link: `${homepath}#/welcome/signup?email=${encodeURIComponent(email)}` });
@@ -956,7 +974,7 @@ class __private_hub extends Hub {
         hub.message = msg;
         hub.ownpath = '/';
         hub.hub_id = hub.actual_hub_id;
-        hub.db_name = hub.actual_db_name;
+        hub.db_name = hub.actual_db;
         const sockets = await this.yp.await_proc('user_sockets', recipient.id);
         await RedisStore.sendData(this.payload(hub), sockets);
       }
