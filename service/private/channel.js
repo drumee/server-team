@@ -622,6 +622,8 @@ class __private_channel extends Entity {
     data.hub_id = this.hub.get(Attr.id);
     if (nid) data.nid = nid;
     data.echoId = this.input.get('echoId');
+    const meetingMatch = /^\[\[MEETING:\s*(start|end)\s*:/.exec(data.message);
+    if (meetingMatch) data.message_type = `meeting.${meetingMatch[1]}`;
     let hub_id = this.hub.get(Attr.id);
     let recipients = await this.yp.await_proc('entity_sockets', { exclude, hub_id });
     await RedisStore.sendData(this.payload(data), recipients);
