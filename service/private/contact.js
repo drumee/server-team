@@ -19,6 +19,7 @@ const { Attr, Constants, Messenger, utils, RedisStore, Cache, nullValue } = requ
 const { EMAIL_CHECKER } = Constants;
 
 const { readFileSync } = require('fs');
+const { resolve } = require('path');
 const vCard = require("vcf");
 const { stringify } = JSON;
 const { isEmpty, isArray } = require('lodash');
@@ -489,24 +490,19 @@ class __private_contact extends Contact {
     const subject = `${Cache.message('_network_non_drumate_subject', lang).format(username)}`;
 
     const link = `${this.input.homepath()}#/welcome/invitation/${token}`;
-    const loginlink = `${this.input.homepath()}#/welcome`;
+    const tplPath = resolve(__dirname, 'templates', 'butler', 'contact-add-non-drumate.html');
     const msg = new Messenger({
-      template: "butler/invite-non-drumate",
       subject,
       recipient: email,
-      lex: Cache.lex(lang),
-      data: {
-        //username   : username
-        firstname: this.user.get('firstname'),
-        sender: this.user.get('fullname'),
-        recipient: recipient_name,
-        link: link,
-        redirect_link: loginlink,
-        message,
-      },
-      handler: this.exception.email
+      handler: this.exception.email,
     });
-    return msg.send();
+    const html = msg.renderFrom(tplPath, {
+      sender: username,
+      recipient: recipient_name,
+      link,
+      message,
+    });
+    return msg.send({ html });
   }
 
 
@@ -527,22 +523,19 @@ class __private_contact extends Contact {
       .format(username)}`;
 
     const link = `${this.input.homepath(vhost)}#`;
+    const tplPath = resolve(__dirname, 'templates', 'butler', 'contact-add-drumate.html');
     const msg = new Messenger({
-      template: "butler/invite-drumate",
       subject,
       recipient: email,
-      lex: Cache.lex(lang),
-      data: {
-        firstname: this.user.get('firstname'),
-        sender: this.user.get('fullname'),
-        recipient: recipient_name,
-        link: link,
-        redirect_link: link,
-        message: message,
-      },
-      handler: this.exception.email
+      handler: this.exception.email,
     });
-    return msg.send();
+    const html = msg.renderFrom(tplPath, {
+      sender: username,
+      recipient: recipient_name,
+      link,
+      message,
+    });
+    return msg.send({ html });
   }
 
 
