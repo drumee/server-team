@@ -132,8 +132,21 @@ class conference extends __yp {
     let recipients = attendees;
     let payload = user;
     let details = await this.db.await_proc("mfs_node_attr", room_id);
-    if (user.role == "host" && user.uid == this.uid) {
+    const isFirstJoiner = attendees.length === 0;
+    if ((user.role == "host" || isFirstJoiner) && user.uid == this.uid) {
       await this.inform({ recipients, payload }, "conference.start");
+      if (room_type == Attr.meeting) {
+        try {
+          const hub_id = this.hub.get(Attr.id);
+          const hubMembers = await this.yp.await_proc('entity_sockets', { hub_id, exclude: [socket_id] });
+          if (hubMembers && toArray(hubMembers).length) {
+            const startPayload = { ...user, details, room_type, hub_id };
+            await RedisStore.sendData(this.payload(startPayload, { service: 'conference.start' }), toArray(hubMembers));
+          }
+        } catch (e) {
+          this.warn('conference.start: hub member notify failed', e && e.message);
+        }
+      }
     } else if (user.role == "attendee") {
       if (room_type == Attr.meeting) {
         if (payload.area == Attr.dmz) {

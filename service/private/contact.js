@@ -1535,11 +1535,13 @@ class __private_contact extends Contact {
     await this.handshake(msg_from, peer.id, this.uid)
     await this.handshake(msg_to, this.uid, peer.id)
 
-    // Flip the inviter's contact record to 'informed' BEFORE pushing the
-    // WS — notification_center_next still includes 'informed' rows, so
-    // pushing first would leave the pending rollup on the inviter's panel.
+    // Flip the inviter's contact record from 'informed' → 'active' BEFORE
+    // pushing the WS.  drumate_exists does not return db_name, so use
+    // forward_proc (consistent with the rest of this file) instead of the
+    // direct `${peer.db_name}.proc` pattern which silently fails with
+    // "undefined.contact_invite_informed" when db_name is missing.
     try {
-      await this.yp.await_proc(`${peer.db_name}.contact_invite_informed`, this.uid);
+      await this.yp.await_proc('forward_proc', peer.id, 'contact_invite_informed', `'${this.uid}'`);
       await this.db.await_proc(`contact_invite_informed`, peer.id);
     } catch (error) {
       this.warn('[CONTACT] auto-informed failed:', error.message);
