@@ -22,6 +22,7 @@ const {
 } = require('@drumee/server-essentials/index.js');
 const { stringify } = JSON;
 const { isArray, isEmpty, } = require('lodash');
+const { shouldSendNotification } = require("../lib/email-policy");
 
 
 const __public = require('../sharebox.js');
@@ -403,6 +404,9 @@ class __private_sharebox extends __public {
     const subject = `${Cache.message('_sent_you_drop_link', lang)
       .format(username)}`;
 
+    // Inbound share notification — gate by recipient's email_notifications.
+    if (!(await shouldSendNotification(this.yp, email))) return;
+
     const msg = new Messenger({
       template: "butler/inbound",
       subject: `Drumee: ${subject}`,
@@ -427,7 +431,7 @@ class __private_sharebox extends __public {
    * @param {*} args 
    * @returns 
    */
-  _send_inbound_link(args) {
+  async _send_inbound_link(args) {
     let message = this.input.use(Attr.message) || '';
     const lang = this.user.language() || this.input.app_language();
     const email = this.input.need(Attr.email);
@@ -443,6 +447,8 @@ class __private_sharebox extends __public {
     const subject = `${Cache.message('_sent_you_drop_link', lang)
       .format(username)}`;
     for (let recipient of email) {
+      // Inbound share notification — gate per-recipient by their preference.
+      if (!(await shouldSendNotification(this.yp, recipient))) continue;
       const msg = new Messenger({
         template: "butler/inbound",
         subject: `Drumee: ${subject}`,
@@ -754,6 +760,8 @@ class __private_sharebox extends __public {
         }
         const lang = this.user.language() || this.input.app_language();
         const filesize = require("filesize");
+        // Outbound share notification — gate by recipient's preference.
+        if (!(await shouldSendNotification(this.yp, guest.email))) continue;
         let msg = new Messenger({
           //template  : "en/guest-share",
           template: "butler/outbound",

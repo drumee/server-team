@@ -26,6 +26,7 @@ const { isEmpty, isArray } = require('lodash');
 const { google } = require("googleapis");
 
 const { toArray } = utils;
+const { shouldSendNotification } = require("../lib/email-policy");
 
 /** ==============================================  */
 const Contact = require('../contact');
@@ -523,6 +524,12 @@ class __private_contact extends Contact {
       .format(username)}`;
 
     const link = `${this.input.homepath(vhost)}#`;
+    // Contact-added notification — respect recipient's email_notifications
+    // preference. This is the only notification path here; OTP / password
+    // reset / account-deletion / admin invitation flows must NEVER be gated.
+    if (!(await shouldSendNotification(this.yp, email))) {
+      return { recipient: email, skipped: "email_notifications_disabled" };
+    }
     const tplPath = resolve(__dirname, 'templates', 'butler', 'contact-add-drumate.html');
     const msg = new Messenger({
       subject,

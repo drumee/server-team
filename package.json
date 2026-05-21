@@ -1,9 +1,10 @@
 {
   "name": "drumee_server",
-  "version": "2.9.40",
+  "version": "2.9.41",
   "description": "Drumee Infrastructure",
   "main": "index.js",
   "scripts": {
+    "postinstall": "patch-package",
     "test:db": "node test/db.js",
     "test:acl": "node test/acl.js",
     "test:redis": "node test/redis.js",
@@ -99,6 +100,7 @@
     "ws": "^8.18.0"
   },
   "devDependencies": {
-    "@drumee/server-dev-tools": "^1.1.33"
+    "@drumee/server-dev-tools": "^1.1.33",
+    "patch-package": "^8.0.1"
   }
 }

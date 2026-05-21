@@ -591,7 +591,11 @@ class __private_desk extends Media {
       mfa,
       otp: parseInt(mfa) ? Attr.email : 0,
     };
-    await this.yp.call_proc("drumate_update_profile", this.uid, profile);
+    // SP drumate_update_profile expects a JSON STRING (it parses with
+    // JSON_VALUE inside). Other callers in drumate.js stringify; passing
+    // a raw object here let the driver coerce to "[object Object]" so the
+    // whitelist walk silently skipped every field — mfa was never saved.
+    await this.yp.call_proc("drumate_update_profile", this.uid, JSON.stringify(profile));
     await this.yp.await_proc("secret_clear", this.uid, "all");
 
     const user = await this.yp.await_proc("get_user", this.uid);
