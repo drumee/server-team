@@ -15,7 +15,7 @@
  * =============================================================================
  */
 const {
-  Attr, Constants, toArray, RedisStore, sysEnv, Cache
+  Attr, Constants, toArray, RedisStore, sysEnv, Cache, Messenger
 } = require("@drumee/server-essentials");
 
 const {
@@ -24,7 +24,7 @@ const {
 } = Constants;
 const { Entity, FileIo } = require("@drumee/server-core");
 const { existsSync, readFileSync } = require("fs");
-const { isEmpty, isArray } = require("lodash");
+const { isEmpty, isArray, isString } = require("lodash");
 const { get_env, platform } = require('./lib/env');
 const { resolve } = require("path");
 const { credential_dir } = sysEnv();
@@ -175,8 +175,54 @@ class __yp extends Entity {
       vars.username = vars.uid;
       vars.host = this.input.get(Attr.vhost) || this.input.host();
     }
-    let r = await this.session.signin(vars);
+
+    // Override session.send_otp for email-based 2FA so it uses the new otp.html
+    // template instead of the legacy butler/otp.tpl baked into @drumee/server-core.
+    // SMS/passkey paths defer to the original implementation.
+    const session = this.session;
+    const origSendOtp = session.send_otp.bind(session);
+    session.send_otp = async (user) => {
+      let { profile } = user;
+      if (isString(profile)) profile = session.parseJSON(profile);
+      if (profile && profile.otp === Attr.email) {
+        return this._send2faOtpEmail(user);
+      }
+      return origSendOtp(user);
+    };
+
+    let r = await session.signin(vars);
     this.output.data(r);
+  }
+
+  /**
+   * Send the 2FA login OTP via email using the new otp.html template.
+   */
+  async _send2faOtpEmail(user) {
+    let { profile, fullname, firstname } = user;
+    if (isString(profile)) profile = this.session.parseJSON(profile);
+    profile.displayName = firstname || fullname;
+    const token = this.session.randomString();
+    const lang = this.input.app_language() || this.input.page_language() || "en";
+    const otp = await this.yp.await_proc("otp_create", user.id, token);
+    const lex = Cache.lex(lang);
+    const data = {
+      heading: lex._your_otp,
+      code: otp.code,
+      why_this_otp: lex._why_this_otp,
+    };
+    const msg = new Messenger({
+      subject: lex._your_otp,
+      recipient: profile.email,
+      handler: this.exception && this.exception.email,
+    });
+    const tplPath = resolve(__dirname, "./templates/otp.html");
+    const html = msg.renderFrom(tplPath, data);
+    try {
+      await msg.send({ html });
+    } catch (e) {
+      this.warn("2FA OTP email send failed", e);
+    }
+    return { secret: otp.secret };
   }
 
   /**
