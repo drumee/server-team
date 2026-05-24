@@ -7,26 +7,22 @@
 
 -->
 
-<html xmlns="http://www.w3.org/1999/xhtml">
+<html lang="<%= language %>">
   <head>
-    <meta charset=UTF-8>
-    <meta http-equiv="Content-Type" content="text/html">
+    <meta charset="UTF-8">
     <meta http-equiv="Content-Language" content="<%= language %>,en">
     <meta name="description" content="<%= description %>">
     <meta name="keywords" content="<%= keywords %>">
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=5">
-    <meta http-equiv="Cache-Control" content="no-cache" />
-    <meta http-equiv="Pragma" content="no-cache" />
-    <meta http-equiv="Expires" content="0" />
     <% _.each(meta, function(m) { %>
       <meta name="<%= m.name %>" content="<%= m.content %>">
     <% }); %>
     <title>
       <%= title %>
     </title>
-    <link rel="icon" href="<%= icon %>" type="image/svg">
-    <link rel="stylesheet" href="/-/static/styles/loader.css?v=1.0.2" media="screen"></link>
-    <link rel="stylesheet" href="/-/static/fonts/Armin-Grotesk/stylesheet.css" media="screen"></link>
+    <link rel="icon" href="<%= icon %>" type="image/svg+xml">
+    <link rel="stylesheet" href="/-/static/styles/loader.css?v=1.0.3">
+    <link rel="stylesheet" href="/-/static/fonts/Armin-Grotesk/stylesheet.css">
     
     <script>
     <%= renderer.include('bootstrap.js.tpl') %>
@@ -37,7 +33,7 @@
     <% } %>
 
     <% if (typeof(debugUi) !== "undefined" && debugUi) { %>
-      <script>localStorage.logLevel = "3;</script>
+      <script>localStorage.logLevel = "3";</script>
     <% } %>
 
 
