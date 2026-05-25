@@ -26,12 +26,11 @@
       "returns": { "type": "object", "properties": { "job_id": { "type": "integer" } } }
     },
     "get_status": {
-      "doc": "Poll a job by id (or the latest job of the calling user with latest_only=1). Returns { status, processed_files, total_files, errors, … }.",
+      "doc": "Poll a Bull job by id. Returns { job_id, status, processed_files, total_files, total_folders, current_filename, errors, attempts, failed_reason, started_at, finished_at } translated from the Bull state machine to the FE popup states (queued / running / done / failed / cancelled / none).",
       "scope": "hub",
       "permission": { "src": "owner" },
       "params": {
-        "job_id": { "type": "integer", "required": false },
-        "latest_only": { "type": "integer", "required": false, "default": 0 }
+        "job_id": { "type": "string", "required": true }
       }
     },
     "cancel": {

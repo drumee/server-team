@@ -1,16 +1,26 @@
 // service/google_drive.js
 //
-// Google Drive migration endpoints. Heavy lifting (folder traversal +
-// downloads) runs in offline/workers/gdriveWorker.js; this file only:
-//   - mints the OAuth elevation URL (drive.readonly scope, offline),
-//   - reads/writes the oauth_accounts row (via ensureFreshToken),
-//   - enqueues / cancels / inspects migration_jobs rows,
-//   - exposes the post-onboarding dismiss flag setter.
+// Google Drive migration endpoints — Bull-only (no DB state table).
+// Job state lives in Bull (waiting/active/completed/failed/delayed) plus
+// `job.progress` (struct: processed_files, total_files, total_folders,
+// errors_count, current_filename) and `job.returnvalue` (final summary).
+//
+// Endpoints:
+//   has_drive_scope          → { ok }
+//   connect                  → { auth_url }
+//   start_migration          → { job_id } + sets profile.tools_migration_skipped.google_drive=1
+//   get_status               → { job_id, status, processed_files, total_files, ... }
+//   cancel                   → { ok, state, sentinel?, removed?, terminal? }
+//   dismiss_post_onboarding  → { ok } sets profile.tools_migration_skipped.google_drive=1
 
 const { Attr, Cache, toArray } = require('@drumee/server-essentials');
 const { google } = require('googleapis');
 const ExtImport = require('../lib/ext_import');
-const { migrationQueue } = require('../../offline/queues/migrationQueue');
+const {
+  addMigration,
+  getJobStatus,
+  cancelJob,
+} = require('../../offline/queues/migrationQueue');
 
 const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.readonly';
 
@@ -61,8 +71,10 @@ class GoogleDrive extends ExtImport {
   }
 
   /**
-   * Enqueue a migration. Creates the migration_jobs row first so the FE
-   * gets a stable `job_id` even if Bull's `add()` is slow.
+   * Enqueue a migration. Also sets `profile.tools_migration_skipped.google_drive=1`
+   * so the Desk auto-launch treats the user as "has interacted with the
+   * prompt" — they won't be nagged again on reload, even if the migration
+   * never finishes.
    */
   async start_migration() {
     const hub_id = this.input.need(Attr.hub_id);
@@ -84,110 +96,77 @@ class GoogleDrive extends ExtImport {
       throw new Error('NEEDS_RECONNECT');
     }
 
-    const insertRes = await this.yp.await_query(
-      `INSERT INTO migration_jobs
-         (user_id, provider, source_folder_id, dest_hub_id, dest_nid,
-          status, conflict_policy, include_shared_drives, ctime)
-       VALUES (?, 'google', ?, ?, ?, 'queued', ?, ?, UNIX_TIMESTAMP())`,
-      this.uid, source_folder_id, hub_id, nid, conflict_policy, include_shared_drives
-    );
-    const job_id = insertRes && (insertRes.insertId || insertRes.lastInsertId || insertRes.affectedRows);
-    if (!job_id) {
-      throw new Error('Failed to create migration_jobs row');
-    }
-
-    await migrationQueue.add('migrate_google_drive', { job_id }, {
-      removeOnComplete: 100,
-      removeOnFail: false,
+    const job = await addMigration({
+      user_id: this.uid,
+      hub_id,
+      nid,
+      source_folder_id,
+      include_shared_drives,
+      conflict_policy,
     });
 
-    this.output.data({ job_id });
+    // Mark the migration prompt as "user has interacted" so the Desk
+    // auto-launch hook stops showing it on subsequent boots.
+    await this._setMigrationSkipped();
+
+    this.output.data({ job_id: job.id });
   }
 
   /**
-   * Poll endpoint for FE. Either `job_id` (specific job) or `latest_only=1`
-   * (the user's most recent job — Desk auto-launch uses this to decide
-   * whether to show the popup).
+   * Poll endpoint for FE. Returns a flat shape the popup renders from.
+   * Verifies the caller owns the job (job.data.user_id === this.uid) so
+   * users can't peek at each other's jobs.
    */
   async get_status() {
-    const latest = parseInt(this.input.use('latest_only', 0)) ? 1 : 0;
-    let row;
-    if (latest) {
-      row = toArray(await this.yp.await_query(
-        `SELECT id, status, conflict_policy, source_folder_id, dest_hub_id, dest_nid,
-                total_files, processed_files, total_folders, errors_json,
-                started_at, finished_at, ctime
-         FROM migration_jobs
-         WHERE user_id=? AND provider='google'
-         ORDER BY ctime DESC LIMIT 1`,
-        this.uid
-      ))[0];
-    } else {
-      const job_id = this.input.need('job_id');
-      row = toArray(await this.yp.await_query(
-        `SELECT id, status, conflict_policy, source_folder_id, dest_hub_id, dest_nid,
-                total_files, processed_files, total_folders, errors_json,
-                started_at, finished_at, ctime
-         FROM migration_jobs
-         WHERE id=? AND user_id=?`,
-        job_id, this.uid
-      ))[0];
-    }
-    if (!row) {
-      this.output.data({ status: 'none' });
+    const job_id = this.input.need('job_id');
+    const snap = await getJobStatus(job_id);
+    if (!snap) {
+      this.output.data({ status: 'none', job_id });
       return;
     }
-    let errors = [];
-    if (row.errors_json) {
-      try { errors = JSON.parse(row.errors_json) || []; } catch (_) { errors = []; }
+    if (snap.data && snap.data.user_id !== this.uid) {
+      throw new Error('forbidden');
     }
+    const prog = (snap.progress && typeof snap.progress === 'object') ? snap.progress : {};
+    const ret = snap.returnvalue || {};
+    // Translate Bull state → FE-friendly status the popup state machine
+    // already understands (waiting/active map to queued/running UI states).
+    let status = snap.state;
+    if (status === 'waiting' || status === 'delayed' || status === 'paused') status = 'queued';
+    else if (status === 'active') status = 'running';
+    else if (status === 'completed') status = 'done';
+    // 'failed' stays 'failed'
+
     this.output.data({
-      job_id: row.id,
-      status: row.status,
-      conflict_policy: row.conflict_policy,
-      source_folder_id: row.source_folder_id,
-      dest_hub_id: row.dest_hub_id,
-      dest_nid: row.dest_nid,
-      total_files: row.total_files,
-      processed_files: row.processed_files,
-      total_folders: row.total_folders,
-      errors,
-      started_at: row.started_at,
-      finished_at: row.finished_at,
+      job_id: snap.id,
+      status,
+      processed_files: prog.processed_files || ret.processed_files || 0,
+      total_files:     prog.total_files     || ret.total_files     || 0,
+      total_folders:   prog.total_folders   || ret.total_folders   || 0,
+      current_filename: prog.current_filename || null,
+      errors:           ret.errors || prog.errors || [],
+      attempts:         snap.attempts,
+      failed_reason:    snap.failedReason,
+      started_at:       snap.processedOn ? Math.floor(snap.processedOn / 1000) : null,
+      finished_at:      snap.finishedOn ? Math.floor(snap.finishedOn / 1000) : null,
     });
   }
 
   /**
-   * Mark the job cancelled. If it's still in the Bull queue, remove the job
-   * so the worker never picks it up. If it's already running, the worker
-   * polls `status` between files and exits cleanly.
+   * Cancel a job. Returns the queue helper's verdict (terminal | removed |
+   * sentinel | not_found). For active jobs, the worker observes the
+   * sentinel between files and exits cleanly.
    */
   async cancel() {
     const job_id = this.input.need('job_id');
-    const row = toArray(await this.yp.await_query(
-      `SELECT status FROM migration_jobs WHERE id=? AND user_id=?`,
-      job_id, this.uid
-    ))[0];
-    if (!row) throw new Error('job not found');
-    if (['done', 'failed', 'cancelled'].includes(row.status)) {
-      this.output.data({ ok: true, already_terminal: true });
-      return;
-    }
-    await this.yp.await_query(
-      `UPDATE migration_jobs SET status='cancelled', finished_at=UNIX_TIMESTAMP() WHERE id=?`,
-      job_id
-    );
-    // Best-effort removal from Bull. If the job is already active, the
-    // worker will see status='cancelled' on its next poll and bail.
-    try {
-      const jobs = await migrationQueue.getJobs(['waiting', 'delayed', 'paused']);
-      for (const j of jobs) {
-        if (j.data && j.data.job_id == job_id) await j.remove();
-      }
-    } catch (e) {
-      this.warn('[google_drive.cancel] Bull cleanup failed:', e && e.message);
-    }
-    this.output.data({ ok: true });
+    // Ownership check: load the job once and verify user_id before we
+    // mutate anything (cancelJob doesn't know who the caller is).
+    const snap = await getJobStatus(job_id);
+    if (!snap) { this.output.data({ ok: false, reason: 'not_found' }); return; }
+    if (snap.data && snap.data.user_id !== this.uid) throw new Error('forbidden');
+
+    const res = await cancelJob(job_id);
+    this.output.data(res);
   }
 
   /**
@@ -196,17 +175,27 @@ class GoogleDrive extends ExtImport {
    * launch it manually from Settings → Linked accounts.
    */
   async dismiss_post_onboarding() {
+    await this._setMigrationSkipped();
+    this.output.data({ ok: true });
+  }
+
+  /**
+   * Shared writer for `profile.tools_migration_skipped.google_drive=1`.
+   * Reads current profile, merges, writes back via drumate_update_profile
+   * (which expects a JSON string).
+   */
+  async _setMigrationSkipped() {
     const row = toArray(await this.yp.await_query(
       `SELECT profile FROM drumate WHERE id=?`, this.uid
     ))[0];
     let profile = {};
     if (row && row.profile) {
-      try { profile = JSON.parse(row.profile) || {}; } catch (_) { profile = {}; }
+      try { profile = (typeof row.profile === 'string' ? JSON.parse(row.profile) : row.profile) || {}; }
+      catch (_) { profile = {}; }
     }
     profile.tools_migration_skipped = profile.tools_migration_skipped || {};
     profile.tools_migration_skipped.google_drive = 1;
     await this.yp.await_proc('drumate_update_profile', this.uid, JSON.stringify(profile));
-    this.output.data({ ok: true });
   }
 
   /**

@@ -1,18 +1,21 @@
 /**
- * Per-job Google Drive importer. Constructed with a `job_id`; `run()`
- * traverses the source folder tree (paginated, includes Shared Drives if
- * the job spec says so) and downloads each file via an inline copy of
- * the ExtImport._importFileInternal logic (the worker doesn't carry a
- * service-class `this`, so duplication is intentional).
+ * Per-job Google Drive importer (Bull-only).
  *
- * Side effects:
- *  - UPDATEs migration_jobs (status, processed_files, total_folders, errors_json).
- *  - Phase 2 wires WS push via RedisStore.sendData; Phase 1 leaves
- *    progress polling-only.
+ * Constructed with a Bull `Job` instance; `run()` traverses the source
+ * folder tree (paginated, includes Shared Drives if the job spec says so)
+ * and downloads each file via an inline copy of the ExtImport
+ * `_importFileInternal` logic (the worker doesn't carry a service-class
+ * `this`, so duplication is intentional).
  *
- * Cancellation contract: the worker reads migration_jobs.status between
- * files. If it's 'cancelled', the importer returns early. Bull `attempts`
- * still apply on uncaught throws.
+ * Job lifecycle (Bull does the bookkeeping):
+ *   - waiting → active: when the worker pulls the job
+ *   - run(): does the work; pushes per-batch progress via `job.progress({...})`
+ *   - return value → 'completed' state; thrown error → 'failed' state + retry
+ *
+ * Cancellation contract: between PROGRESS_BATCH files, the importer calls
+ * `isCancelled(job.id)` which reads the Redis sentinel set by
+ * `migrationQueue.cancelJob`. If true, the importer returns cleanly
+ * (the job's final return value carries `cancelled: true`).
  */
 
 const axios = require('axios');
@@ -21,103 +24,85 @@ const { existsSync, mkdirSync, cpSync, statSync, createWriteStream } = require('
 const { join, extname } = require('path');
 const { createHash } = require('crypto');
 const { google } = require('googleapis');
+const { isCancelled } = require('../../queues/migrationQueue');
 
 const PROGRESS_BATCH = 5;
 const PAGE_SIZE = 1000;
 
 class GoogleDriveImporter {
-  constructor(job_id, yp /* shared yp connection */) {
-    this.job_id = job_id;
+  /**
+   * @param {import('bull').Job} job  — Bull job instance
+   * @param {object} yp               — shared yp Mariadb connection
+   */
+  constructor(job, yp) {
+    this.job = job;
+    this.data = job.data || {};
     this.yp = yp;
     this.errors = [];
+    this.processedFiles = 0;
+    this.totalFolders = 0;
+    this.totalFiles = 0;
+    this._cancelled = false;
   }
 
   async run() {
-    const job = await this._loadJob();
-    if (!job) throw new Error(`job ${this.job_id} not found`);
-    if (job.status !== 'queued' && job.status !== 'running') {
-      console.log(`[GDriveImporter] job ${this.job_id} status=${job.status} — skipping`);
-      return;
+    const {
+      user_id,
+      hub_id,
+      nid,
+      source_folder_id = 'root',
+      include_shared_drives = 0,
+      conflict_policy = 'skip',
+    } = this.data;
+
+    if (!user_id || !hub_id || !nid) {
+      throw new Error(`importer: missing required job.data field(s)`);
     }
 
-    await this._setRunning();
-    let token;
-    try {
-      token = await this._ensureFreshToken(job.user_id);
-    } catch (e) {
-      await this._fail(`NEEDS_RECONNECT: ${e.message}`);
-      return;
-    }
+    // Token refresh — throws NEEDS_RECONNECT if no refresh_token / refresh
+    // call fails. Bull marks the job 'failed' and retries with exp backoff;
+    // after attempts exhausted, errors carry the reason.
+    const token = await this._ensureFreshToken(user_id);
 
     // Resolve dest folder via mfs_node_attr in the hub's DB.
-    const hub = toArray(await this.yp.await_proc('entity_exists', job.dest_hub_id))[0];
-    if (!hub || !hub.db_name) {
-      await this._fail(`dest_hub ${job.dest_hub_id} not found`);
-      return;
-    }
+    const hub = toArray(await this.yp.await_proc('entity_exists', hub_id))[0];
+    if (!hub || !hub.db_name) throw new Error(`dest_hub ${hub_id} not found`);
+
     const hubDb = new Mariadb({ name: hub.db_name });
-    let destFolder;
     try {
-      destFolder = await hubDb.await_proc('mfs_node_attr', job.dest_nid);
+      const destFolder = await hubDb.await_proc('mfs_node_attr', nid);
       if (!destFolder || !destFolder.home_dir) {
-        await this._fail(`dest_nid ${job.dest_nid} invalid`);
-        return;
+        throw new Error(`dest_nid ${nid} invalid`);
       }
 
       await this._traverse({
-        folderId: job.source_folder_id || 'root',
+        folderId: source_folder_id,
         destFolder,
         hubDb,
         accessToken: token,
-        includeSharedDrives: !!job.include_shared_drives,
-        conflictPolicy: job.conflict_policy || 'skip',
-        userId: job.user_id,
+        includeSharedDrives: !!include_shared_drives,
+        conflictPolicy: conflict_policy,
+        userId: user_id,
       });
     } finally {
       if (hubDb && hubDb.connection) await hubDb.end().catch(() => {});
     }
 
-    await this._complete();
-  }
-
-  async _loadJob() {
-    return toArray(await this.yp.await_query(
-      `SELECT id, user_id, provider, source_folder_id, dest_hub_id, dest_nid,
-              status, conflict_policy, include_shared_drives
-       FROM migration_jobs WHERE id=?`, this.job_id
-    ))[0];
-  }
-
-  async _setRunning() {
-    await this.yp.await_query(
-      `UPDATE migration_jobs SET status='running', started_at=UNIX_TIMESTAMP() WHERE id=?`,
-      this.job_id
-    );
-  }
-
-  async _fail(reason) {
-    this.errors.push({ code: 'JOB_FAILED', reason });
-    await this.yp.await_query(
-      `UPDATE migration_jobs
-         SET status='failed', errors_json=?, finished_at=UNIX_TIMESTAMP()
-       WHERE id=?`,
-      JSON.stringify(this.errors), this.job_id
-    );
-    console.warn(`[GDriveImporter] job ${this.job_id} failed: ${reason}`);
-  }
-
-  async _complete() {
-    await this.yp.await_query(
-      `UPDATE migration_jobs
-         SET status='done', errors_json=?, finished_at=UNIX_TIMESTAMP()
-       WHERE id=? AND status='running'`,
-      JSON.stringify(this.errors), this.job_id
-    );
+    // Bull will use this object as `job.returnvalue` on the 'completed'
+    // event. The FE reads it via `get_status`.
+    return {
+      ok: true,
+      cancelled: this._cancelled,
+      processed_files: this.processedFiles,
+      total_files: this.totalFiles,
+      total_folders: this.totalFolders,
+      errors: this.errors,
+    };
   }
 
   /**
-   * Same logic as ExtImport.ensureFreshToken but called from the worker
-   * context (no `this.uid`); takes user_id explicitly.
+   * Same logic as ExtImport.ensureFreshToken but takes user_id explicitly
+   * (worker has no `this.uid`).
    */
   async _ensureFreshToken(user_id) {
     const row = toArray(await this.yp.await_query(
@@ -173,34 +158,29 @@ class GoogleDriveImporter {
 
   async _traverse(opts) {
     // Cancellation gate at the start of each folder.
-    const fresh = await this._loadJob();
-    if (!fresh || fresh.status === 'cancelled') return;
+    if (await this._checkCancelled()) return;
 
     let items;
     try {
       items = await this._listFolder(opts.folderId, opts.accessToken, opts.includeSharedDrives);
     } catch (e) {
       this.errors.push({ folder: opts.folderId, code: 'LIST_FAILED', reason: e.message });
-      await this._persistErrors();
+      await this._pushProgress(opts);
       return;
     }
-    // Count this folder + its subfolders as we discover them.
-    await this.yp.await_query(
-      `UPDATE migration_jobs SET total_folders = total_folders + 1 WHERE id=?`,
-      this.job_id
-    );
+    this.totalFolders += 1;
+    this.totalFiles += items.filter((i) => i.mimeType !== 'application/vnd.google-apps.folder').length;
+    await this._pushProgress(opts);
 
     let countSinceUpdate = 0;
     for (const item of items) {
-      // Per-file cancellation poll.
+      // Per-batch cancellation poll.
       if (countSinceUpdate >= PROGRESS_BATCH) {
-        const fresh2 = await this._loadJob();
-        if (!fresh2 || fresh2.status === 'cancelled') return;
+        if (await this._checkCancelled()) return;
         countSinceUpdate = 0;
       }
 
       if (item.mimeType === 'application/vnd.google-apps.folder') {
-        // Subfolder — create in MFS, recurse.
         const subDestFolder = await this._createFolder(item.name, opts.destFolder, opts.hubDb);
         await this._traverse({ ...opts, folderId: item.id, destFolder: subDestFolder });
         continue;
@@ -208,16 +188,48 @@ class GoogleDriveImporter {
 
       try {
         await this._importItem(item, opts);
-        await this.yp.await_query(
-          `UPDATE migration_jobs SET processed_files = processed_files + 1 WHERE id=?`,
-          this.job_id
-        );
+        this.processedFiles += 1;
         countSinceUpdate++;
+        await this._pushProgress(opts, item.name);
       } catch (e) {
         this.errors.push({ file: item.name, code: 'IMPORT_FAILED', reason: e.message });
-        await this._persistErrors();
+        await this._pushProgress(opts);
       }
     }
+  }
+
+  /**
+   * Push the latest counts to Bull. The FE reads `job.progress` via
+   * `get_status` between polls.
+   */
+  async _pushProgress(_opts, currentFilename) {
+    const payload = {
+      processed_files: this.processedFiles,
+      total_files: this.totalFiles,
+      total_folders: this.totalFolders,
+      errors_count: this.errors.length,
+    };
+    if (currentFilename) payload.current_filename = currentFilename;
+    try {
+      await this.job.progress(payload);
+    } catch (e) {
+      // Bull progress write failures are non-fatal — log only.
+      console.warn(`[GDriveImporter] job.progress failed:`, e && e.message);
+    }
+  }
+
+  /**
+   * Returns true if the Redis cancellation sentinel is set OR the job has
+   * been removed (cancellation by `job.remove()` for waiting jobs).
+   */
+  async _checkCancelled() {
+    try {
+      if (await isCancelled(this.job.id)) {
+        this._cancelled = true;
+        return true;
+      }
+    } catch (_) {}
+    return false;
   }
 
   /**
@@ -329,13 +341,6 @@ class GoogleDriveImporter {
       category: 'folder',
       showResults: 1,
     }, {}, { isOutput: 1 });
-  }
-
-  async _persistErrors() {
-    await this.yp.await_query(
-      `UPDATE migration_jobs SET errors_json=? WHERE id=?`,
-      JSON.stringify(this.errors), this.job_id
-    );
   }
 }
 

@@ -16,11 +16,11 @@ console.log(`[GDriveWorker] Starting ${WORKER_NAME}, concurrency=${CONCURRENCY}`
 const yp = new Mariadb({ name: 'yp' });
 
 migrationQueue.process('migrate_google_drive', CONCURRENCY, async (job) => {
-  const { job_id } = job.data;
-  console.log(`[GDriveWorker] Processing job_id=${job_id}`);
-  const importer = new GoogleDriveImporter(job_id, yp);
-  await importer.run();
-  return { ok: true };
+  console.log(`[GDriveWorker] Processing job ${job.id} for user ${job.data.user_id}`);
+  const importer = new GoogleDriveImporter(job, yp);
+  // run() returns the summary object; Bull stores it in job.returnvalue
+  // and emits the 'completed' event with it.
+  return await importer.run();
 });
 
 process.on('SIGTERM', async () => {
