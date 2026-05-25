@@ -1,4 +1,7 @@
 {
+  "modules": {
+    "private": "service/private/google_drive"
+  },
   "services": {
     "has_drive_scope": {
       "doc": "Returns { ok: true } when the user already has an oauth_accounts row with drive.readonly scope and a refresh_token.",
