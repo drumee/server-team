@@ -124,7 +124,7 @@ class __private_drumate extends Entity {
       return;
     }
 
-    const profile = this.user.profile() || this.parseJSON(this.user.get(Attr.profile)) || {};
+    const profile = this.parseJSON(this.user.get(Attr.profile)) || {};
     const passwordSet = profile.password_set;
     const usePassword = passwordSet === undefined || parseInt(passwordSet) === 1;
 
@@ -681,7 +681,7 @@ class __private_drumate extends Entity {
    * backward compatibility with legacy users.
    */
   async delete_account() {
-    const profile = this.user.profile() || this.parseJSON(this.user.get(Attr.profile)) || {};
+    const profile = this.parseJSON(this.user.get(Attr.profile)) || {};
     const passwordSet = profile.password_set;
     const usePassword = passwordSet === undefined || parseInt(passwordSet) === 1;
 
@@ -733,7 +733,7 @@ class __private_drumate extends Entity {
   async unlink_oauth() {
     const provider = this.input.need('provider');
 
-    const profile = this.user.profile() || this.parseJSON(this.user.get(Attr.profile)) || {};
+    const profile = this.parseJSON(this.user.get(Attr.profile)) || {};
     const passwordSet = profile.password_set;
     const usePassword = passwordSet === undefined || parseInt(passwordSet) === 1;
 
@@ -782,7 +782,7 @@ class __private_drumate extends Entity {
    * way. Refuses if password_set=1 already (use change_password instead).
    */
   async set_initial_password() {
-    const profile = this.user.profile() || this.parseJSON(this.user.get(Attr.profile)) || {};
+    const profile = this.parseJSON(this.user.get(Attr.profile)) || {};
     if (parseInt(profile.password_set) === 1) {
       this.output.data({ error: "ALREADY_HAS_PASSWORD" });
       return;
