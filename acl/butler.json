@@ -465,6 +465,14 @@
       }
     },
 
+    "google_drive_callback": {
+      "doc": "Handle Google Drive OAuth elevation callback. Exchanges the auth code for an access_token + refresh_token with drive.readonly scope and UPDATEs the existing oauth_accounts row. Returns a self-closing HTML page that postMessages the opener.",
+      "scope": "hub",
+      "permission": {
+        "src": "anonymous"
+      }
+    },
+
     "b2b_signup_company": {
       "doc": "B2B signup step 1: Collect company information. First step in business account registration flow.",
       "scope": "hub",

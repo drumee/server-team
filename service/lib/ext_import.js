@@ -35,6 +35,68 @@ class ExtImport extends Mfs {
   }
 
   /**
+   * Read the current access token; if it's expired (or about to be — 60s
+   * safety window) refresh it via the stored refresh_token and persist the
+   * new token + expiry back to oauth_accounts.
+   *
+   * Throws `NEEDS_RECONNECT` if there's no refresh_token (i.e. the row was
+   * created by sign-in only, before the elevated scope flow) — caller is
+   * expected to surface this to the FE so the user can re-authorize.
+   *
+   * @param {string} provider — 'google' | 'dropbox' | 'onedrive'
+   * @returns {Promise<string>} fresh access_token
+   */
+  async ensureFreshToken(provider) {
+    if (!this.uid) throw new Error('User is not authenticated.');
+    const row = toArray(await this.yp.await_query(
+      'SELECT access_token, refresh_token, expires_at, scope FROM oauth_accounts WHERE user_id=? AND provider=?',
+      this.uid, provider
+    ))[0];
+    if (!row) throw new Error('NEEDS_RECONNECT');
+
+    const now = Math.floor(Date.now() / 1000);
+    const SAFETY = 60;
+    // expires_at NULL = unknown (legacy row) → force refresh if possible.
+    if (row.expires_at && row.expires_at - SAFETY > now) {
+      return row.access_token;
+    }
+    if (!row.refresh_token) throw new Error('NEEDS_RECONNECT');
+
+    // Provider-specific refresh. Other providers can be added when needed.
+    if (provider !== 'google') {
+      throw new Error(`Refresh not implemented for provider=${provider}`);
+    }
+    const { google } = require('googleapis');
+    const { Cache } = require('@drumee/server-essentials');
+    const oauth2 = new google.auth.OAuth2(
+      Cache.getSysConf('google_client_id'),
+      Cache.getSysConf('google_client_secret')
+    );
+    oauth2.setCredentials({ refresh_token: row.refresh_token });
+
+    let credentials;
+    try {
+      const res = await oauth2.refreshAccessToken();
+      credentials = res.credentials;
+    } catch (e) {
+      this.warn(`[ext_import] Refresh failed for user=${this.uid} provider=${provider}:`, e.message);
+      throw new Error('NEEDS_RECONNECT');
+    }
+    if (!credentials || !credentials.access_token) {
+      throw new Error('NEEDS_RECONNECT');
+    }
+    const newExpiresAt = credentials.expiry_date
+      ? Math.floor(credentials.expiry_date / 1000)
+      : Math.floor(Date.now() / 1000) + 3500;
+
+    await this.yp.await_query(
+      'UPDATE oauth_accounts SET access_token=?, expires_at=?, mtime=UNIX_TIMESTAMP() WHERE user_id=? AND provider=?',
+      credentials.access_token, newExpiresAt, this.uid, provider
+    );
+    return credentials.access_token;
+  }
+
+  /**
    * Import file from external URL to Drumee MFS
    * @param {string} url - Download URL
    * @param {string} filename - Original filename

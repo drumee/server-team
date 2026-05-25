@@ -758,6 +758,107 @@ class __butler extends Mfs {
       "/data",
     ]);
   }
+
+  /**
+   * Public OAuth callback for the Drive-scope elevation flow initiated by
+   * `google_drive.connect`. Updates the user's existing oauth_accounts
+   * row with the new access_token + refresh_token + scope + expires_at,
+   * then returns a small HTML page that posts a "gdrive-connected"
+   * message to the opener window before closing.
+   */
+  async google_drive_callback() {
+    const code = this.input.use('code');
+    const state = this.input.use('state');
+    if (!code || !state) {
+      return this._closingPage(false, 'missing_code_or_state');
+    }
+    let payload;
+    try {
+      const raw = await this.yp.await_proc('get_redirect_state', state);
+      const rawStr = (raw && raw.data) || raw;
+      payload = typeof rawStr === 'string' ? JSON.parse(rawStr) : rawStr;
+    } catch (e) {
+      this.warn('[google_drive_callback] state lookup failed:', e && e.message);
+      return this._closingPage(false, 'invalid_state');
+    }
+    if (!payload || !payload.uid || payload.intent !== 'gdrive_migrate') {
+      return this._closingPage(false, 'state_mismatch');
+    }
+
+    const { google } = require('googleapis');
+    const { Cache } = require('@drumee/server-essentials');
+    const client_id = Cache.getSysConf('google_client_id');
+    const client_secret = Cache.getSysConf('google_client_secret');
+    const redirect_uri = this.input.servicepath({ service: 'butler.google_drive_callback' });
+    const oauth2 = new google.auth.OAuth2(client_id, client_secret, redirect_uri);
+
+    let tokens;
+    try {
+      const res = await oauth2.getToken(code);
+      tokens = res.tokens;
+    } catch (e) {
+      this.warn('[google_drive_callback] exchange failed:', e && e.message);
+      return this._closingPage(false, 'exchange_failed');
+    }
+    if (!tokens || !tokens.access_token) {
+      return this._closingPage(false, 'no_access_token');
+    }
+
+    const scope = tokens.scope || '';
+    const expiresAt = tokens.expiry_date
+      ? Math.floor(tokens.expiry_date / 1000)
+      : Math.floor(Date.now() / 1000) + 3500;
+
+    // Build the UPDATE so we only overwrite refresh_token when Google
+    // actually returned one (prompt=consent should always force one, but
+    // be defensive — don't clobber a previously-stored refresh_token).
+    if (tokens.refresh_token) {
+      await this.yp.await_query(
+        `UPDATE oauth_accounts
+           SET access_token=?, refresh_token=?, scope=?, expires_at=?, mtime=UNIX_TIMESTAMP()
+         WHERE user_id=? AND provider='google'`,
+        tokens.access_token, tokens.refresh_token, scope, expiresAt, payload.uid
+      );
+    } else {
+      await this.yp.await_query(
+        `UPDATE oauth_accounts
+           SET access_token=?, scope=?, expires_at=?, mtime=UNIX_TIMESTAMP()
+         WHERE user_id=? AND provider='google'`,
+        tokens.access_token, scope, expiresAt, payload.uid
+      );
+    }
+
+    return this._closingPage(true);
+  }
+
+  /**
+   * Minimal HTML that posts a status message to the opener window and
+   * closes itself. The FE popup listens for `message` events filtered
+   * by `type === 'gdrive-connected'`.
+   */
+  _closingPage(ok, reason) {
+    const reasonJson = JSON.stringify(reason || null);
+    const successMsg = "'Connected. You can close this window.'";
+    const failMsg = "'Connection failed: ' + " + reasonJson;
+    const body = `<!doctype html><html><body>
+<script>
+try {
+  if (window.opener && !window.opener.closed) {
+    window.opener.postMessage({ type: 'gdrive-connected', ok: ${ok ? 'true' : 'false'}, reason: ${reasonJson} }, '*');
+  }
+} catch (e) {}
+window.close();
+document.body.innerText = ${ok ? successMsg : failMsg};
+</script>
+</body></html>`;
+    if (typeof this.output.html === 'function') {
+      this.output.html(body);
+    } else {
+      // Fallback: emit raw with explicit Content-Type. Adjust if codebase
+      // pattern differs (search for `text/html` to confirm).
+      this.output.data({ html: body, content_type: 'text/html' });
+    }
+  }
 }
 
 module.exports = __butler;
