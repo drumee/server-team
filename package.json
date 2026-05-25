@@ -18,7 +18,7 @@
   "dependencies": {
     "@drumee/schemas-utils": "^1.0.0",
     "@drumee/server-core": "^1.1.69",
-    "@drumee/server-essentials": "^1.2.42",
+    "@drumee/server-essentials": "^1.2.43",
     "@drumee/ui-core": "^1.1.41",
     "@hyzyla/pdfium": "^2.1.9",
     "accept-language": "^3.0.18",
@@ -58,7 +58,6 @@
     "jwks-rsa": "^3.2.0",
     "keys": "^0.1.2",
     "lodash": "^4.17.21",
-    "mariadb": "3.4.5",
     "md5": "^2.3.0",
     "module_name": "^1.0.0",
     "moment": "^2.27.0",

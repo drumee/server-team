@@ -418,7 +418,7 @@ class __private_hub extends Hub {
         } catch (_) { meta = {}; }
       }
       const firstname = meta.from_firstname || r.inviter_firstname || "";
-      const lastname  = meta.from_lastname  || r.inviter_lastname  || "";
+      const lastname = meta.from_lastname || r.inviter_lastname || "";
       const fullname =
         meta.from_fullname ||
         `${firstname} ${lastname}`.trim() ||
@@ -769,7 +769,7 @@ class __private_hub extends Hub {
     // (errors are routed to the handler). Inspect `error` so an SMTP-time
     // rejection (e.g. unknown mailbox -> 550) surfaces as a failed invitee
     // instead of a silent status:"ok".
-    const result = await msg.send({ html });
+    const result = msg.dispatch({ html });
     if (result && result.error) {
       throw new Error(`Email delivery to ${recipient} failed: ${result.error}`);
     }
@@ -809,20 +809,20 @@ class __private_hub extends Hub {
   async invite_with_roles() {
     let users = this.input.need(Attr.users);
     let assignments = this.input.need('assignments');
- 
+
     users = toArray(users);
     assignments = toArray(assignments);
- 
+
     if (isEmpty(users) || isEmpty(assignments)) {
       this.output.data({ success: false, results: [] });
       return;
     }
- 
+
     const username = this.user.get('fullname');
     const lang = this.user.language() || this.input.app_language();
     const { domain_id } = this.user.toJSON();
     const expiry = 0; // No expiry option in UI
- 
+
     // Inviter's contact DB — used for my_contact_exists lookups
     const contact_db = await this.yp.await_func('get_db_name', this.uid);
     if (!contact_db) {
@@ -831,40 +831,40 @@ class __private_hub extends Hub {
       return;
     }
     const contact_proc = `${contact_db}.my_contact_exists`;
- 
+
     const results = [];
- 
+
     for (const assignment of assignments) {
       const { hub_id, privilege } = assignment;
       if (!hub_id || privilege == null) {
         this.warn('[hub] invite_with_roles: skipping invalid assignment', assignment);
         continue;
       }
- 
+
       // Resolve target hub's DB — explicit db_name, no forward_proc
       const hub_db = await this.yp.await_func('get_db_name', hub_id);
       if (!hub_db) {
         this.warn('[hub] invite_with_roles: no db found for hub_id', hub_id);
         continue;
       }
- 
+
       // Hub display name for notification message
       const hubInfo = await this.yp.await_proc('get_hub', hub_id);
       const hubname = (hubInfo && (hubInfo.hubname || hubInfo.name)) || hub_id;
       const msg = Cache.message('_x_add_you_to_team', lang).format(username, hubname);
- 
+
       // mfs_home needed for chat_upload_id permission grant
       const mfs_home = await this.yp.await_proc(`${hub_db}.mfs_home`);
- 
+
       const members = []; // UIDs to add immediately
       const rows = []; // Results from add_member (for WebSocket notify)
- 
+
       // Resolve each user entity
       for (const entity of users) {
         try {
           // 1. Check inviter's contact list
           const contact = await this.yp.await_proc(contact_proc, 'entity', entity, '', '');
- 
+
           if (!isEmpty(contact)) {
             if (contact.status === 'active') {
               // Known active contact → add immediately
@@ -885,12 +885,12 @@ class __private_hub extends Hub {
             } catch (e) {
               this.warn('[hub] invite_with_roles: drumate_exists failed for', entity, e);
             }
- 
+
             const sameDomain =
               drumate &&
               drumate.domain_id != null &&
               domain_id === drumate.domain_id;
- 
+
             if (sameDomain) {
               // Exists on same domain → add immediately
               members.push(drumate.id);
@@ -900,14 +900,14 @@ class __private_hub extends Hub {
                 'yp_add_pending_invitation',
                 hub_id, expiry, privilege, entity
               );
- 
+
               // Only send email if entity looks like an email address
               const isEmail = typeof entity === 'string' && entity.indexOf('@') !== -1;
               if (isEmail) {
                 try {
                   const ContactPrivate = require('./contact');
                   const contactSvc = new ContactPrivate({
-                    session:    this.session,
+                    session: this.session,
                     permission: this.permission || { scope: 'hub' },
                   });
                   contactSvc.db = {
@@ -915,13 +915,13 @@ class __private_hub extends Hub {
                       this.yp.await_proc(`${contact_db}.${proc}`, ...args),
                     end: () => Promise.resolve(),
                   };
-                  const origEmail   = this.input.use(Attr.email);
+                  const origEmail = this.input.use(Attr.email);
                   const origMessage = this.input.use(Attr.message);
                   this.input.set(Attr.email, entity);
                   this.input.set(Attr.message, msg);
                   this.input.set('_contact_db_name', contact_db);
                   await contactSvc.invite();
-                  if (origEmail   !== undefined) this.input.set(Attr.email, origEmail);
+                  if (origEmail !== undefined) this.input.set(Attr.email, origEmail);
                   if (origMessage !== undefined) this.input.set(Attr.message, origMessage);
                 } catch (err) {
                   this.warn(
@@ -936,20 +936,20 @@ class __private_hub extends Hub {
           this.warn('[hub] invite_with_roles: failed for entity', entity, err);
         }
       }
- 
+
       // Add confirmed members
       for (const uid of members) {
         // Grant membership in hub DB
         const r = await this.yp.await_proc(`${hub_db}.add_member`, uid, privilege, expiry);
         if (!r || !r.db_name) continue;
         rows.push(r);
- 
+
         // Grant resource-level permission on hub root
         await this.yp.await_proc(
           `${hub_db}.permission_grant`,
           '*', uid, expiry, privilege, 'system', msg
         );
- 
+
         // Grant chat upload permission if chat folder exists
         if (mfs_home && mfs_home.chat_upload_id) {
           await this.yp.await_proc(
@@ -963,10 +963,10 @@ class __private_hub extends Hub {
           );
         }
       }
- 
+
       // WebSocket notify each successfully added member
       for (const recipient of toArray(rows)) {
-        const hub     = await this.yp.await_proc(
+        const hub = await this.yp.await_proc(
           `${recipient.db_name}.mfs_access_node`,
           recipient.id,
           hub_id
@@ -978,10 +978,10 @@ class __private_hub extends Hub {
         const sockets = await this.yp.await_proc('user_sockets', recipient.id);
         await RedisStore.sendData(this.payload(hub), sockets);
       }
- 
+
       results.push({ hub_id, added: members.length });
     }
- 
+
     this.output.data({ success: true, results });
   }
 
@@ -997,7 +997,7 @@ class __private_hub extends Hub {
     }
     // let db_name = this.user.get(Attr.db_name);
     let old_node = this.granted_node(); //await this.yp.await_proc(`${db_name}.mfs_access_node`, this.uid, hub_id);
-    let outout = { ...old_node, uid: this.uid, nid:hub_id, id: hub_id, hub_id }
+    let outout = { ...old_node, uid: this.uid, nid: hub_id, id: hub_id, hub_id }
 
     // Write to deleter's drumate — hub DB is about to be dropped.
     const hub_name = data.name || data.filename || hub_id;

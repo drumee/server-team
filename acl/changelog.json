@@ -4,7 +4,7 @@
       "doc": "Read changelog entries for the current user from the changelog_read stored procedure. All filter parameters are optional; any falsy value is stripped before the procedure call. The current user ID is injected automatically from the session.",
       "scope": "hub",
       "permission": {
-        "src": "owner"
+        "src": "read"
       },
       "params": {
         "last": {
