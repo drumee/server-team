@@ -227,7 +227,10 @@ async function getStats() {
   }
 }
 
+let closed = false;
 async function close() {
+  if (closed) return;
+  closed = true;
   try {
     await migrationQueue.close();
     console.log('[MigrationQueue] Closed');
@@ -239,12 +242,14 @@ async function close() {
 // Graceful Shutdown //
 
 process.on('SIGTERM', async () => {
-  console.log('[MigrationQueue] SIGTERM — closing');
+  console.log('[MigrationQueue] Received SIGTERM, closing gracefully...');
   await close();
+  process.exit(0);
 });
 process.on('SIGINT', async () => {
-  console.log('[MigrationQueue] SIGINT — closing');
+  console.log('[MigrationQueue] Received SIGINT, closing gracefully...');
   await close();
+  process.exit(0);
 });
 
 // Exports //
