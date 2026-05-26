@@ -46,10 +46,15 @@ class GoogleDrive extends ExtImport {
   }
 
   /**
-   * Mint the OAuth URL the FE pops open. Scope = drive.readonly, prompt =
-   * consent (force refresh_token on re-grant), state carries `uid` + `sid`
-   * so `butler.google_drive_callback` knows which oauth_accounts row to
-   * UPDATE.
+   * Mint the OAuth URL the FE pops open. Scope = drive.readonly.
+   *   - prompt=select_account+consent forces Google to show the account
+   *     chooser AND the consent screen on every call. Without
+   *     select_account, Google reuses the previously-authorized account
+   *     and the user can't switch Drives without first disconnecting
+   *     (which is blocked when Google is their only login). With
+   *     consent, Google always emits a refresh_token even on re-grant.
+   *   - state carries `uid` + `sid` so `butler.google_drive_callback`
+   *     knows which oauth_accounts row to UPDATE.
    */
   async connect() {
     const oauth2 = this._oauthClient();
@@ -64,7 +69,7 @@ class GoogleDrive extends ExtImport {
     const auth_url = oauth2.generateAuthUrl({
       access_type: 'offline',
       scope: [DRIVE_SCOPE],
-      prompt: 'consent',
+      prompt: 'select_account consent',
       state,
     });
     this.output.data({ auth_url });
