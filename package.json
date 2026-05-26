@@ -17,7 +17,7 @@
   },
   "dependencies": {
     "@drumee/schemas-utils": "^1.0.0",
-    "@drumee/server-core": "^1.1.69",
+    "@drumee/server-core": "^1.1.76",
     "@drumee/server-essentials": "^1.2.44",
     "@drumee/ui-core": "^1.1.41",
     "@hyzyla/pdfium": "^2.1.9",
