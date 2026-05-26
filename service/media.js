@@ -1896,7 +1896,7 @@ class __media extends Mfs {
     let filepath;
     let p = this.input.need("p");
     const e = this.input.use("e");
-    if (p.match(/(\/+)$/)) {
+    if (/(\/+)$/.test(p)) {
       p = p.replace(/(\/+)$/, "");
       filepath = `/${p}`;
     } else if (!isEmpty(e)) {
