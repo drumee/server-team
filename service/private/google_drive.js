@@ -13,7 +13,7 @@
 //   cancel                   → { ok, state, sentinel?, removed?, terminal? }
 //   dismiss_post_onboarding  → { ok } sets profile.tools_migration_skipped.google_drive=1
 
-const { Attr, Cache, toArray } = require('@drumee/server-essentials');
+const { Attr, Cache, toArray, sysEnv } = require('@drumee/server-essentials');
 const { google } = require('googleapis');
 const ExtImport = require('../lib/ext_import');
 const {
@@ -206,11 +206,19 @@ class GoogleDrive extends ExtImport {
   /**
    * Shared OAuth client factory — used by `connect()` and by butler's
    * google_drive_callback.
+   *
+   * input.servicepath() destructures `instance` from sysEnv() but
+   * sysEnv only exposes `endpoint_name`, so the URL ends up with
+   * "undefined" and Google rejects with redirect_uri_mismatch.
+   * Build the URL the same way loby/service/google.js does (direct
+   * concatenation from sysEnv values), which is the pattern that
+   * works for the existing google-login flow.
    */
   _oauthClient() {
     const client_id = Cache.getSysConf('google_client_id');
     const client_secret = Cache.getSysConf('google_client_secret');
-    const redirect_uri = this.input.servicepath({ service: 'butler.google_drive_callback' });
+    const { main_domain, svc_location } = sysEnv();
+    const redirect_uri = `https://${main_domain}${svc_location}/butler.google_drive_callback?`;
     return new google.auth.OAuth2(client_id, client_secret, redirect_uri);
   }
 }

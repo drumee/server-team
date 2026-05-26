@@ -786,10 +786,15 @@ class __butler extends Mfs {
     }
 
     const { google } = require('googleapis');
-    const { Cache } = require('@drumee/server-essentials');
+    const { Cache, sysEnv } = require('@drumee/server-essentials');
     const client_id = Cache.getSysConf('google_client_id');
     const client_secret = Cache.getSysConf('google_client_secret');
-    const redirect_uri = this.input.servicepath({ service: 'butler.google_drive_callback' });
+    // Must match google_drive._oauthClient() — Google verifies the
+    // redirect_uri against the value used when generateAuthUrl was
+    // called. servicepath() yields `/undefined/svc/` because sysEnv
+    // doesn't expose `instance`, so build it the same way loby does.
+    const { main_domain, svc_location } = sysEnv();
+    const redirect_uri = `https://${main_domain}${svc_location}/butler.google_drive_callback?`;
     const oauth2 = new google.auth.OAuth2(client_id, client_secret, redirect_uri);
 
     let tokens;
