@@ -125,8 +125,7 @@ class __private_drumate extends Entity {
     }
 
     const profile = this.parseJSON(this.user.get(Attr.profile)) || {};
-    const passwordSet = profile.password_set;
-    const usePassword = passwordSet === undefined || parseInt(passwordSet) === 1;
+    const usePassword = await this._resolveUsePassword(profile);
 
     if (usePassword) {
       const password = this.input.need(Attr.password);
@@ -682,8 +681,7 @@ class __private_drumate extends Entity {
    */
   async delete_account() {
     const profile = this.parseJSON(this.user.get(Attr.profile)) || {};
-    const passwordSet = profile.password_set;
-    const usePassword = passwordSet === undefined || parseInt(passwordSet) === 1;
+    const usePassword = await this._resolveUsePassword(profile);
 
     if (usePassword) {
       const password = this.input.use(Attr.password);
@@ -730,12 +728,30 @@ class __private_drumate extends Entity {
    *
    * Sensitive — gated by the same password-or-OTP fork as delete_account.
    */
+  /**
+   * Mirror of settings_main._reconcilePasswordSet on the FE.
+   * For legacy accounts where profile.password_set is unset, fall back
+   * to "has at least one oauth row" → password_set=0 (OTP path).
+   * Otherwise the FE picks OTP but the server demands a password.
+   */
+  async _resolveUsePassword(profile) {
+    let passwordSet = profile && profile.password_set;
+    if (passwordSet === undefined || passwordSet === null) {
+      const row = await this.yp.await_query(
+        'SELECT COUNT(*) AS n FROM oauth_accounts WHERE user_id = ?',
+        this.uid
+      );
+      const hasOauth = ((row && row.n) || 0) > 0;
+      passwordSet = hasOauth ? 0 : 1;
+    }
+    return parseInt(passwordSet) === 1;
+  }
+
   async unlink_oauth() {
     const provider = this.input.need('provider');
 
     const profile = this.parseJSON(this.user.get(Attr.profile)) || {};
-    const passwordSet = profile.password_set;
-    const usePassword = passwordSet === undefined || parseInt(passwordSet) === 1;
+    const usePassword = await this._resolveUsePassword(profile);
 
     if (usePassword) {
       const password = this.input.need(Attr.password);
