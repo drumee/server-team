@@ -750,19 +750,51 @@ class __private_drumate extends Entity {
   async unlink_oauth() {
     const provider = this.input.need('provider');
 
-    const profile = this.parseJSON(this.user.get(Attr.profile)) || {};
-    const usePassword = await this._resolveUsePassword(profile);
+    // Accept EITHER credential — FE picks which to ask based on whether
+    // 2FA is enabled and whether the user has a password. The server
+    // doesn't trust profile.password_set (it can drift out of sync with
+    // the actual fingerprint column) — it just verifies whichever
+    // credential is sent.
+    const password = this.input.use(Attr.password);
+    const secret = this.input.use(Attr.secret);
+    const code = this.input.use(Attr.code);
 
-    if (usePassword) {
-      const password = this.input.need(Attr.password);
+    let userHasPassword = false;
+
+    if (password) {
       const ok = await this.yp.await_proc('check_password_next', this.uid, password);
       if (isEmpty(ok)) {
         this.output.data({ error: "WRONG_CREDENTIALS" });
         return;
       }
+      userHasPassword = true;
+      // Self-heal: successful password verification proves the user has
+      // a password set, so reconcile the flag for future step-up flows.
+      const profile = this.parseJSON(this.user.get(Attr.profile)) || {};
+      if (parseInt(profile.password_set) !== 1) {
+        try {
+          await this.yp.call_proc('drumate_update_profile', this.uid, { password_set: 1 });
+        } catch (e) {
+          this.warn('unlink_oauth: failed to self-heal password_set', e);
+        }
+      }
+    } else if (secret && code) {
+      const otp = await this.yp.await_proc("secret_check", this.uid, secret, code);
+      if (!otp || otp.code != code) {
+        this.output.data({ error: "INVALID_CODE" });
+        return;
+      }
+      await this.yp.await_proc("secret_clear", this.uid, "all");
+      const profile = this.parseJSON(this.user.get(Attr.profile)) || {};
+      userHasPassword = parseInt(profile.password_set) === 1;
     } else {
-      // OAuth-only user trying to unlink — make sure they're not about
-      // to lock themselves out. Count remaining links AFTER the unlink.
+      this.output.data({ error: "VERIFICATION_REQUIRED" });
+      return;
+    }
+
+    // Lockout guard: only block if the user genuinely has no other way
+    // back in. With password set, removing all oauth is safe.
+    if (!userHasPassword) {
       const remaining = await this.yp.await_query(
         'SELECT COUNT(*) AS n FROM oauth_accounts WHERE user_id = ? AND provider != ?',
         this.uid, provider
@@ -772,14 +804,6 @@ class __private_drumate extends Entity {
         this.output.data({ error: "LAST_AUTH_METHOD" });
         return;
       }
-      const secret = this.input.need(Attr.secret);
-      const code = this.input.need(Attr.code);
-      const otp = await this.yp.await_proc("secret_check", this.uid, secret, code);
-      if (!otp || otp.code != code) {
-        this.output.data({ error: "INVALID_CODE" });
-        return;
-      }
-      await this.yp.await_proc("secret_clear", this.uid, "all");
     }
 
     await this.yp.await_query(
