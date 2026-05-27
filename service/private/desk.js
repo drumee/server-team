@@ -328,12 +328,8 @@ class __private_desk extends Media {
     let messageResults = [];
     try {
       const hubs = toArray(
-        await this.yp.await_query(
-          `SELECT id, db_name FROM entity
-           WHERE owner_id = ? AND type = 'hub' AND status = 'active'`,
-          this.uid
-        )
-      );
+        await this.yp.await_proc('hub_list_by_owner', this.uid)
+      ).filter(h => h.status === 'active');
  
       for (const hub of hubs) {
         if (!hub.db_name) continue;
