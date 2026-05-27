@@ -1264,6 +1264,142 @@ class __private_channel extends Entity {
     const data = await this.db.await_proc('channel_list_by_file', file_nid);
     this.output.list(data);
   }
+
+  /**
+   * Get all channel messages in the current hub that either attach the file OR
+   * mention it inline as `[@Filename](mention:hub_id:nid)` in the message body.
+   * Powers the "See Chat Threads" feature with mention indexing.
+   * Params: file_nid (required) — media node ID to find in attachment array OR mention pattern.
+   */
+  async list_thread_by_file() {
+    const file_nid = this.input.need('file_nid');
+    const hub_id = this.hub.get(Attr.id);
+    const pattern = `mention:${hub_id}:${file_nid}`;
+
+    const attachHits = await this.db.await_proc('channel_list_by_file', file_nid);
+    let mentionHits = [];
+    try {
+      mentionHits = await this.db.await_proc('channel_search', pattern);
+    } catch (e) {
+      console.warn('[list_thread_by_file] channel_search failed (continuing with attach-only):', e && e.message);
+    }
+
+    const attachArr = toArray(attachHits);
+    const mentionArr = toArray(mentionHits);
+
+    // channel_search returns a minimal projection {result_type, id, author_id,
+    // ctime, preview}. Fetch full rows for mention-only hits so chat-item can
+    // render attachment, mention_ids, thread_id, status, metadata. Skip ids
+    // already present in attachHits to avoid duplicate work.
+    const attachIds = new Set(
+      attachArr.map(r => r && r.message_id).filter(Boolean).map(String)
+    );
+    const mentionOnlyIds = [];
+    for (const r of mentionArr) {
+      const mid = r && r.id != null ? String(r.id) : null;
+      if (mid && !attachIds.has(mid)) mentionOnlyIds.push(mid);
+    }
+
+    let mentionRows = [];
+    for (const mid of mentionOnlyIds) {
+      try {
+        const full = await this.db.await_proc('channel_get', mid);
+        const row = Array.isArray(full) ? full[0] : full;
+        if (row && row.message_id) {
+          mentionRows.push(row);
+          continue;
+        }
+        // Fallback: synthesize minimal shape from channel_search projection
+        const src = mentionArr.find(r => String(r.id) === mid) || {};
+        mentionRows.push({
+          sys_id: 0,
+          author_id: src.author_id || '',
+          message: src.preview || '',
+          message_id: mid,
+          thread_id: null,
+          attachment: '[]',
+          is_forward: 0,
+          mention_ids: [],
+          status: 'active',
+          ctime: src.ctime || 0,
+          metadata: null,
+        });
+      } catch (e) {
+        console.warn('[list_thread_by_file] channel_get failed for', mid, e && e.message);
+      }
+    }
+
+    const byId = new Map();
+    for (const row of [...attachArr, ...mentionRows]) {
+      const key = row && row.message_id;
+      if (key != null && !byId.has(String(key))) {
+        byId.set(String(key), row);
+      }
+    }
+    const merged = Array.from(byId.values())
+      .sort((a, b) => (b.ctime || 0) - (a.ctime || 0));
+
+    // Enrich each row to match channel.messages contract:
+    // - message.entity = shareroom_contact_get(author_id) — kept as-is
+    // - message.firstname/lastname/surname/fullname from drumate_get(author_id)
+    //   because channel_get (unlike channel_list_messages) does NOT JOIN the
+    //   user table, so chat-item's `m.firstname || ...` would otherwise miss.
+    const contactCache = {};
+    const profileCache = {};
+    for (const message of merged) {
+      message.entity = { id: this.uid };
+      if (message.author_id && message.author_id !== this.uid) {
+        const key = message.author_id;
+        if (contactCache[key]) {
+          message.entity = contactCache[key];
+        } else {
+          try {
+            message.entity = await this.yp.await_proc(
+              'forward_proc', this.uid, 'shareroom_contact_get',
+              `'${message.author_id}'`
+            );
+            contactCache[key] = message.entity;
+          } catch (e) {
+            console.warn('[list_thread_by_file] shareroom_contact_get failed for',
+              message.author_id, e && e.message);
+          }
+        }
+      }
+      // Hydrate firstname/lastname directly on the message row from drumate_get.
+      if (message.author_id) {
+        const key = message.author_id;
+        let profile = profileCache[key];
+        if (!profile) {
+          try {
+            const raw = await this.yp.await_proc('drumate_get', message.author_id);
+            profile = Array.isArray(raw) ? (raw[0] || {}) : (raw || {});
+            profileCache[key] = profile;
+          } catch (e) {
+            console.warn('[list_thread_by_file] drumate_get failed for',
+              message.author_id, e && e.message);
+            profile = {};
+            profileCache[key] = profile;
+          }
+        }
+        if (!message.firstname && profile.firstname) message.firstname = profile.firstname;
+        if (!message.lastname && profile.lastname) message.lastname = profile.lastname;
+        if (!message.surname && profile.surname) message.surname = profile.surname;
+        if (!message.fullname && profile.fullname) message.fullname = profile.fullname;
+        if (!message.email && profile.email) message.email = profile.email;
+      }
+
+      if (!isEmpty(message.thread_id)) {
+        try {
+          message.thread = await this.threadInfo(message.thread_id, hub_id);
+        } catch (e) {
+          console.warn('[list_thread_by_file] threadInfo failed for',
+            message.thread_id, e && e.message);
+        }
+      }
+    }
+
+    this.output.list(merged);
+  }
 }
 
 

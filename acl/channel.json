@@ -813,6 +813,40 @@
           }
         }
       }
+    },
+    "list_thread_by_file": {
+      "doc": "Get all channel messages in the current hub that either attach the file OR mention it inline as [@Filename](mention:hub_id:nid) in the message body. Powers See Chat Threads with mention indexing. Server merges channel_list_by_file (attachment hits) and channel_search (mention pattern hits), dedupes by message_id, sorts ctime DESC.",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "params": {
+        "file_nid": {
+          "type": "string",
+          "required": true,
+          "doc": "Media node ID to find in attachment array OR mention pattern mention:hub_id:file_nid"
+        }
+      },
+      "returns": {
+        "type": "array",
+        "doc": "Channel messages that attach OR mention the file, deduped by message_id, ordered by ctime DESC",
+        "items": {
+          "type": "object",
+          "properties": {
+            "sys_id": { "type": "number", "doc": "Auto-incremented message sequence ID" },
+            "author_id": { "type": "string", "doc": "UID of the message author" },
+            "message": { "type": "string", "doc": "Message text content" },
+            "message_id": { "type": "string", "doc": "Unique message identifier" },
+            "thread_id": { "type": "string", "doc": "Parent message ID if this is a reply, null otherwise" },
+            "attachment": { "type": "string", "doc": "JSON array of attached file nids" },
+            "is_forward": { "type": "number", "doc": "1 if message is forwarded, 0 otherwise" },
+            "mention_ids": { "type": "array",  "doc": "Array of user IDs mentioned in this message" },
+            "status": { "type": "string", "doc": "Message status: active" },
+            "ctime": { "type": "number", "doc": "Unix timestamp when the message was posted" },
+            "metadata": { "type": "string", "doc": "Additional message metadata JSON, null if not set" }
+          }
+        }
+      }
     }
   },
   "modules": {
