@@ -24,6 +24,30 @@
       },
       "errors": []
     },
+    "typing": {
+      "doc": "Ephemeral typing indicator for a hub channel. Broadcasts the caller's typing state to all other hub participants via WebSocket. Persists nothing.",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "params": {
+        "state": {
+          "type": "number",
+          "required": false,
+          "doc": "Typing state: 1 = typing, 0 = stopped. Defaults to 1."
+        },
+        "socket_id": {
+          "type": "string",
+          "required": true,
+          "doc": "Caller's WebSocket socket ID. Used to exclude the caller from the broadcast recipients."
+        }
+      },
+      "returns": {
+        "type": "object",
+        "doc": "Acknowledgement object { ok: 1 }. The signal itself is delivered via WebSocket broadcast."
+      },
+      "errors": []
+    },
     "acknowledge_ticket": {
       "doc": "Mark a support ticket message as read/acknowledged. Broadcasts the acknowledgement to all support domain members and to the current user's own sockets.",
       "scope": "hub",

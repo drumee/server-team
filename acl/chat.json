@@ -31,6 +31,31 @@
       "errors": []
     },
 
+    "typing": {
+      "doc": "Ephemeral typing indicator for a P2P conversation. Broadcasts the caller's typing state to the peer's WebSocket sessions. Persists nothing.",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "params": {
+        "entity_id": {
+          "type": "string",
+          "required": true,
+          "description": "The peer user ID who should receive the typing signal."
+        },
+        "state": {
+          "type": "number",
+          "required": false,
+          "description": "Typing state: 1 = typing, 0 = stopped. Defaults to 1."
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "Acknowledgement object { ok: 1 }. The signal itself is delivered via WebSocket broadcast."
+      },
+      "errors": []
+    },
+
     "attachment": {
       "doc": "Get attachments for a specific message with pagination. Returns media files attached to a message, with 5 items per page. Each attachment includes full file metadata.",
       "scope": "hub",

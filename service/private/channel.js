@@ -36,6 +36,7 @@ class __private_channel extends Entity {
     this.read = this.read.bind(this);
     this.notify_chat = this.notify_chat.bind(this);
     this.acknowledge = this.acknowledge.bind(this);
+    this.typing = this.typing.bind(this);
     this.bookmark_add = this.bookmark_add.bind(this);
     this.bookmark_remove = this.bookmark_remove.bind(this);
     this.bookmark_list = this.bookmark_list.bind(this);
@@ -629,6 +630,28 @@ class __private_channel extends Entity {
     await RedisStore.sendData(this.payload(data), recipients);
 
     this.output.data(data)
+  }
+
+  /**
+   * Ephemeral typing indicator. Broadcasts the caller's typing state to all
+   * other hub participants over WebSocket. Nothing is persisted.
+   */
+  async typing() {
+    let exclude = this.input.need(Attr.socket_id);
+    if (exclude) exclude = [exclude];
+    let hub_id = this.hub.get(Attr.id);
+    let profile = this.user.get('profile') || {};
+    let data = {
+      author_id: this.uid,
+      uid: this.uid,
+      firstname: this.user.attributes.firstname,
+      lastname: profile.lastname,
+      hub_id,
+      state: this.input.use('state', 1),
+    };
+    let recipients = await this.yp.await_proc('entity_sockets', { exclude, hub_id });
+    await RedisStore.sendData(this.payload(data, { service: "channel.typing" }), recipients);
+    this.output.data({ ok: 1 });
   }
 
   /**

@@ -42,6 +42,29 @@ class privateChat extends Entity {
     this.count_all = this.count_all.bind(this);
     this.attachment = this.attachment.bind(this);
     this.change_status = this.change_status.bind(this);
+    this.typing = this.typing.bind(this);
+  }
+
+  /**
+   * Ephemeral typing indicator. Broadcasts the caller's typing state to the
+   * peer's WebSocket sessions. Nothing is persisted. peer_id in the payload is
+   * the sender's id so the recipient's chat widget matches it against their own
+   * peerId (from their perspective, the typing peer is the sender).
+   */
+  async typing() {
+    let entity_id = this.input.need(Attr.entity_id);
+    if (isEmpty(entity_id)) return this.output.data({ ok: 0 });
+    let profile = this.user.get("profile") || {};
+    let data = {
+      author_id: this.uid,
+      firstname: this.user.get(Attr.firstname),
+      lastname: profile.lastname,
+      peer_id: this.uid,
+      state: this.input.use("state", 1),
+    };
+    let dest = await this.yp.await_proc("user_sockets", entity_id);
+    await RedisStore.sendData(this.payload(data, { service: "chat.typing" }), dest);
+    this.output.data({ ok: 1 });
   }
 
   /**
