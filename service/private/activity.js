@@ -2,7 +2,7 @@
 // Purpose: MFS activity notification service - handle read/unread status
 
 const { Entity } = require('@drumee/server-core');
-const { Attr, toArray } = require('@drumee/server-essentials');
+const { RedisStore, Attr, toArray } = require('@drumee/server-essentials');
 
 class MfsActivity extends Entity {
 
@@ -173,7 +173,7 @@ class MfsActivity extends Entity {
 
     // Query mfs_ack from user's database
     const result = await this.db.await_query(
-      'SELECT user_id, last_read_id, mtime FROM ${userDbName}.mfs_ack WHERE user_id = ?',
+      `SELECT user_id, last_read_id, mtime FROM ${userDbName}.mfs_ack WHERE user_id = ?`,
       this.uid
     );
 
@@ -319,6 +319,10 @@ class MfsActivity extends Entity {
         guest_id: r.guest_id,
         area: r.area,
         tag_id: r.tag_id,
+        author_id: r.author_id,
+        author_firstname: r.author_firstname,
+        author_lastname: r.author_lastname,
+        author_email: r.author_email,
       })),
       ...hubs.map((r) => {
         let meta = {};
