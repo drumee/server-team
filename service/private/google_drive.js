@@ -13,7 +13,7 @@
 //   cancel                   → { ok, state, sentinel?, removed?, terminal? }
 //   dismiss_post_onboarding  → { ok } sets profile.tools_migration_skipped.google_drive=1
 
-const { Attr, Cache, toArray, sysEnv } = require('@drumee/server-essentials');
+const { Attr, Cache, Constants, toArray, sysEnv } = require('@drumee/server-essentials');
 const { google } = require('googleapis');
 const ExtImport = require('../lib/ext_import');
 const {
@@ -87,8 +87,12 @@ class GoogleDrive extends ExtImport {
     const source_folder_id = this.input.use('source_folder_id', 'root');
     const include_shared_drives = this.input.use('include_shared_drives', 0) ? 1 : 0;
     const conflict_policy = this.input.use('conflict_policy', 'skip');
-    if (!['skip', 'overwrite', 'rename'].includes(conflict_policy)) {
-      throw new Error(`invalid conflict_policy: ${conflict_policy}`);
+    // Worker only implements 'skip' today — accepting overwrite/rename would
+    // cause a mid-migration throw (importer.js: 'conflict policy not
+    // implemented yet') and Bull would retry 3× with the same error.
+    // Reject upfront so callers see the failure synchronously.
+    if (conflict_policy !== 'skip') {
+      throw new Error(`unsupported conflict_policy: ${conflict_policy} (only 'skip' implemented)`);
     }
 
     // Refuse if not connected; FE should have called has_drive_scope first
@@ -99,6 +103,18 @@ class GoogleDrive extends ExtImport {
     ))[0];
     if (!scopeRow || !scopeRow.refresh_token || !(scopeRow.scope || '').includes('drive.readonly')) {
       throw new Error('NEEDS_RECONNECT');
+    }
+
+    // Write-privilege gate on the DESTINATION node. ACL (scope=hub,
+    // src=owner) already proves the caller owns `hub_id`, but `nid` can be
+    // any folder inside that hub — including a sub-folder the user only has
+    // read access to. The worker imports with the hub owner's rights, so
+    // without this check a read-only member could write into a restricted
+    // sub-tree. `mfs_access_node` returns the caller's computed privilege.
+    const WRITE = (Constants.permission && Constants.permission.write) || 4;
+    const access = toArray(await this.db.await_proc('mfs_access_node', this.uid, nid))[0];
+    if (!access || ((access.privilege || 0) & WRITE) !== WRITE) {
+      throw new Error('FORBIDDEN: no write access to destination folder');
     }
 
     const job = await addMigration({

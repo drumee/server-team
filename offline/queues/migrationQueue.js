@@ -65,7 +65,11 @@ const migrationQueue = new Queue('drumee:migration', {
     },
     timeout: 30 * 60 * 1000, // 30 min — long-running import
     removeOnComplete: 100,   // keep last 100 for status polling after finish
-    removeOnFail: false,     // keep failures around for retry / debug
+    // Cap retained failures so Redis doesn't grow unbounded. Keep recent
+    // ones (7 days / 200 max) for status polling + debugging; older ones
+    // age out automatically. Fatal errors (NEEDS_RECONNECT, etc.) call
+    // job.discard() in the importer so they don't burn all 3 attempts.
+    removeOnFail: { age: 7 * 24 * 3600, count: 200 },
   },
 });
 

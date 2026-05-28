@@ -781,6 +781,16 @@ class __butler extends Mfs {
       this.warn('[google_drive_callback] state lookup failed:', e && e.message);
       return this._closingPage(false, 'invalid_state');
     }
+    // Single-use: consume the state row immediately so it can't be replayed
+    // (the same `state` token attaching tokens onto a victim uid, or being
+    // re-submitted after the window closed). Delete regardless of whether
+    // the exchange below succeeds — a failed attempt must not leave a
+    // reusable token behind.
+    try {
+      await this.yp.await_query('DELETE FROM yp.redirect_state WHERE id=?', state);
+    } catch (e) {
+      this.warn('[google_drive_callback] state consume failed:', e && e.message);
+    }
     if (!payload || !payload.uid || payload.intent !== 'gdrive_migrate') {
       return this._closingPage(false, 'state_mismatch');
     }
@@ -845,11 +855,16 @@ class __butler extends Mfs {
     const reasonJson = JSON.stringify(reason || null);
     const successMsg = "'Connected. You can close this window.'";
     const failMsg = "'Connection failed: ' + " + reasonJson;
+    // Target the opener with our own origin instead of '*'. The callback
+    // page is served same-origin as the Drumee app (the window that opened
+    // the OAuth popup), so location.origin is the correct, narrowest target
+    // — prevents the connected-status from leaking to any other frame that
+    // happens to be in the opener chain.
     const body = `<!doctype html><html><body>
 <script>
 try {
   if (window.opener && !window.opener.closed) {
-    window.opener.postMessage({ type: 'gdrive-connected', ok: ${ok ? 'true' : 'false'}, reason: ${reasonJson} }, '*');
+    window.opener.postMessage({ type: 'gdrive-connected', ok: ${ok ? 'true' : 'false'}, reason: ${reasonJson} }, window.location.origin);
   }
 } catch (e) {}
 window.close();

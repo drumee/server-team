@@ -24,7 +24,7 @@
         "nid": { "type": "string", "required": true, "description": "Destination folder node id" },
         "source_folder_id": { "type": "string", "required": false, "default": "root" },
         "include_shared_drives": { "type": "integer", "required": false, "default": 0 },
-        "conflict_policy": { "type": "string", "required": false, "default": "skip", "description": "skip | overwrite | rename" }
+        "conflict_policy": { "type": "string", "required": false, "default": "skip", "description": "skip (only policy implemented; overwrite|rename reserved for Phase 2)" }
       },
       "returns": { "type": "object", "properties": { "job_id": { "type": "integer" } } }
     },

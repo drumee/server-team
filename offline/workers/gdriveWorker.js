@@ -35,6 +35,18 @@ async function startWorker() {
 
   yp = new Mariadb({ name: 'yp' });
 
+  // Mariadb's pool connects asynchronously. If a job is already waiting when
+  // we boot, Bull pulls it the instant `process()` registers — and the
+  // importer would query an unconnected handle. Ping first so the pool is
+  // live before we accept work.
+  try {
+    await yp.await_query('SELECT 1');
+  } catch (e) {
+    console.error('[GDriveWorker] yp not ready, retrying once in 2s:', e && e.message);
+    await new Promise((r) => setTimeout(r, 2000));
+    await yp.await_query('SELECT 1'); // throw → crash → pm2 restarts
+  }
+
   migrationQueue.process('migrate_google_drive', CONCURRENCY, processJob);
 
   console.log('[GDriveWorker] Worker started, waiting for jobs...');
