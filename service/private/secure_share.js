@@ -88,8 +88,9 @@ class __secure_share extends Mfs {
   async list() {
     const nid    = this.input.need(Attr.nid);
     const hub_id = this.hub.get(Attr.id);
-    const rows   = await this.yp.await_proc('secure_share_list', hub_id, nid, this.uid);
-    this.output.list(toArray(rows));
+    const rows   = toArray(await this.yp.await_proc('secure_share_list', hub_id, nid, this.uid));
+    const base   = this.input.homepath(this.hub.get(Attr.vhost));
+    this.output.list(rows.map(r => ({ ...r, link: `${base}#/dmz/share/${r.id}` })));
   }
 
   /**
