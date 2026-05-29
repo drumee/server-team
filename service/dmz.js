@@ -187,8 +187,27 @@ class __dmz extends Mfs {
       }
     }
 
-    // Email validation
-    const submittedEmail = (this.input.get(Attr.email) || '').toLowerCase().trim();
+    // Email validation — logged-in Drumee members skip the form if their account
+    // email matches the share (session auth is stronger proof than typing an email)
+    let submittedEmail = (this.input.get(Attr.email) || '').toLowerCase().trim();
+
+    if (!submittedEmail && user.id && ![ID_NOBODY, guest_id].includes(user.id)) {
+      try {
+        const p = typeof user.profile === 'string' ? JSON.parse(user.profile) : (user.profile || {});
+        const accountEmail = (p.email || '').toLowerCase().trim();
+        if (accountEmail) {
+          const recipientCheck = (info.recipient_email || '').toLowerCase().trim();
+          let autoMatch = (accountEmail === recipientCheck);
+          if (!autoMatch && info.domain_restriction) {
+            autoMatch = (accountEmail.split('@')[1] || '') === info.domain_restriction.toLowerCase().trim();
+          }
+          if (autoMatch) submittedEmail = accountEmail;
+        }
+      } catch (e) {
+        this.warn('[dmz.login] secure_share auto-grant parse failed:', e && e.message);
+      }
+    }
+
     if (!submittedEmail) {
       return this.output.data({ ...info, status: 'REQUIRED_EMAIL', is_secure: 1 });
     }
