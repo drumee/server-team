@@ -67,11 +67,9 @@ class ExtImport extends Mfs {
       throw new Error(`Refresh not implemented for provider=${provider}`);
     }
     const { google } = require('googleapis');
-    const { Cache } = require('@drumee/server-essentials');
-    const oauth2 = new google.auth.OAuth2(
-      Cache.getSysConf('google_client_id'),
-      Cache.getSysConf('google_client_secret')
-    );
+    const { googleDriveCredentials } = require('./google_credentials');
+    const { id, secret } = googleDriveCredentials();
+    const oauth2 = new google.auth.OAuth2(id, secret);
     oauth2.setCredentials({ refresh_token: row.refresh_token });
 
     let credentials;

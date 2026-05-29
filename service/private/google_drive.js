@@ -16,6 +16,7 @@
 const { Attr, Cache, Constants, toArray, sysEnv } = require('@drumee/server-essentials');
 const { google } = require('googleapis');
 const ExtImport = require('../lib/ext_import');
+const { googleDriveCredentials } = require('../lib/google_credentials');
 const {
   addMigration,
   getJobStatus,
@@ -157,6 +158,10 @@ class GoogleDrive extends ExtImport {
     else if (status === 'active') status = 'running';
     else if (status === 'completed') status = 'done';
     // 'failed' stays 'failed'
+    // A cancelled job exits cleanly (the importer returns instead of throwing),
+    // so Bull marks it 'completed'. Surface the returnvalue flag as 'cancelled'
+    // rather than 'done' so the popup doesn't show "Migration complete".
+    if (status === 'done' && ret.cancelled) status = 'cancelled';
 
     this.output.data({
       job_id: snap.id,
@@ -231,8 +236,7 @@ class GoogleDrive extends ExtImport {
    * works for the existing google-login flow.
    */
   _oauthClient() {
-    const client_id = Cache.getSysConf('google_client_id');
-    const client_secret = Cache.getSysConf('google_client_secret');
+    const { id: client_id, secret: client_secret } = googleDriveCredentials();
     const { main_domain, svc_location } = sysEnv();
     const redirect_uri = `https://${main_domain}${svc_location}/butler.google_drive_callback?`;
     return new google.auth.OAuth2(client_id, client_secret, redirect_uri);

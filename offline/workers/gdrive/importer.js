@@ -19,12 +19,13 @@
  */
 
 const axios = require('axios');
-const { Mariadb, toArray, Cache } = require('@drumee/server-essentials');
+const { Mariadb, toArray } = require('@drumee/server-essentials');
 const { existsSync, mkdirSync, cpSync, statSync, createWriteStream, unlinkSync, rmSync } = require('fs');
 const { join, extname } = require('path');
 const { createHash } = require('crypto');
 const { google } = require('googleapis');
 const { isCancelled } = require('../../queues/migrationQueue');
+const { googleDriveCredentials } = require('../../../service/lib/google_credentials');
 
 const PROGRESS_BATCH = 5;
 const PAGE_SIZE = 1000;
@@ -99,9 +100,15 @@ class GoogleDriveImporter {
         throw new Error(`dest_nid ${nid} invalid`);
       }
 
+      // Everything imported lands in a dedicated "GoogleDriveMigration"
+      // folder under the destination (the user's private home), so the
+      // migration never scatters loose files into their home. Idempotent:
+      // a re-run reuses the existing folder instead of duplicating it.
+      const rootFolder = await this._createFolder('GoogleDriveMigration', destFolder, hubDb);
+
       await this._traverse({
         folderId: source_folder_id,
-        destFolder,
+        destFolder: rootFolder,
         hubDb,
         includeSharedDrives: !!include_shared_drives,
         conflictPolicy: conflict_policy,
@@ -154,10 +161,8 @@ class GoogleDriveImporter {
     }
     if (!row.refresh_token) throw new Error('NEEDS_RECONNECT');
 
-    const oauth2 = new google.auth.OAuth2(
-      Cache.getSysConf('google_client_id'),
-      Cache.getSysConf('google_client_secret')
-    );
+    const { id, secret } = googleDriveCredentials();
+    const oauth2 = new google.auth.OAuth2(id, secret);
     oauth2.setCredentials({ refresh_token: row.refresh_token });
     let credentials;
     try {
@@ -296,12 +301,21 @@ class GoogleDriveImporter {
    * ExtImport subclass.
    */
   async _importItem(item, opts) {
-    let downloadUrl = item.webContentLink;
     let filename = item.name;
     let exportMime = null;
+    // Shared-drive files need supportsAllDrives on the download call too.
+    const sharedParam = opts.includeSharedDrives ? '&supportsAllDrives=true' : '';
+    // Canonical authenticated download. webContentLink is a browser-cookie
+    // link: for files >25MB Drive serves a virus-scan interstitial HTML page,
+    // and it can 302 to a googleusercontent host that ignores the Bearer
+    // header — both silently corrupt the import. alt=media streams raw bytes.
+    let downloadUrl = `https://www.googleapis.com/drive/v3/files/${item.id}?alt=media${sharedParam}`;
 
-    if (!downloadUrl) {
-      // Google Workspace file — export.
+    const isWorkspaceDoc =
+      typeof item.mimeType === 'string' &&
+      item.mimeType.startsWith('application/vnd.google-apps');
+    if (isWorkspaceDoc) {
+      // Google Workspace doc — has no binary content; must be exported.
       const EXPORT = {
         'google-apps.document':     { mime: 'application/pdf',                                                                      ext: 'pdf'  },
         'google-apps.spreadsheet':  { mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',                    ext: 'xlsx' },
@@ -313,7 +327,7 @@ class GoogleDriveImporter {
         throw new Error(`unsupported Workspace type: ${item.mimeType}`);
       }
       const [, exp] = match;
-      downloadUrl = `https://www.googleapis.com/drive/v3/files/${item.id}/export?mimeType=${encodeURIComponent(exp.mime)}`;
+      downloadUrl = `https://www.googleapis.com/drive/v3/files/${item.id}/export?mimeType=${encodeURIComponent(exp.mime)}${sharedParam}`;
       filename = `${filename}.${exp.ext}`;
       exportMime = exp.mime;
     }

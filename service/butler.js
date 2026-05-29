@@ -775,8 +775,8 @@ class __butler extends Mfs {
     let payload;
     try {
       const raw = await this.yp.await_proc('get_redirect_state', state);
-      const rawStr = (raw && raw.data) || raw;
-      payload = typeof rawStr === 'string' ? JSON.parse(rawStr) : rawStr;
+      const meta = raw && raw.metadata;
+      payload = typeof meta === 'string' ? this.parseJSON(meta) : meta;
     } catch (e) {
       this.warn('[google_drive_callback] state lookup failed:', e && e.message);
       return this._closingPage(false, 'invalid_state');
@@ -796,9 +796,9 @@ class __butler extends Mfs {
     }
 
     const { google } = require('googleapis');
-    const { Cache, sysEnv } = require('@drumee/server-essentials');
-    const client_id = Cache.getSysConf('google_client_id');
-    const client_secret = Cache.getSysConf('google_client_secret');
+    const { sysEnv } = require('@drumee/server-essentials');
+    const { googleDriveCredentials } = require('./lib/google_credentials');
+    const { id: client_id, secret: client_secret } = googleDriveCredentials();
     // Must match google_drive._oauthClient() — Google verifies the
     // redirect_uri against the value used when generateAuthUrl was
     // called. servicepath() yields `/undefined/svc/` because sysEnv
@@ -852,32 +852,31 @@ class __butler extends Mfs {
    * by `type === 'gdrive-connected'`.
    */
   _closingPage(ok, reason) {
-    const reasonJson = JSON.stringify(reason || null);
-    const successMsg = "'Connected. You can close this window.'";
-    const failMsg = "'Connection failed: ' + " + reasonJson;
-    // Target the opener with our own origin instead of '*'. The callback
-    // page is served same-origin as the Drumee app (the window that opened
-    // the OAuth popup), so location.origin is the correct, narrowest target
-    // — prevents the connected-status from leaking to any other frame that
-    // happens to be in the opener chain.
+    const payloadJson = JSON.stringify({ type: 'gdrive-connected', ok: !!ok, reason: reason || null });
+    const statusText = JSON.stringify(
+      ok ? 'Connected. You can close this window.'
+        : 'Connection failed: ' + (reason || 'unknown')
+    );
+    // Google's consent screen ships Cross-Origin-Opener-Policy, which severs
+    // window.opener for this popup's browsing context for the rest of its
+    // life. So postMessage to the opener silently no-ops AND window.close()
+    // is typically blocked. Signal the still-open app via same-origin
+    // channels that survive opener severance: BroadcastChannel + a
+    // localStorage write (which fires a `storage` event in the app document).
+    // postMessage is kept as a bonus for browsers where the opener survives.
     const body = `<!doctype html><html><body>
 <script>
-try {
-  if (window.opener && !window.opener.closed) {
-    window.opener.postMessage({ type: 'gdrive-connected', ok: ${ok ? 'true' : 'false'}, reason: ${reasonJson} }, window.location.origin);
-  }
-} catch (e) {}
-window.close();
-document.body.innerText = ${ok ? successMsg : failMsg};
+(function () {
+  var payload = ${payloadJson};
+  try { var bc = new BroadcastChannel('gdrive-oauth'); bc.postMessage(payload); bc.close(); } catch (e) {}
+  try { payload.ts = Date.now(); localStorage.setItem('gdrive-oauth-result', JSON.stringify(payload)); } catch (e) {}
+  try { if (window.opener && !window.opener.closed) window.opener.postMessage(payload, window.location.origin); } catch (e) {}
+  try { window.close(); } catch (e) {}
+  document.body.innerText = ${statusText};
+})();
 </script>
 </body></html>`;
-    if (typeof this.output.html === 'function') {
-      this.output.html(body);
-    } else {
-      // Fallback: emit raw with explicit Content-Type. Adjust if codebase
-      // pattern differs (search for `text/html` to confirm).
-      this.output.data({ html: body, content_type: 'text/html' });
-    }
+    this.output.html(body);
   }
 }
 
