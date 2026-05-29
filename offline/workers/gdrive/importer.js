@@ -84,38 +84,63 @@ class GoogleDriveImporter {
       await this._getFreshToken();
     } catch (e) {
       if (e && e.message === 'NEEDS_RECONNECT') {
-        await this.job.discard().catch(() => {});
+        try { await this.job.discard(); } catch (_) {}
       }
       throw e;
     }
 
-    // Resolve dest folder via mfs_node_attr in the hub's DB.
-    const hub = toArray(await this.yp.await_proc('entity_exists', hub_id))[0];
-    if (!hub || !hub.db_name) throw new Error(`dest_hub ${hub_id} not found`);
+    // Resolve the destination hub's DB. get_db_name(id) does a direct
+    // `SELECT db_name FROM entity WHERE id=?` (with a vhost fallback), so it
+    // works for ANY entity — drumate OR hub — by id. get_entity's first
+    // branch only matches drumates (INNER JOIN drumate), and the old
+    // `entity_exists` proc doesn't exist at all (await_proc swallowed the
+    // SQL error → returned nothing → always "dest_hub not found").
+    let dbName = await this.yp.await_func('get_db_name', hub_id);
+    // Fallback: if the FE-supplied hub_id can't be resolved (stale/mismatched
+    // Visitor.id), use the authenticated user_id — always a valid entity for
+    // a private-home migration. Keeps the job alive instead of hard-failing.
+    if (!dbName && user_id && user_id !== hub_id) {
+      console.warn(`[GDriveImporter] hub_id ${hub_id} unresolved; falling back to user_id ${user_id}`);
+      dbName = await this.yp.await_func('get_db_name', user_id);
+    }
+    if (!dbName) throw new Error(`dest hub db unresolved: hub=${hub_id} user=${user_id}`);
 
-    const hubDb = new Mariadb({ name: hub.db_name });
+    const hubDb = new Mariadb({ name: dbName });
     try {
       const destFolder = await hubDb.await_proc('mfs_node_attr', nid);
       if (!destFolder || !destFolder.home_dir) {
         throw new Error(`dest_nid ${nid} invalid`);
       }
 
+      // Authoritative storage root for the whole hub, captured once from the
+      // validated home node and stripped of any trailing /__storage__ that
+      // mfs_node_attr appends. File writes use this instead of a sub-folder's
+      // home_dir, which may be absent on objects returned by mfs_create_node.
+      const hubHomeDir = String(destFolder.home_dir).replace(/(\/__storage__.*)$/, '');
+
       // Everything imported lands in a dedicated "GoogleDriveMigration"
       // folder under the destination (the user's private home), so the
       // migration never scatters loose files into their home. Idempotent:
       // a re-run reuses the existing folder instead of duplicating it.
-      const rootFolder = await this._createFolder('GoogleDriveMigration', destFolder, hubDb);
+      const rootFolder = await this._createFolder('GoogleDriveMigration', destFolder, hubDb, user_id);
 
       await this._traverse({
         folderId: source_folder_id,
         destFolder: rootFolder,
         hubDb,
+        hubHomeDir,
         includeSharedDrives: !!include_shared_drives,
         conflictPolicy: conflict_policy,
         userId: user_id,
       });
     } finally {
-      if (hubDb && hubDb.connection) await hubDb.end().catch(() => {});
+      // Mariadb.end() returns undefined (not a promise) and swallows its own
+      // errors internally. Chaining `.catch()` on it threw "Cannot read
+      // properties of undefined (reading 'catch')" in this finally block —
+      // failing the job at cleanup even after a successful import.
+      if (hubDb && hubDb.connection) {
+        try { hubDb.end(); } catch (_) {}
+      }
       // Wipe the per-job scratch dir even on throw — prevents /tmp from
       // accumulating partial downloads across failed jobs.
       try {
@@ -236,7 +261,7 @@ class GoogleDriveImporter {
       if (await this._checkCancelled()) return;
 
       if (item.mimeType === 'application/vnd.google-apps.folder') {
-        const subDestFolder = await this._createFolder(item.name, opts.destFolder, opts.hubDb);
+        const subDestFolder = await this._createFolder(item.name, opts.destFolder, opts.hubDb, opts.userId);
         await this._traverse({ ...opts, folderId: item.id, destFolder: subDestFolder });
         // Propagate cancel upward from nested folder.
         if (this._cancelled) return;
@@ -332,12 +357,17 @@ class GoogleDriveImporter {
       exportMime = exp.mime;
     }
 
-    // Conflict policy. Phase 1 = 'skip' only — Phase 2 expands.
-    const pathname = join(opts.destFolder.file_path, filename);
-    const existingId = await opts.hubDb.await_func('node_id_from_path', pathname);
-    if (existingId != null) {
-      if (opts.conflictPolicy === 'skip') return;        // silent skip
-      throw new Error('conflict policy not implemented yet'); // Phase 2 handles overwrite/rename
+    // Conflict policy (Phase 1 = 'skip'). The dedup check needs the dest
+    // folder's logical path; mfs_node_attr may omit file_path ("by security")
+    // for an existing folder, so guard it — skip the check and create rather
+    // than crash on join(undefined, …). Worst case: a duplicate on re-run.
+    const destPath = opts.destFolder && opts.destFolder.file_path;
+    if (destPath) {
+      const existingId = await opts.hubDb.await_func('node_id_from_path', join(destPath, filename));
+      if (existingId != null) {
+        if (opts.conflictPolicy === 'skip') return;        // silent skip
+        throw new Error('conflict policy not implemented yet'); // Phase 2 handles overwrite/rename
+      }
     }
 
     const ext = extname(filename).replace(/^\.+/, '');
@@ -399,17 +429,27 @@ class GoogleDriveImporter {
     }
     if (!filetype) filetype = 'other';
 
-    let { home_dir, owner_id, nid } = opts.destFolder;
-    home_dir = home_dir.replace(/(\/__storage__.*)$/, '');
+    // home_dir = the hub-wide root captured in run() (never a sub-folder's,
+    // which may be absent). owner_id falls back to the migrating user when the
+    // dest folder doesn't expose it (mfs_node_attr has no owner_id column).
+    // pid = the dest folder's node id (files become its children).
+    const home_dir = opts.hubHomeDir;
+    // Valid owner_id is required (NULL → mfs_create_node rolls back). Prefer
+    // the migrating user (like media.make_dir's owner_id = uid); the dest
+    // folder's hub_id is the same entity for a private-home migration.
+    const owner_id = opts.userId
+      || (opts.destFolder && (opts.destFolder.owner_id || opts.destFolder.hub_id));
+    const pid = opts.destFolder && opts.destFolder.nid;
+    if (!home_dir || !pid) throw new Error('dest folder unresolved (home_dir/pid missing)');
 
     const filenameWithoutExt = filename.replace(new RegExp(`\\.(${ext})$`, 'i'), '');
 
-    const node = await opts.hubDb.await_proc(
+    await opts.hubDb.await_proc(
       'mfs_create_node',
       {
         owner_id,
         filename: filenameWithoutExt,
-        pid: nid,
+        pid,
         category: filetype,
         ext,
         mimetype,
@@ -419,25 +459,73 @@ class GoogleDriveImporter {
       {},
       { isOutput: 1 }
     );
-    if (!node || !node.id) throw new Error('mfs_create_node returned no id');
+    // Resolve the new node id with a direct query (mfs_create_node's CALL
+    // return shape is unreliable in the worker). Match by (pid, name); fall
+    // back to the most-recent non-folder child under pid — files are imported
+    // sequentially within a job, so that's the one just created.
+    let nodeId = await this._findChildId(opts.hubDb, pid, filenameWithoutExt, false);
+    if (!nodeId) {
+      const rows = await opts.hubDb.await_query(
+        `SELECT id FROM media WHERE parent_id = ? AND category <> 'folder' ORDER BY id DESC LIMIT 1`,
+        pid
+      );
+      nodeId = (toArray(rows)[0] || {}).id || null;
+    }
+    if (!nodeId) throw new Error(`could not resolve created file '${filenameWithoutExt}' under pid=${pid}`);
 
-    const base = join(home_dir, '__storage__', node.id);
+    const base = join(home_dir, '__storage__', nodeId);
     const orig = join(base, `orig.${ext}`);
     mkdirSync(base, { recursive: true });
     cpSync(source, orig, { force: true });
   }
 
-  async _createFolder(name, parentFolder, hubDb) {
-    const pathname = join(parentFolder.file_path, name);
-    const existingId = await hubDb.await_func('node_id_from_path', pathname);
-    if (existingId != null) return await hubDb.await_proc('mfs_node_attr', existingId);
-    return await hubDb.await_proc('mfs_create_node', {
-      owner_id: parentFolder.owner_id,
-      filename: name,
-      pid: parentFolder.nid,
-      category: 'folder',
-      showResults: 1,
-    }, {}, { isOutput: 1 });
+  /**
+   * Find a child node's id by (parent, name) via a direct media SELECT.
+   * mfs_create_node is a CALL with an OUT param: its result shape through the
+   * worker's connection is unreliable (a raw [resultSet, okPacket] array, not
+   * a clean row), so we never read the id from its return. A plain SELECT
+   * (await_query) yields clean rows, so we resolve the id this way instead.
+   * Returns the id string or null.
+   */
+  async _findChildId(hubDb, pid, name, isFolder) {
+    const rows = await hubDb.await_query(
+      `SELECT id FROM media
+         WHERE parent_id = ? AND user_filename = ?
+           ${isFolder ? "AND category = 'folder'" : "AND category <> 'folder'"}
+         ORDER BY id ASC LIMIT 1`,
+      pid, name
+    );
+    const row = toArray(rows)[0];
+    return (row && row.id) || null;
+  }
+
+  async _createFolder(name, parentFolder, hubDb, ownerId) {
+    const pid = parentFolder && parentFolder.nid;
+    if (pid == null) throw new Error(`_createFolder: parent has no nid (name=${name})`);
+    // owner_id MUST be a valid entity id. mfs_create_node looks it up
+    // (db_name/username) and runs user_permission() in its result SELECT — a
+    // NULL owner_id throws inside the proc, its SQLEXCEPTION handler rolls the
+    // whole INSERT back, and the folder is silently not created. mfs_node_attr
+    // doesn't expose owner_id, so fall back to the migrating user / hub entity
+    // (this is exactly what media.make_dir does: owner_id = uid).
+    const owner_id = ownerId
+      || (parentFolder && (parentFolder.owner_id || parentFolder.hub_id || parentFolder.home_id));
+    // Idempotent: reuse an existing child folder, else create. Resolve the id
+    // with a direct query (not the unreliable mfs_create_node CALL return),
+    // then re-read via mfs_node_attr for a clean { nid, file_path, home_dir }.
+    let id = await this._findChildId(hubDb, pid, name, true);
+    if (id == null) {
+      await hubDb.await_proc('mfs_create_node', {
+        owner_id,
+        filename: name,
+        pid,
+        category: 'folder',
+        showResults: 1,
+      }, {}, { isOutput: 1 });
+      id = await this._findChildId(hubDb, pid, name, true);
+    }
+    if (id == null) throw new Error(`could not resolve folder '${name}' under pid=${pid} (owner_id=${owner_id})`);
+    return await hubDb.await_proc('mfs_node_attr', id);
   }
 }
 

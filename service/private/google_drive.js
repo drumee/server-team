@@ -47,7 +47,12 @@ class GoogleDrive extends ExtImport {
   }
 
   /**
-   * Mint the OAuth URL the FE pops open. Scope = drive.readonly.
+   * Mint the OAuth URL the FE pops open. Scope = email + profile + drive.readonly.
+   *   - email/profile are required so the token exchange returns an
+   *     id_token; butler.google_drive_callback reads its `sub` (Google
+   *     account id) to upsert the oauth_accounts row. Without them the
+   *     callback has no provider_user_id for the UNIQUE key and the row
+   *     can't be created for email/password users (no prior Google link).
    *   - prompt=select_account+consent forces Google to show the account
    *     chooser AND the consent screen on every call. Without
    *     select_account, Google reuses the previously-authorized account
@@ -55,7 +60,7 @@ class GoogleDrive extends ExtImport {
    *     (which is blocked when Google is their only login). With
    *     consent, Google always emits a refresh_token even on re-grant.
    *   - state carries `uid` + `sid` so `butler.google_drive_callback`
-   *     knows which oauth_accounts row to UPDATE.
+   *     knows which user owns the connection.
    */
   async connect() {
     const oauth2 = this._oauthClient();
@@ -69,7 +74,7 @@ class GoogleDrive extends ExtImport {
     await this.yp.await_proc('set_redirect_state', state, JSON.stringify(statePayload));
     const auth_url = oauth2.generateAuthUrl({
       access_type: 'offline',
-      scope: [DRIVE_SCOPE],
+      scope: ['email', 'profile', DRIVE_SCOPE],
       prompt: 'select_account consent',
       state,
     });
@@ -226,14 +231,14 @@ class GoogleDrive extends ExtImport {
 
   /**
    * Shared OAuth client factory — used by `connect()` and by butler's
-   * google_drive_callback.
+   * google_drive_callback. MUST stay byte-identical to the redirect_uri
+   * built in butler.google_drive_callback: Google verifies the value sent
+   * to generateAuthUrl matches the one sent to getToken.
    *
-   * input.servicepath() destructures `instance` from sysEnv() but
-   * sysEnv only exposes `endpoint_name`, so the URL ends up with
-   * "undefined" and Google rejects with redirect_uri_mismatch.
-   * Build the URL the same way loby/service/google.js does (direct
-   * concatenation from sysEnv values), which is the pattern that
-   * works for the existing google-login flow.
+   * svc_location is the endpoint-aware service path (`/-/<instance>/svc`
+   * on dev endpoints, `/-/svc` on main) — same idiom loby/service/google.js
+   * uses for its callback. Never hardcode the path: svc_location yields the
+   * correct callback URL on every endpoint automatically.
    */
   _oauthClient() {
     const { id: client_id, secret: client_secret } = googleDriveCredentials();
