@@ -145,6 +145,22 @@ class GoogleDrive extends ExtImport {
     const source_folder_id = this.input.use('source_folder_id', 'root');
     const include_shared_drives = this.input.use('include_shared_drives', 0) ? 1 : 0;
     const conflict_policy = this.input.use('conflict_policy', 'skip');
+    const mode = this.input.use('mode', 'all') === 'selected' ? 'selected' : 'all';
+    let selections = this.input.use('selections', null);
+    // The input layer may deliver the object as a JSON string — normalize.
+    if (typeof selections === 'string') {
+      try { selections = JSON.parse(selections); } catch (_) { selections = null; }
+    }
+    if (mode === 'selected') {
+      const folder_ids = (selections && Array.isArray(selections.folder_ids)) ? selections.folder_ids.filter(Boolean) : [];
+      const file_ids   = (selections && Array.isArray(selections.file_ids))   ? selections.file_ids.filter(Boolean)   : [];
+      if (!folder_ids.length && !file_ids.length) {
+        throw new Error('NOTHING_SELECTED');
+      }
+      selections = { folder_ids, file_ids };
+    } else {
+      selections = null;
+    }
     // Worker only implements 'skip' today — accepting overwrite/rename would
     // cause a mid-migration throw (importer.js: 'conflict policy not
     // implemented yet') and Bull would retry 3× with the same error.
@@ -191,6 +207,8 @@ class GoogleDrive extends ExtImport {
       source_folder_id,
       include_shared_drives,
       conflict_policy,
+      mode,
+      selections,
     });
 
     // Mark the migration prompt as "user has interacted" so the Desk
