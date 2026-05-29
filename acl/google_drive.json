@@ -15,6 +15,16 @@
       "permission": { "src": "owner" },
       "returns": { "type": "object", "properties": { "auth_url": { "type": "string" } } }
     },
+    "list": {
+      "doc": "Browse one Google Drive folder for the in-app migration picker tree. Read-only, My Drive only. Returns { files: [{ id, name, is_folder, mime_type, size }], next_page_token }.",
+      "scope": "hub",
+      "permission": { "src": "owner" },
+      "params": {
+        "folder_id": { "type": "string", "required": false, "default": "root" },
+        "page_token": { "type": "string", "required": false }
+      },
+      "returns": { "type": "object", "properties": { "files": { "type": "array" }, "next_page_token": { "type": "string" } } }
+    },
     "start_migration": {
       "doc": "Create a migration_jobs row and enqueue the Bull worker. Returns the job_id immediately — the request does NOT wait for the migration to finish.",
       "scope": "hub",
@@ -24,7 +34,9 @@
         "nid": { "type": "string", "required": true, "description": "Destination folder node id" },
         "source_folder_id": { "type": "string", "required": false, "default": "root" },
         "include_shared_drives": { "type": "integer", "required": false, "default": 0 },
-        "conflict_policy": { "type": "string", "required": false, "default": "skip", "description": "skip (only policy implemented; overwrite|rename reserved for Phase 2)" }
+        "conflict_policy": { "type": "string", "required": false, "default": "skip", "description": "skip (only policy implemented; overwrite|rename reserved for Phase 2)" },
+        "mode": { "type": "string", "required": false, "default": "all", "description": "all | selected" },
+        "selections": { "type": "object", "required": false, "description": "selected mode only: { folder_ids: string[], file_ids: string[] }" }
       },
       "returns": { "type": "object", "properties": { "job_id": { "type": "integer" } } }
     },
