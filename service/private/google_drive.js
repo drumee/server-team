@@ -15,6 +15,7 @@
 
 const { Attr, Cache, Constants, toArray, sysEnv } = require('@drumee/server-essentials');
 const { google } = require('googleapis');
+const axios = require('axios');
 const ExtImport = require('../lib/ext_import');
 const { googleDriveCredentials } = require('../lib/google_credentials');
 const {
@@ -80,6 +81,56 @@ class GoogleDrive extends ExtImport {
       state,
     });
     this.output.data({ auth_url });
+  }
+
+  /**
+   * Browse one Drive folder for the in-app picker tree. Read-only; My Drive
+   * only (Shared Drives are an All-mode concern). Paginated: pass the returned
+   * next_page_token back to fetch subsequent pages.
+   *   in:  { folder_id='root', page_token? }
+   *   out: { files: [{ id, name, is_folder, mime_type, size }], next_page_token }
+   */
+  async list() {
+    const folder_id = this.input.use('folder_id', 'root');
+    const page_token = this.input.use('page_token', null);
+
+    let token;
+    try {
+      token = await this.ensureFreshToken('google');
+    } catch (e) {
+      // No refresh_token / revoked grant → FE drops back to the connect screen.
+      throw new Error('NEEDS_RECONNECT');
+    }
+
+    const params = {
+      q: `'${folder_id}' in parents and trashed = false`,
+      pageSize: 200,
+      // Drive sorts folders first, then by name — matches the picker ordering.
+      orderBy: 'folder,name',
+      fields: 'nextPageToken, files(id, name, mimeType, size, modifiedTime)',
+    };
+    if (page_token) params.pageToken = page_token;
+
+    let res;
+    try {
+      res = await axios.get('https://www.googleapis.com/drive/v3/files', {
+        headers: { Authorization: `Bearer ${token}` },
+        params,
+      });
+    } catch (e) {
+      console.warn(`[google_drive.list] folder=${folder_id} failed:`, e && e.message);
+      throw new Error('LIST_FAILED');
+    }
+
+    const FOLDER = 'application/vnd.google-apps.folder';
+    const files = (res.data.files || []).map((f) => ({
+      id: f.id,
+      name: f.name,
+      is_folder: f.mimeType === FOLDER ? 1 : 0,
+      mime_type: f.mimeType,
+      size: f.size || null,
+    }));
+    this.output.data({ files, next_page_token: res.data.nextPageToken || null });
   }
 
   /**
