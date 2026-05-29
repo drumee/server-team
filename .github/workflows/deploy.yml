@@ -25,65 +25,104 @@ jobs:
       SGP_HOST: sgp
       CONTAINER: drumee
       REPO_PATH: /usr/src/drumee/server-team
+      LOG_FILE: /tmp/cd-server-${{ github.run_id }}.log
     steps:
       - name: Resolve target
         id: target
         run: |
           TARGET="${{ github.event.inputs.target || 'UAT' }}"
           case "$TARGET" in
-            PROD) ENV_FILE=production; EP=main ;;
-            UAT)  ENV_FILE=deploy;     EP=preview ;;
+            PROD) ENV_FILE=production; EP=main;    PORT=24000 ;;
+            UAT)  ENV_FILE=deploy;     EP=preview; PORT=24001 ;;
             *) echo "Unknown target: $TARGET"; exit 1 ;;
           esac
           echo "env_file=$ENV_FILE" >> "$GITHUB_OUTPUT"
           echo "endpoint=$EP"       >> "$GITHUB_OUTPUT"
-          echo "::notice::Target $TARGET -> npm run deploy $ENV_FILE -> endpoint $EP"
+          echo "port=$PORT"         >> "$GITHUB_OUTPUT"
+          echo "::notice::Target $TARGET -> endpoint $EP"
 
-      - name: Pull, deploy, verify, rollback on failure
+      - name: Fetch and reset working tree
+        id: fetch
+        run: |
+          OUTPUT=$(ssh "$SGP_USER@$SGP_HOST" "sudo docker exec -i $CONTAINER bash -s" <<EOSSH
+          set -euo pipefail
+          cd $REPO_PATH
+          PREV=\$(git rev-parse HEAD)
+          echo "PREV=\$PREV"
+          git fetch origin preview --quiet
+          git checkout -f preview --quiet
+          git reset --hard origin/preview --quiet
+          git clean -fd --quiet >/dev/null 2>&1 || true
+          NEW=\$(git rev-parse HEAD)
+          echo "NEW=\$NEW"
+          EOSSH
+          )
+          PREV=$(echo "$OUTPUT" | grep '^PREV=' | cut -d= -f2)
+          NEW=$(echo "$OUTPUT"  | grep '^NEW='  | cut -d= -f2)
+          echo "prev=$PREV" >> "$GITHUB_OUTPUT"
+          echo "new=$NEW"   >> "$GITHUB_OUTPUT"
+          echo "Previous: ${PREV:0:8}"
+          echo "New     : ${NEW:0:8}"
+
+      - name: Deploy
         env:
           ENV_FILE: ${{ steps.target.outputs.env_file }}
-          EP: ${{ steps.target.outputs.endpoint }}
         run: |
           ssh "$SGP_USER@$SGP_HOST" "sudo docker exec -i $CONTAINER bash -s" <<EOSSH
           set -euo pipefail
           cd $REPO_PATH
-
-          PREV=\$(git rev-parse HEAD)
-          echo ">> Previous commit: \$PREV"
-
-          echo ">> Fetching origin/preview and hard-resetting working tree"
-          git fetch origin preview
-          git checkout -f preview
-          git reset --hard origin/preview
-          git clean -fd
-          echo ">> New commit: \$(git rev-parse HEAD)"
-
-          rollback() {
-            echo ">> ROLLBACK: reverting to \$PREV"
-            git reset --hard \$PREV
-            npm run deploy -- $ENV_FILE || echo ">> WARNING: rollback redeploy also failed"
-          }
-
-          echo ">> Running npm run deploy $ENV_FILE"
-          if ! npm run deploy -- $ENV_FILE; then
-            echo ">> Deploy command failed"
-            rollback || true
+          if ! npm run deploy -- $ENV_FILE > $LOG_FILE 2>&1; then
+            echo "::error::Deploy command failed. Tail of log:"
+            tail -50 $LOG_FILE
             exit 1
           fi
+          echo "Deploy succeeded"
+          EOSSH
 
-          echo ">> Waiting 5s for pm2 to stabilize..."
+      - name: Start services
+        env:
+          EP: ${{ steps.target.outputs.endpoint }}
+        run: |
+          ssh "$SGP_USER@$SGP_HOST" "sudo docker exec -i $CONTAINER bash -s" <<EOSSH
+          set -euo pipefail
+          /usr/sbin/drumee start $EP         >> $LOG_FILE 2>&1
+          /usr/sbin/drumee start $EP/service >> $LOG_FILE 2>&1
+          echo "drumee start issued for $EP and $EP/service"
+          EOSSH
+
+      - name: Verify HTTP
+        env:
+          PORT: ${{ steps.target.outputs.port }}
+          EP: ${{ steps.target.outputs.endpoint }}
+        run: |
+          ssh "$SGP_USER@$SGP_HOST" "sudo docker exec -i $CONTAINER bash -s" <<EOSSH
+          set -euo pipefail
           sleep 5
-
-          PORT=\$([ "$EP" = "main" ] && echo 24000 || echo 24001)
-          echo ">> Verifying http://localhost:\$PORT (endpoint $EP)"
-          HTTP_CODE=\$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "http://localhost:\$PORT/" || echo 000)
-          echo ">> HTTP code: \$HTTP_CODE"
-
+          HTTP_CODE=\$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "http://localhost:$PORT/" || echo 000)
+          echo "HTTP code: \$HTTP_CODE"
           if [[ ! "\$HTTP_CODE" =~ ^[2-4][0-9][0-9]\$ ]]; then
-            echo ">> Verify failed (5xx or unreachable)"
-            rollback || true
+            echo "::error::Verify failed for endpoint $EP (5xx or unreachable)"
             exit 1
           fi
+          echo "Verified endpoint $EP"
+          EOSSH
 
-          echo ">> Deploy verified ($EP @ \$(git rev-parse --short HEAD))"
+      - name: Rollback (on failure)
+        if: failure() && steps.fetch.outputs.prev != ''
+        env:
+          ENV_FILE: ${{ steps.target.outputs.env_file }}
+          PREV: ${{ steps.fetch.outputs.prev }}
+        run: |
+          ssh "$SGP_USER@$SGP_HOST" "sudo docker exec -i $CONTAINER bash -s" <<EOSSH
+          set -uo pipefail
+          cd $REPO_PATH
+          echo "::warning::Rolling back to ${PREV:0:8}"
+          git reset --hard $PREV --quiet
+          if npm run deploy -- $ENV_FILE > $LOG_FILE 2>&1; then
+            echo "Rollback succeeded"
+          else
+            echo "::error::Rollback redeploy ALSO failed. Tail:"
+            tail -50 $LOG_FILE
+            exit 1
+          fi
           EOSSH
