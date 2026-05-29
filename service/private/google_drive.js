@@ -20,6 +20,7 @@ const { googleDriveCredentials } = require('../lib/google_credentials');
 const {
   addMigration,
   getJobStatus,
+  getUserJob,
   cancelJob,
 } = require('../../offline/queues/migrationQueue');
 
@@ -101,6 +102,15 @@ class GoogleDrive extends ExtImport {
       throw new Error(`unsupported conflict_policy: ${conflict_policy} (only 'skip' implemented)`);
     }
 
+    // Dedup guard: if the user already has a job in flight, never enqueue a
+    // second one (a stale tab, a double-click, or two devices). Return the
+    // existing job so the FE just reconnects to it instead of erroring.
+    const existing = await getUserJob(this.uid);
+    if (existing && ['active', 'waiting', 'delayed', 'paused'].includes(existing.state)) {
+      this.output.data({ job_id: existing.id, already_running: 1 });
+      return;
+    }
+
     // Refuse if not connected; FE should have called has_drive_scope first
     // but we double-check so the worker doesn't waste a slot.
     const scopeRow = toArray(await this.yp.await_query(
@@ -140,20 +150,11 @@ class GoogleDrive extends ExtImport {
   }
 
   /**
-   * Poll endpoint for FE. Returns a flat shape the popup renders from.
-   * Verifies the caller owns the job (job.data.user_id === this.uid) so
-   * users can't peek at each other's jobs.
+   * Normalize a Bull job snapshot (from getJobStatus/getUserJob) into the flat
+   * shape the FE popup renders from. Shared by get_status (poll) and get_state
+   * (reconnect on open) so both speak the same status vocabulary.
    */
-  async get_status() {
-    const job_id = this.input.need('job_id');
-    const snap = await getJobStatus(job_id);
-    if (!snap) {
-      this.output.data({ status: 'none', job_id });
-      return;
-    }
-    if (snap.data && snap.data.user_id !== this.uid) {
-      throw new Error('forbidden');
-    }
+  _shapeStatus(snap) {
     const prog = (snap.progress && typeof snap.progress === 'object') ? snap.progress : {};
     const ret = snap.returnvalue || {};
     // Translate Bull state → FE-friendly status the popup state machine
@@ -168,7 +169,7 @@ class GoogleDrive extends ExtImport {
     // rather than 'done' so the popup doesn't show "Migration complete".
     if (status === 'done' && ret.cancelled) status = 'cancelled';
 
-    this.output.data({
+    return {
       job_id: snap.id,
       status,
       processed_files: prog.processed_files || ret.processed_files || 0,
@@ -180,7 +181,70 @@ class GoogleDrive extends ExtImport {
       failed_reason:    snap.failedReason,
       started_at:       snap.processedOn ? Math.floor(snap.processedOn / 1000) : null,
       finished_at:      snap.finishedOn ? Math.floor(snap.finishedOn / 1000) : null,
-    });
+    };
+  }
+
+  async get_status() {
+    const job_id = this.input.need('job_id');
+    const snap = await getJobStatus(job_id);
+    if (!snap) {
+      this.output.data({ status: 'none', job_id });
+      return;
+    }
+    if (snap.data && snap.data.user_id !== this.uid) {
+      throw new Error('forbidden');
+    }
+    this.output.data(this._shapeStatus(snap));
+  }
+
+  /**
+   * Consolidated state for the popup to call on OPEN. Returns everything the
+   * FE state machine needs in one round-trip so it can reconnect to an
+   * in-flight migration (or show a just-finished result once) instead of
+   * defaulting to the "Start migration" screen:
+   *   { ok: <has drive scope>, job: <shaped getUserJob|null>, seen_job_id }
+   * `seen_job_id` is the last result the user dismissed (profile.gdrive_seen_job)
+   * so a finished job is shown exactly once.
+   */
+  async get_state() {
+    const scopeRow = toArray(await this.yp.await_query(
+      'SELECT scope, refresh_token FROM oauth_accounts WHERE user_id=? AND provider=?',
+      this.uid, 'google'
+    ))[0];
+    const ok = !!(scopeRow && scopeRow.refresh_token && scopeRow.scope && scopeRow.scope.includes('drive.readonly'));
+    const snap = await getUserJob(this.uid);
+    const job = snap ? this._shapeStatus(snap) : null;
+    const seen_job_id = await this._getSeenJob();
+    this.output.data({ ok, job, seen_job_id });
+  }
+
+  /** Read profile.gdrive_seen_job (id of the last result the user dismissed). */
+  async _getSeenJob() {
+    const row = toArray(await this.yp.await_query(`SELECT profile FROM drumate WHERE id=?`, this.uid))[0];
+    let profile = {};
+    if (row && row.profile) {
+      try { profile = (typeof row.profile === 'string' ? JSON.parse(row.profile) : row.profile) || {}; }
+      catch (_) { profile = {}; }
+    }
+    return profile.gdrive_seen_job || null;
+  }
+
+  /**
+   * Mark a finished migration result as seen so reopening the popup won't show
+   * it again (the "show result once" rule). FE calls this when the user closes
+   * the popup from a done/failed/cancelled view.
+   */
+  async ack_result() {
+    const job_id = String(this.input.need('job_id'));
+    const row = toArray(await this.yp.await_query(`SELECT profile FROM drumate WHERE id=?`, this.uid))[0];
+    let profile = {};
+    if (row && row.profile) {
+      try { profile = (typeof row.profile === 'string' ? JSON.parse(row.profile) : row.profile) || {}; }
+      catch (_) { profile = {}; }
+    }
+    profile.gdrive_seen_job = job_id;
+    await this.yp.await_proc('drumate_update_profile', this.uid, JSON.stringify(profile));
+    this.output.data({ ok: true });
   }
 
   /**

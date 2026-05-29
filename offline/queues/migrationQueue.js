@@ -57,6 +57,16 @@ const CANCEL_TTL_SEC = 3600; // 1h — worker polls between files; a long-runnin
 const migrationQueue = new Queue('drumee:migration', {
   redis: redisConfig,
   prefix: 'drumee:queue',
+  // Lock tolerance: an import can briefly hold the event loop (large file
+  // copy, big scratch cleanup) — give the lock headroom + tolerate transient
+  // stalls so a long migration doesn't fail with "stalled more than allowable
+  // limit". The importer also uses async fs I/O to keep the loop free.
+  settings: {
+    lockDuration: 60000,     // 60s (default 30s)
+    lockRenewTime: 30000,    // renew at half the duration
+    stalledInterval: 60000,  // stall-check cadence (default 30s)
+    maxStalledCount: 3,      // tolerate a few transient stalls (default 1)
+  },
   defaultJobOptions: {
     attempts: 3,
     backoff: {
@@ -167,6 +177,44 @@ async function getJobStatus(jobId) {
 }
 
 /**
+ * Find the most relevant migration job for a user WITHOUT knowing its id.
+ * Scans the (bounded — removeOnComplete:100 / removeOnFail:200) retained jobs
+ * and filters by job.data.user_id. Prefers an in-flight job
+ * (active/waiting/delayed/paused); otherwise returns the most recently
+ * finished one. Returns the same snapshot shape as getJobStatus, or null.
+ *
+ * This is the source of truth that lets the FE popup reconnect to a running
+ * migration after it was closed / the page reloaded / on another tab.
+ */
+async function getUserJob(userId) {
+  if (!userId) return null;
+  try {
+    const jobs = await migrationQueue.getJobs(
+      ['active', 'waiting', 'delayed', 'paused', 'completed', 'failed'], 0, 300
+    );
+    const mine = (jobs || []).filter((j) => j && j.data && j.data.user_id === userId);
+    if (!mine.length) return null;
+    const RUNNING = ['active', 'waiting', 'delayed', 'paused'];
+    const withState = [];
+    for (const j of mine) {
+      let state;
+      try { state = await j.getState(); } catch (_) { state = 'unknown'; }
+      withState.push({ j, state });
+    }
+    const running = withState.filter((x) => RUNNING.includes(x.state));
+    const pool = running.length ? running : withState;
+    // Most recent first (finishedOn for terminal jobs, else enqueue timestamp).
+    pool.sort((a, b) =>
+      (b.j.finishedOn || b.j.timestamp || 0) - (a.j.finishedOn || a.j.timestamp || 0));
+    const picked = pool[0];
+    return picked ? await getJobStatus(picked.j.id) : null;
+  } catch (e) {
+    console.error('[MigrationQueue] getUserJob failed:', e.message);
+    return null;
+  }
+}
+
+/**
  * Cancel a job. For 'waiting'/'delayed' jobs, removes from the queue
  * directly. For 'active' jobs, sets a Redis sentinel key — the worker
  * polls it between files and bails cleanly at the next boundary.
@@ -262,6 +310,7 @@ module.exports = migrationQueue;
 module.exports.migrationQueue = migrationQueue;
 module.exports.addMigration = addMigration;
 module.exports.getJobStatus = getJobStatus;
+module.exports.getUserJob = getUserJob;
 module.exports.cancelJob = cancelJob;
 module.exports.isCancelled = isCancelled;
 module.exports.getStats = getStats;

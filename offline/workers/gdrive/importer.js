@@ -20,7 +20,11 @@
 
 const axios = require('axios');
 const { Mariadb, toArray } = require('@drumee/server-essentials');
-const { existsSync, mkdirSync, cpSync, statSync, createWriteStream, unlinkSync, rmSync } = require('fs');
+const { existsSync, createWriteStream, unlinkSync } = require('fs');
+// Async fs ops (threadpool — don't block the event loop). A synchronous
+// cpSync/rmSync of a large file/scratch dir blocked the loop long enough that
+// Bull couldn't renew the job lock → "job stalled more than allowable limit".
+const fsp = require('fs').promises;
 const { join, extname } = require('path');
 const { createHash } = require('crypto');
 const { google } = require('googleapis');
@@ -74,7 +78,7 @@ class GoogleDriveImporter {
     // tree is rm-rf'd in finally. Prevents /tmp from filling up across
     // jobs and also walls off cross-job cache leaks.
     this._scratchDir = join('/tmp', `gdrive-job-${this.job.id}`);
-    mkdirSync(this._scratchDir, { recursive: true });
+    await fsp.mkdir(this._scratchDir, { recursive: true });
 
     // Prime the token cache — throws NEEDS_RECONNECT if no refresh_token.
     // Subsequent Drive calls use `_getFreshToken()` which lazily refreshes.
@@ -144,7 +148,7 @@ class GoogleDriveImporter {
       // Wipe the per-job scratch dir even on throw — prevents /tmp from
       // accumulating partial downloads across failed jobs.
       try {
-        if (this._scratchDir) rmSync(this._scratchDir, { recursive: true, force: true });
+        if (this._scratchDir) await fsp.rm(this._scratchDir, { recursive: true, force: true });
       } catch (e) {
         console.warn(`[GDriveImporter] scratch cleanup failed:`, e && e.message);
       }
@@ -411,11 +415,10 @@ class GoogleDriveImporter {
       });
       // rename is atomic on the same filesystem — readers will only ever
       // see the complete file at `source`.
-      const { renameSync } = require('fs');
-      renameSync(partFile, source);
+      await fsp.rename(partFile, source);
     }
 
-    const stat = statSync(source);
+    const stat = await fsp.stat(source);
     if (stat.isDirectory()) throw new Error('downloaded source is a directory');
 
     // Resolve filetype/mimetype from Drumee filecap table.
@@ -475,8 +478,8 @@ class GoogleDriveImporter {
 
     const base = join(home_dir, '__storage__', nodeId);
     const orig = join(base, `orig.${ext}`);
-    mkdirSync(base, { recursive: true });
-    cpSync(source, orig, { force: true });
+    await fsp.mkdir(base, { recursive: true });
+    await fsp.copyFile(source, orig);
   }
 
   /**
@@ -520,6 +523,13 @@ class GoogleDriveImporter {
         filename: name,
         pid,
         category: 'folder',
+        ext: '',
+        // media.mimetype is NOT NULL — a folder INSERT with a null mimetype
+        // hits the proc's SQLEXCEPTION handler and silently rolls back (files
+        // worked because they resolve a mimetype from filecap). 'folder'
+        // mirrors what media.make_dir stores.
+        mimetype: 'folder',
+        filesize: 0,
         showResults: 1,
       }, {}, { isOutput: 1 });
       id = await this._findChildId(hubDb, pid, name, true);

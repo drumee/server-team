@@ -46,6 +46,18 @@
       "doc": "Set profile.tools_migration_skipped.google_drive = 1 so the Desk auto-launch doesn't re-show the popup on every reload.",
       "scope": "hub",
       "permission": { "src": "owner" }
+    },
+    "get_state": {
+      "doc": "Consolidated popup-open state so the FE can reconnect to an in-flight migration (or show a just-finished result once) instead of defaulting to the Start screen. Returns { ok (has drive scope), job (shaped getUserJob snapshot or null), seen_job_id (last dismissed result) }.",
+      "scope": "hub",
+      "permission": { "src": "owner" },
+      "returns": { "type": "object", "properties": { "ok": { "type": "boolean" }, "job": { "type": "object" }, "seen_job_id": { "type": "string" } } }
+    },
+    "ack_result": {
+      "doc": "Mark a finished migration result as seen (profile.gdrive_seen_job=job_id) so reopening the popup won't show that result again.",
+      "scope": "hub",
+      "permission": { "src": "owner" },
+      "params": { "job_id": { "type": "string", "required": true } }
     }
   }
 }
