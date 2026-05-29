@@ -67,6 +67,8 @@ class GoogleDriveImporter {
       source_folder_id = 'root',
       include_shared_drives = 0,
       conflict_policy = 'skip',
+      mode = 'all',
+      selections = null,
     } = this.data;
 
     if (!user_id || !hub_id || !nid) {
@@ -128,15 +130,26 @@ class GoogleDriveImporter {
       // a re-run reuses the existing folder instead of duplicating it.
       const rootFolder = await this._createFolder('GoogleDriveMigration', destFolder, hubDb, user_id);
 
-      await this._traverse({
-        folderId: source_folder_id,
-        destFolder: rootFolder,
-        hubDb,
-        hubHomeDir,
-        includeSharedDrives: !!include_shared_drives,
-        conflictPolicy: conflict_policy,
-        userId: user_id,
-      });
+      if (mode === 'selected' && selections) {
+        await this._migrateSelected({
+          selections,
+          rootFolder,
+          hubDb,
+          hubHomeDir,
+          conflictPolicy: conflict_policy,
+          userId: user_id,
+        });
+      } else {
+        await this._traverse({
+          folderId: source_folder_id,
+          destFolder: rootFolder,
+          hubDb,
+          hubHomeDir,
+          includeSharedDrives: !!include_shared_drives,
+          conflictPolicy: conflict_policy,
+          userId: user_id,
+        });
+      }
     } finally {
       // Mariadb.end() returns undefined (not a promise) and swallows its own
       // errors internally. Chaining `.catch()` on it threw "Cannot read
@@ -239,6 +252,71 @@ class GoogleDriveImporter {
       pageToken = res.data.nextPageToken;
     } while (pageToken);
     return items;
+  }
+
+  /**
+   * Fetch a single item's metadata (selected mode). The server resolves the
+   * name/mimeType itself — never trusts client-supplied names.
+   */
+  async _getMeta(id) {
+    const token = await this._getFreshToken();
+    const res = await axios.get(`https://www.googleapis.com/drive/v3/files/${id}`, {
+      headers: { Authorization: `Bearer ${token}` },
+      params: { fields: 'id, name, mimeType, size' },
+    });
+    return res.data;
+  }
+
+  /**
+   * Selected mode: migrate an explicit pick set under the GoogleDriveMigration
+   * root. Each selected folder is recreated by name and traversed (whole
+   * subtree); each selected file is imported directly into the root.
+   */
+  async _migrateSelected(opts) {
+    const { selections, rootFolder } = opts;
+    const base = {
+      hubDb: opts.hubDb,
+      hubHomeDir: opts.hubHomeDir,
+      conflictPolicy: opts.conflictPolicy,
+      userId: opts.userId,
+      includeSharedDrives: false,
+    };
+
+    for (const folderId of (selections.folder_ids || [])) {
+      if (await this._checkCancelled()) return;
+      let meta;
+      try {
+        meta = await this._getMeta(folderId);
+      } catch (e) {
+        this.errors.push({ folder: folderId, code: 'META_FAILED', reason: e.message });
+        await this._pushProgress(base);
+        continue;
+      }
+      const sub = await this._createFolder(meta.name, rootFolder, opts.hubDb, opts.userId);
+      await this._traverse({ ...base, folderId, destFolder: sub });
+      if (this._cancelled) return;
+    }
+
+    for (const fileId of (selections.file_ids || [])) {
+      if (await this._checkCancelled()) return;
+      let meta;
+      try {
+        meta = await this._getMeta(fileId);
+      } catch (e) {
+        this.errors.push({ file: fileId, code: 'META_FAILED', reason: e.message });
+        await this._pushProgress(base);
+        continue;
+      }
+      this.totalFiles += 1;
+      try {
+        await this._importItem(meta, { ...base, destFolder: rootFolder });
+        this.processedFiles += 1;
+        await this._pushProgress(base, meta.name);
+      } catch (e) {
+        this.errors.push({ file: meta.name, code: 'IMPORT_FAILED', reason: e.message });
+        await this._pushProgress(base);
+      }
+    }
   }
 
   async _traverse(opts) {
