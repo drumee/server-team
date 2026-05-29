@@ -2,114 +2,88 @@ name: CD - deploy server-team
 
 on:
   push:
-    branches: [preview, ci/setup-deploy]
+    branches: [preview]
   workflow_dispatch:
+    inputs:
+      target:
+        description: 'Deploy target environment'
+        type: choice
+        options: [UAT, PROD]
+        default: UAT
 
 concurrency:
-  group: cd-server-team-${{ github.ref_name }}
+  group: cd-server-team-${{ github.event.inputs.target || 'UAT' }}
   cancel-in-progress: false
 
 jobs:
-  build:
-    name: Build
-    runs-on: self-hosted
-    timeout-minutes: 15
-    outputs:
-      endpoint: ${{ steps.ep.outputs.endpoint }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Resolve endpoint
-        id: ep
-        run: |
-          if [ "${{ github.ref_name }}" = "ci/setup-deploy" ]; then
-            EP="liam"
-          else
-            EP="main"
-          fi
-          echo "endpoint=$EP" >> $GITHUB_OUTPUT
-
-      - name: Show env
-        run: |
-          echo "Endpoint: ${{ steps.ep.outputs.endpoint }}"
-          node --version
-          npm --version
-
-      - name: Cache node_modules
-        uses: actions/cache@v4
-        with:
-          path: node_modules
-          key: ${{ runner.os }}-${{ github.repository }}-node-${{ hashFiles('package.json') }}
-
-      - name: Install dependencies
-        run: npm install --no-audit --no-fund
-
   deploy:
     name: Deploy
-    needs: build
     runs-on: self-hosted
-    timeout-minutes: 10
+    timeout-minutes: 15
     env:
-      EP: ${{ needs.build.outputs.endpoint }}
-      RUNTIME_DIR: ${{ vars.DRUMEE_RUNTIME_BASE }}/server
+      SGP_USER: debian
+      SGP_HOST: sgp
+      CONTAINER: drumee
+      REPO_PATH: /usr/src/drumee/server-team
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Cache node_modules
-        uses: actions/cache@v4
-        with:
-          path: node_modules
-          key: ${{ runner.os }}-${{ github.repository }}-node-${{ hashFiles('package.json') }}
-
-      - name: Install dependencies
-        run: npm install --no-audit --no-fund
-
-      - name: Backup current state
+      - name: Resolve target
+        id: target
         run: |
-          sudo mkdir -p $RUNTIME_DIR
-          if [ -d "$RUNTIME_DIR/$EP" ]; then
-            sudo rsync -a --delete $RUNTIME_DIR/$EP/ $RUNTIME_DIR/$EP.backup/
-          fi
+          TARGET="${{ github.event.inputs.target || 'UAT' }}"
+          case "$TARGET" in
+            PROD) ENV_FILE=production; EP=main ;;
+            UAT)  ENV_FILE=deploy;     EP=preview ;;
+            *) echo "Unknown target: $TARGET"; exit 1 ;;
+          esac
+          echo "env_file=$ENV_FILE" >> "$GITHUB_OUTPUT"
+          echo "endpoint=$EP"       >> "$GITHUB_OUTPUT"
+          echo "::notice::Target $TARGET -> npm run deploy $ENV_FILE -> endpoint $EP"
 
-      - name: Sync to runtime dir
+      - name: Pull, deploy, verify, rollback on failure
+        env:
+          ENV_FILE: ${{ steps.target.outputs.env_file }}
+          EP: ${{ steps.target.outputs.endpoint }}
         run: |
-          sudo mkdir -p $RUNTIME_DIR/$EP
-          sudo rsync -a --delete \
-            --exclude=.git --exclude=.dev-tools.rc --exclude=.github --exclude=test --exclude=docs \
-            $GITHUB_WORKSPACE/ $RUNTIME_DIR/$EP/
+          ssh "$SGP_USER@$SGP_HOST" "sudo docker exec -i $CONTAINER bash -s" <<EOSSH
+          set -euo pipefail
+          cd $REPO_PATH
 
-      - name: Restart endpoint
-        run: |
-          sudo /usr/sbin/drumee restart $EP > /dev/null
-          sudo /usr/sbin/drumee restart $EP/service > /dev/null
-          echo "Restarted endpoint"
+          PREV=\$(git rev-parse HEAD)
+          echo ">> Previous commit: \$PREV"
 
-      - name: Verify deployed package
-        run: |
-          server_dir=$RUNTIME_DIR/$EP
-          if [ ! -f "$server_dir/index.js" ] || [ ! -f "$server_dir/service.js" ]; then
-            echo "Missing entry files at $server_dir"
+          echo ">> Fetching origin/preview and hard-resetting working tree"
+          git fetch origin preview
+          git checkout -f preview
+          git reset --hard origin/preview
+          git clean -fd
+          echo ">> New commit: \$(git rev-parse HEAD)"
+
+          rollback() {
+            echo ">> ROLLBACK: reverting to \$PREV"
+            git reset --hard \$PREV
+            npm run deploy -- $ENV_FILE || echo ">> WARNING: rollback redeploy also failed"
+          }
+
+          echo ">> Running npm run deploy $ENV_FILE"
+          if ! npm run deploy -- $ENV_FILE; then
+            echo ">> Deploy command failed"
+            rollback || true
             exit 1
           fi
-          deployed_version=$(sudo cat "$server_dir/package.json" | python3 -c "import sys,json; print(json.load(sys.stdin)['version'])")
-          echo "Deployed version: $deployed_version"
 
-      - name: Rollback on failure
-        if: failure()
-        run: |
-          if [ -d "$RUNTIME_DIR/$EP.backup" ]; then
-            echo "Rolling back to previous version..."
-            sudo rsync -a --delete $RUNTIME_DIR/$EP.backup/ $RUNTIME_DIR/$EP/
-            sudo /usr/sbin/drumee restart $EP > /dev/null
-            sudo /usr/sbin/drumee restart $EP/service > /dev/null
-            echo "Rolled back"
-          else
-            echo "No backup available, cannot rollback"
+          echo ">> Waiting 5s for pm2 to stabilize..."
+          sleep 5
+
+          PORT=\$([ "$EP" = "main" ] && echo 24000 || echo 24001)
+          echo ">> Verifying http://localhost:\$PORT (endpoint $EP)"
+          HTTP_CODE=\$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "http://localhost:\$PORT/" || echo 000)
+          echo ">> HTTP code: \$HTTP_CODE"
+
+          if [[ ! "\$HTTP_CODE" =~ ^[2-4][0-9][0-9]\$ ]]; then
+            echo ">> Verify failed (5xx or unreachable)"
+            rollback || true
+            exit 1
           fi
 
-      - name: Cleanup
-        if: always()
-        continue-on-error: true
-        run: sudo rm -rf $RUNTIME_DIR/$EP.backup/
+          echo ">> Deploy verified ($EP @ \$(git rev-parse --short HEAD))"
+          EOSSH

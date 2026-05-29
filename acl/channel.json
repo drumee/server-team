@@ -847,6 +847,30 @@
           }
         }
       }
+    },
+    "typing": {
+      "doc": "Broadcast an ephemeral typing indicator to all other hub participants over WebSocket. Nothing is persisted; the indicator is rendered transiently in the recipient's chat widget.",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "params": {
+        "state": {
+          "type": "number",
+          "required": false,
+          "doc": "1 = typing, 0 = stopped. Defaults to 1."
+        },
+        "socket_id": {
+          "type": "string",
+          "required": true,
+          "doc": "Caller's WebSocket socket ID. Used to exclude the caller from the broadcast recipients."
+        }
+      },
+      "returns": {
+        "type": "object",
+        "doc": "{ ok: 1 } on success"
+      },
+      "errors": []
     }
   },
   "modules": {

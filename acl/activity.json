@@ -420,9 +420,9 @@
     },
 
     "dismiss_rollup": {
-      "doc": "Alias of notification_dismiss under the consolidated activity.* API. Hides a rollup row from the feed.",
+      "doc": "Alias of notification_dismiss under the consolidated activity.* API. Hides a rollup row from the feed. Allowed to all mebers",
       "scope": "hub",
-      "permission": { "src": "write" },
+      "permission": { "src": "read" },
       "params": {
         "category": { "type": "string", "required": true },
         "key_id": { "type": "string", "required": true },
