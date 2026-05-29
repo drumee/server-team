@@ -128,6 +128,8 @@ async function addMigration(opts = {}) {
     source_folder_id = 'root',
     include_shared_drives = 0,
     conflict_policy = 'skip',
+    mode = 'all',
+    selections = null,
   } = opts;
 
   if (!user_id) throw new Error('addMigration: user_id required');
@@ -142,6 +144,8 @@ async function addMigration(opts = {}) {
     source_folder_id,
     include_shared_drives,
     conflict_policy,
+    mode,
+    selections,
     queued_at: new Date().toISOString(),
   });
 
