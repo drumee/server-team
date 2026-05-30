@@ -244,7 +244,7 @@ class __dmz extends Mfs {
     // Valid access — log it and notify sender in real time
     const actor_id = (guest_id === user.id) ? null : (user.id || null);
     try {
-      const track = await this.yp.await_proc('secure_share_access_log', token, actor_id);
+      const track = await this.yp.await_proc('secure_share_access_log', token, actor_id, this.input.get(Attr.socket_id));
       const row   = toArray(track)[0] || {};
       if (row.hub_id) {
         const recipients = await this.yp.await_proc('entity_sockets', { hub_id: row.hub_id });

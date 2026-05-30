@@ -111,22 +111,33 @@ class __secure_share extends Mfs {
 
     // Only broadcast if the revoke actually happened (procedure returns empty otherwise)
     if (!isEmpty(row) && row.revoked_at) {
+      const eventData = {
+        event           : 'secure_share_revoked',
+        token,
+        nid             : row.node_id,
+        recipient_email : row.recipient_email,
+      };
+      const svcOpt = { service: 'share.track_event' };
+
       try {
+        // Broadcast to hub members (sender's window refreshes its list)
         const recipients = await this.yp.await_proc('entity_sockets', { hub_id });
-        await RedisStore.sendData(
-          this.payload(
-            {
-              event           : 'secure_share_revoked',
-              token,
-              nid             : row.node_id,
-              recipient_email : row.recipient_email,
-            },
-            { service: 'share.track_event' }
-          ),
-          recipients
-        );
+        await RedisStore.sendData(this.payload(eventData, svcOpt), recipients);
       } catch (e) {
-        this.warn('[secure_share.revoke] broadcast failed:', e && e.message);
+        this.warn('[secure_share.revoke] hub broadcast failed:', e && e.message);
+      }
+
+      // Also target the recipient's socket directly using the socket_id stored at
+      // access time — entity_sockets() won't include guest sockets.
+      if (row.active_socket_id) {
+        try {
+          await RedisStore.sendData(
+            this.payload(eventData, svcOpt),
+            [{ socket_id: row.active_socket_id }]
+          );
+        } catch (e) {
+          this.warn('[secure_share.revoke] recipient broadcast failed:', e && e.message);
+        }
       }
     }
 
