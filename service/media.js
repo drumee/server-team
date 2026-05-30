@@ -1236,11 +1236,15 @@ class __media extends Mfs {
       this.uid,
       { sort_by, order, page, type }
     );
+    const file_nid = this.input.get('file_nid');
+    if (file_nid) {
+      data = toArray(data).filter(item => item && item.nid === file_nid);
+    }
     this.output.list(data);
   }
 
   /**
-   * 
+   *
    */
   async show_node_by_with_size() {
     const nid = this.source_granted().id || "0";

@@ -1,0 +1,106 @@
+{
+  "modules": {
+    "private": "service/private/secure_share",
+    "public": ""
+  },
+  "services": {
+    "create": {
+      "doc": "Create a per-email unique secure share token for a file or folder. Stores the token in secure_share_token (yellow_page), sends an invitation email to the recipient, and returns the share link.",
+      "scope": "hub",
+      "permission": {
+        "src": "write",
+        "fast_check": "user_permission"
+      },
+      "log": true,
+      "params": {
+        "nid": {
+          "type": "string",
+          "required": true,
+          "doc": "Node ID of the file or folder to share"
+        },
+        "email": {
+          "type": "string",
+          "required": true,
+          "doc": "Recipient email. Access is restricted to this address unless domain_restriction is also set."
+        },
+        "domain_restriction": {
+          "type": "string",
+          "required": false,
+          "doc": "Optional domain restriction (e.g. company.com). When set, any email from that domain may use the link."
+        },
+        "days": {
+          "type": "integer",
+          "required": false,
+          "default": 0,
+          "doc": "Expiry in days, combined with hours. 0 means no expiry."
+        },
+        "hours": {
+          "type": "integer",
+          "required": false,
+          "default": 0,
+          "doc": "Expiry in hours, combined with days. 0 means no expiry."
+        },
+        "password": {
+          "type": "string",
+          "required": false,
+          "doc": "Optional password the recipient must enter after email verification. Communicated out-of-band. Stored as salted PBKDF2-SHA512 hash — never in plain text."
+        }
+      },
+      "returns": {
+        "id":              { "type": "string",  "doc": "Unique share token" },
+        "link":            { "type": "string",  "doc": "Full share URL to send to the recipient" },
+        "recipient_email": { "type": "string" },
+        "expiry_time":     { "type": "integer", "doc": "Unix timestamp, 0 = no expiry" }
+      },
+      "errors": [
+        { "code": "CREATE_FAILED", "message": "Token creation failed" },
+        { "code": "MISSING_PARAM", "message": "nid and email are required", "http_status": 400 }
+      ]
+    },
+    "list": {
+      "doc": "List all secure share tokens created by the current user for a given node, including status (active / expired / revoked) and access counts.",
+      "scope": "hub",
+      "permission": {
+        "src": "write",
+        "fast_check": "user_permission"
+      },
+      "params": {
+        "nid": {
+          "type": "string",
+          "required": true,
+          "doc": "Node ID to list secure share tokens for"
+        }
+      }
+    },
+    "revoke": {
+      "doc": "Revoke a secure share token (soft delete — sets revoked_at timestamp). Broadcasts a secure_share_revoked event via Redis to all hub socket connections so the recipient loses access instantly.",
+      "scope": "hub",
+      "permission": {
+        "src": "write"
+      },
+      "log": true,
+      "params": {
+        "token": {
+          "type": "string",
+          "required": true,
+          "doc": "Secure share token to revoke"
+        }
+      }
+    },
+    "delete": {
+      "doc": "Hard-delete a secure share token. Only succeeds when the token is already revoked or expired — active tokens are rejected.",
+      "scope": "hub",
+      "permission": {
+        "src": "write"
+      },
+      "log": true,
+      "params": {
+        "token": {
+          "type": "string",
+          "required": true,
+          "doc": "Token to permanently delete. Must already be revoked or expired."
+        }
+      }
+    }
+  }
+}
