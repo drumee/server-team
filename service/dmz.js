@@ -268,10 +268,14 @@ class __dmz extends Mfs {
 
     // Associate session with share creator so hub endpoints (media.show_node_by) work —
     // mirrors the cookie_touch done for normal DMZ tokens at login line 330.
+    // socket_id must be passed so entity_sockets() includes this guest socket in
+    // hub broadcasts (e.g. secure_share_revoked) — same pattern as session.dmz_login.
     if (info.creator_id) {
       try {
         await this.yp.await_proc('cookie_touch', {
-          sid: this.input.sid(), uid: info.creator_id
+          sid       : this.input.sid(),
+          uid       : info.creator_id,
+          socket_id : this.input.get(Attr.socket_id)
         });
       } catch (e) {
         this.warn('[dmz.login] secure_share cookie_touch failed:', e && e.message);
