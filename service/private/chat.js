@@ -92,6 +92,22 @@ class privateChat extends Entity {
     } catch (e) {
       this.warn("[chat.acknowledge] p2p_mention dismiss failed:", e && e.message);
     }
+    // Notify the sender (peer_id) that I've read up to ref_ctime, so their chat
+    // widget can place my "seen" avatar live (Messenger-style). This covers the
+    // case where I read a freshly-received message while the chat is already
+    // open — the on-load read-receipt push lives in messages(). peer_id in the
+    // payload is MY uid so the recipient matches it against their own peerId (I
+    // am their peer); ctime carries the read cursor for applyReadReceipt().
+    try {
+      const cursor = ref_ctime || Math.floor(Date.now() / 1000);
+      const recipients = await this.yp.await_proc("user_sockets", peer_id);
+      await RedisStore.sendData(
+        this.payload([{ peer_id: this.uid, ctime: cursor }], { service: "chat.acknowledge" }),
+        recipients
+      );
+    } catch (e) {
+      this.warn("[chat.acknowledge] read-receipt push failed:", e && e.message);
+    }
     this.output.data({ peer_id });
   }
 
