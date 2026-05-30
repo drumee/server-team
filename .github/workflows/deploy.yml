@@ -64,6 +64,19 @@ jobs:
           echo "Previous: ${PREV:0:8}"
           echo "New     : ${NEW:0:8}"
 
+      - name: Install dependencies
+        run: |
+          ssh "$SGP_USER@$SGP_HOST" "sudo docker exec -i $CONTAINER bash -s" <<EOSSH
+          set -euo pipefail
+          cd $REPO_PATH
+          if ! npm install --no-audit --no-fund > $LOG_FILE 2>&1; then
+            echo "::error::npm install failed. Tail of log:"
+            tail -50 $LOG_FILE
+            exit 1
+          fi
+          echo "Dependencies installed"
+          EOSSH
+
       - name: Deploy
         env:
           ENV_FILE: ${{ steps.target.outputs.env_file }}
