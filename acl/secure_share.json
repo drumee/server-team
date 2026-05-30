@@ -39,6 +39,11 @@
           "required": false,
           "default": 0,
           "doc": "Expiry in hours, combined with days. 0 means no expiry."
+        },
+        "password": {
+          "type": "string",
+          "required": false,
+          "doc": "Optional password the recipient must enter after email verification. Communicated out-of-band. Stored as salted PBKDF2-SHA512 hash — never in plain text."
         }
       },
       "returns": {

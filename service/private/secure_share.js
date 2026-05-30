@@ -20,6 +20,7 @@ const {
 const { Mfs } = require('@drumee/server-core');
 const { isEmpty } = require('lodash');
 const { shouldSendNotification } = require('../lib/email-policy');
+const { hashPassword } = require('../lib/secure-share-password');
 
 class __secure_share extends Mfs {
 
@@ -40,9 +41,12 @@ class __secure_share extends Mfs {
     const fullname = this.user.get('fullname');
     const lang     = this.user.language() || this.input.app_language();
 
+    const rawPassword = this.input.get('password') || '';
+    const passwordHash = rawPassword.trim() ? hashPassword(rawPassword.trim()) : '';
+
     const row = await this.yp.await_proc(
       'secure_share_create',
-      token, hub_id, nid, this.uid, email, domain, expiryHours
+      token, hub_id, nid, this.uid, email, domain, expiryHours, passwordHash
     );
 
     if (isEmpty(row)) {

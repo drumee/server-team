@@ -20,6 +20,7 @@ const { isEmpty } = require('lodash');
 const {
   ID_NOBODY
 } = Constants;
+const { verifyPassword: verifySecureSharePassword } = require('./lib/secure-share-password');
 
 
 //########################################
@@ -141,6 +142,7 @@ class __dmz extends Mfs {
         const secureRes = await this.yp.await_proc('secure_share_info', token);
         if (!isEmpty(secureRes) && !secureRes.failed) {
           res = secureRes;
+          delete res.password_hash;
         }
       } catch (e) {
         this.warn('[dmz.info] secure_share_info lookup failed:', e && e.message);
@@ -165,6 +167,10 @@ class __dmz extends Mfs {
    *
    */
   async _loginSecureShare(token, info) {
+    // Extract password_hash before any early returns — never expose it to the client
+    const storedPasswordHash = info.password_hash || null;
+    delete info.password_hash;
+
     if (info.validity === 'TICKET_REVOKED') {
       return this.output.data({ status: 'TICKET_REVOKED', is_secure: 1 });
     }
@@ -222,6 +228,17 @@ class __dmz extends Mfs {
 
     if (!emailValid) {
       return this.output.data({ status: 'EMAIL_MISMATCH', is_secure: 1 });
+    }
+
+    // Password gate — only evaluated after email is confirmed valid
+    if (info.require_password) {
+      const submittedPassword = (this.input.get(Attr.password) || '').trim();
+      if (!submittedPassword) {
+        return this.output.data({ status: 'REQUIRED_PASSWORD', is_secure: 1 });
+      }
+      if (!verifySecureSharePassword(submittedPassword, storedPasswordHash)) {
+        return this.output.data({ status: 'WRONG_PASSWORD', is_secure: 1 });
+      }
     }
 
     // Valid access — log it and notify sender in real time
