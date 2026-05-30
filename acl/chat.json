@@ -892,6 +892,32 @@
           }
         }
       ]
+    },
+
+    "typing": {
+      "doc": "Broadcast an ephemeral typing indicator to a P2P chat peer over WebSocket. Nothing is persisted; the indicator is rendered transiently in the peer's chat widget.",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "params": {
+        "entity_id": {
+          "type": "string",
+          "required": true,
+          "description": "Recipient contact's user ID (peer_id)"
+        },
+        "state": {
+          "type": "number",
+          "required": false,
+          "default": 1,
+          "description": "1 = typing, 0 = stopped. Defaults to 1."
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "{ ok: 1 } on success"
+      },
+      "errors": []
     }
   },
 

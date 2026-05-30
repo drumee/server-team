@@ -123,9 +123,9 @@ class MfsActivity extends Entity {
   async log() {
     const page = this.input.use(Attr.page) || 1;
     this.debug(`[ACTIVITY] Getting unified log for user ${this.uid}, page: ${page}`);
-    
+
     const result = await this._callUserProc('activity_get_log', this.uid, page);
-    
+
     this.output.list(result);
   }
 
@@ -137,11 +137,11 @@ class MfsActivity extends Entity {
   async folder_log() {
     const nid = this.input.need(Attr.nid);
     const page = this.input.use(Attr.page) || 1;
-    
+
     this.debug(`[ACTIVITY] Getting folder log for nid: ${nid}, user: ${this.uid}, page: ${page}`);
-    
+
     const result = await this._callUserProc('activity_get_folder_log', this.uid, nid, page);
-    
+
     this.output.list(result);
   }
 
@@ -306,6 +306,8 @@ class MfsActivity extends Entity {
         category: r.category,
         key_id: r.key_id,
         hub_id: r.hub_id,
+        nid: r.nid,
+        filename: r.filename || r.hubname || r.surname,
         last_id: r.last_id,
         cnt: r.cnt,
         ctime: r.ctime,
@@ -327,7 +329,7 @@ class MfsActivity extends Entity {
       ...hubs.map((r) => {
         let meta = {};
         if (r.data) {
-          try { meta = typeof r.data === 'string' ? JSON.parse(r.data) : r.data; } catch (_) {}
+          try { meta = typeof r.data === 'string' ? JSON.parse(r.data) : r.data; } catch (_) { }
         }
         return {
           category: 'hub_invite',

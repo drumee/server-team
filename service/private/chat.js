@@ -42,6 +42,7 @@ class privateChat extends Entity {
     this.count_all = this.count_all.bind(this);
     this.attachment = this.attachment.bind(this);
     this.change_status = this.change_status.bind(this);
+    this.typing = this.typing.bind(this);
   }
 
   /**
@@ -92,6 +93,32 @@ class privateChat extends Entity {
       this.warn("[chat.acknowledge] p2p_mention dismiss failed:", e && e.message);
     }
     this.output.data({ peer_id });
+  }
+
+  /**
+   * Ephemeral typing indicator for P2P chat. Broadcasts the caller's typing
+   * state over WebSocket to the peer's active sessions only. Nothing persisted.
+   * peer_id in the payload is the sender's uid so the recipient's chat widget
+   * matches it against their own peerId (the peer is the sender from their
+   * perspective) — same convention used by chat.post.
+   */
+  async typing() {
+    const entity_id = this.input.need(Attr.entity_id);
+    const profile = this.user.get("profile") || {};
+    const data = {
+      author_id: this.uid,
+      uid: this.uid,
+      firstname: this.user.get(Attr.firstname),
+      lastname: profile.lastname,
+      peer_id: this.uid,
+      state: this.input.use("state", 1),
+    };
+    const recipients = await this.yp.await_proc("user_sockets", entity_id);
+    await RedisStore.sendData(
+      this.payload(data, { service: "chat.typing" }),
+      recipients,
+    );
+    this.output.data({ ok: 1 });
   }
 
   /**
