@@ -55,6 +55,7 @@ const { remove_dir, mv } = MfsTools;
 const {
   mkdirSync,
   readFileSync,
+  readdirSync,
   statSync,
   writeFileSync,
   existsSync,
@@ -1642,7 +1643,11 @@ class __media extends Mfs {
     }
     if (vcf) this.writeVcf(vcf, dest_dir);
 
-    let cmd = `${Script.archive} ${dest_dir} index`;
+    // zipname is already sanitized (no spaces/quotes) by download(), so it is
+    // safe to interpolate into the shell command. Archive under that name so
+    // the file on disk matches what the client retrieves.
+    const safe = String(zipname || "index").replace(/[^\w.-]+/g, "-") || "index";
+    let cmd = `${Script.archive} ${dest_dir} ${safe}`;
     if (this.sh_exec(cmd)) {
       return zipid;
     }
@@ -1696,10 +1701,19 @@ class __media extends Mfs {
     let zipid;
     let hub_id = this.hub.get(Attr.id);
     let filename = nodes[2].filename;
-    let zipname = filename.replace(/[ \n\<\>'"\(\)\/]/g, "-");
     const Moment = require("moment");
-    let t = Moment(Moment.now() / 1000, "X").format("YYYY-MM-DD hh:mm");
-    zipname = `Drumee-${t}`;
+    // Name the archive after the folder/file + a filesystem/URL/shell-safe
+    // timestamp (no spaces or colons), e.g. "operations-2026-05-31-0519".
+    // The SAME name is archived on disk, returned to the client, and used for
+    // retrieval — so the media.zip lookup matches (previously the response
+    // returned "Drumee-<hh:mm>" while the archive was written under a different
+    // name, causing a 404).
+    const t = Moment(Moment.now() / 1000, "X").format("YYYY-MM-DD-HHmm");
+    const base = String(filename || "Drumee")
+      .replace(/[^\w.-]+/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^-+|-+$/g, "");
+    let zipname = `${base || "Drumee"}-${t}`;
     if (size <= 1024 * 1024 * 5) {
       zipid = this.create_small_zip(nodes[0], zipname, vcf);
       this.output.data({
@@ -1726,6 +1740,7 @@ class __media extends Mfs {
       hub_id,
       zipid,
       socket_id,
+      zipname,
     };
     let cmd = resolve(OFFLINE_DIR, "download.js");
     const str_args = JSON.stringify(args);
@@ -1766,13 +1781,20 @@ class __media extends Mfs {
     // Use this.uid to match the path used by create_small_zip() and
     // create_large_zip(). Using hub_id caused path mismatch in workspaces
     // where hub_id ≠ uid, resulting in 404 on zip retrieval.
-    const src = join(
-      tmp_dir,
-      DOWNLOAD_FOLDER,
-      this.uid,
-      id,
-      `${zipname}.zip`
-    );
+    const dir = join(tmp_dir, DOWNLOAD_FOLDER, this.uid, id);
+    // The on-disk archive name does NOT match the friendly zipname the client
+    // sends: create_small_zip() always writes "index.zip", and the large-zip
+    // worker writes a sanitized name (spaces → "-"). Each id dir holds exactly
+    // one archive, so resolve to the real file: try the requested name first,
+    // then fall back to whatever single .zip is present. (Trusting the
+    // friendly zipname for the path produced a dangling symlink → 404.)
+    let src = join(dir, `${zipname}.zip`);
+    if (!existsSync(src)) {
+      const zips = existsSync(dir)
+        ? readdirSync(dir).filter((f) => f.toLowerCase().endsWith(".zip"))
+        : [];
+      if (zips.length) src = join(dir, zips[0]);
+    }
     const target = join(
       mfs_dir,
       DOWNLOAD_FOLDER,
@@ -1780,7 +1802,10 @@ class __media extends Mfs {
       id
     );
     mkdirSync(target, { recursive: true });
-    const file = join(target, `${zipname}.zip`);
+    // Stable, space-free link name for the X-Accel-Redirect path; the friendly
+    // download filename is set via the `name` option so the user still gets
+    // "Drumee-….zip" even though the archive name carries spaces/colons.
+    const file = join(target, `${id}.zip`);
     const fileio = new FileIo(this);
 
     // In case of download several time, remove existing symlink
@@ -1788,10 +1813,11 @@ class __media extends Mfs {
       rmSync(file);
     }
 
-    symlinkSync(src, file);
-    if (existsSync(file)) {
+    if (existsSync(src)) {
+      symlinkSync(src, file);
       const opt = {
         path: file,
+        name: `${zipname}.zip`,
         mimetype: "application/zip",
         code: 200,
       };
