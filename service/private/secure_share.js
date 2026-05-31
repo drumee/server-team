@@ -44,10 +44,16 @@ class __secure_share extends Mfs {
     const rawPassword = this.input.get('password') || '';
     const passwordHash = rawPassword.trim() ? hashPassword(rawPassword.trim()) : '';
 
-    const row = await this.yp.await_proc(
-      'secure_share_create',
-      token, hub_id, nid, this.uid, email, domain, expiryHours, passwordHash
-    );
+    const row = await this.yp.await_proc('secure_share_create', {
+      token,
+      hub_id,
+      node_id        : nid,
+      creator_id     : this.uid,
+      recipient_email: email,
+      domain_restriction: domain  || null,
+      expiry_hours   : expiryHours,
+      password_hash  : passwordHash || null,
+    });
 
     if (isEmpty(row)) {
       return this.output.data({ status: 'CREATE_FAILED' });
