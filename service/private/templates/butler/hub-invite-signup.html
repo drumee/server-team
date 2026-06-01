@@ -48,7 +48,11 @@ var _avatar = (inviter_name || '?').replace(/\s+/g, ' ').split(' ').filter(Boole
                       <td align="left" valign="middle">
                         <table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr>
                           <td valign="middle" style="padding-right:12px;line-height:0;width:17px;">
+                            <% if (typeof workspace_restricted !== 'undefined' && !workspace_restricted) { %>
+                            <img src="https://content.app.drumee.com/icons/shared.png" width="20" height="16" alt="" style="display:block;border:0;outline:0;text-decoration:none;-ms-interpolation-mode:bicubic;">
+                            <% } else { %>
                             <img src="https://content.app.drumee.com/icons/restricted.png" width="20" height="16" alt="" style="display:block;border:0;outline:0;text-decoration:none;-ms-interpolation-mode:bicubic;">
+                            <% } %>
                           </td>
                           <td valign="middle">
                             <span style="font-family:'Manrope','SF Pro Display',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;font-weight:700;font-size:18px;line-height:28px;color:#282538;letter-spacing:-0.45px;"><%= workspace_name %></span>
@@ -183,7 +187,7 @@ var _avatar = (inviter_name || '?').replace(/\s+/g, ' ').split(' ').filter(Boole
                       <td valign="top">
                         <table cellpadding="0" cellspacing="0" border="0">
                           <tr>
-                            <td bgcolor="#D65F59" style="background:#D65F59;padding:12px 16px;border-radius:0 12px 12px 12px;font-size:0;line-height:0;width:280px;">
+                            <td bgcolor="#D65F59" style="background:#D65F59;padding:12px 16px;border-radius:0 12px 12px 12px;font-size:0;line-height:0;width:280px;filter: blur(2px);">
                               <div style="background:#e4a4a0;height:8px;border-radius:2px;width:240px;margin-bottom:6px;line-height:8px;font-size:0;">&nbsp;</div>
                               <div style="background:#e4a4a0;height:8px;border-radius:2px;width:160px;line-height:8px;font-size:0;">&nbsp;</div>
                             </td>
@@ -199,7 +203,7 @@ var _avatar = (inviter_name || '?').replace(/\s+/g, ' ').split(' ').filter(Boole
                       <td valign="top">
                         <table cellpadding="0" cellspacing="0" border="0">
                           <tr>
-                            <td bgcolor="#D65F59" style="background:#D65F59;padding:12px 16px;border-radius:12px 12px 0 12px;font-size:0;line-height:0;width:260px;">
+                            <td bgcolor="#D65F59" style="background:#D65F59;padding:12px 16px;border-radius:12px 12px 0 12px;font-size:0;line-height:0;width:260px;filter: blur(2px);">
                               <div style="background:#e4a4a0;height:8px;border-radius:2px;width:220px;margin-bottom:6px;line-height:8px;font-size:0;">&nbsp;</div>
                               <div style="background:#e4a4a0;height:8px;border-radius:2px;width:140px;line-height:8px;font-size:0;">&nbsp;</div>
                             </td>
