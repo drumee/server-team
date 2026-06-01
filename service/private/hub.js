@@ -684,10 +684,22 @@ class __private_hub extends Hub {
     const homepath = this.input.homepath();
     const area = this.hub.get(Attr.area);
     const isShareLink = (area === "share");
+    // Workspace-level shared/restricted flag (same rule as the app's security
+    // panel): share/dmz are "shared", everything else is restricted. Drives the
+    // preview-card header icon in the email templates.
+    const workspace_restricted = !(area === "share" || area === "dmz");
     const EXPIRY_DAYS = 7;
     const expiryTs = Math.floor(Date.now() / 1000) + EXPIRY_DAYS * 86400;
     const message = this.input.use(Attr.message)
       || Cache.message("_x_add_you_to_team", lang).format(username, hubname);
+    // Top-3 workspace preview shared by all invite emails (same workspace for
+    // every invitee in this call), fetched once. Each item carries a
+    // `restricted` flag so the templates dim restricted rows and leave shared
+    // ones clear.
+    const preview_items = await this._workspacePreviewItems();
+    // Latest 2 non-meeting messages for the "Recent Activity" preview; shown
+    // (clear) for shared workspaces, kept redacted for restricted ones.
+    const recent_messages = await this._recentMessages();
     const results = [];
 
     for (const email of invitees) {
@@ -697,7 +709,7 @@ class __private_hub extends Hub {
         const isDrumate = drumate && drumate.id;
 
         if (isShareLink && !isDrumate) {
-          await this._inviteViaToken(email, hubId, privilege, expiryTs, username, hubname);
+          await this._inviteViaToken(email, hubId, privilege, expiryTs, username, hubname, preview_items, workspace_restricted, recent_messages);
           results.push({ email, branch: "A", status: "ok" });
         } else if (isDrumate) {
           const r = await this._grantMembership(drumate.id, privilege, 0, message, mfs_home, hubname, username);
@@ -721,7 +733,7 @@ class __private_hub extends Hub {
           }
           await this._sendInviteEmail("hub-invite-added", email,
             `You've been added to ${hubname}`,
-            { inviter_name: username, workspace_name: hubname, link: `${homepath}#/welcome/signup?email=${encodeURIComponent(email)}` });
+            { inviter_name: username, workspace_name: hubname, link: `${homepath}#/welcome/signup?email=${encodeURIComponent(email)}`, preview_items, workspace_restricted, recent_messages });
           results.push({ email, branch: "B", status: "ok" });
         } else {
           await this.yp.await_proc(
@@ -729,7 +741,7 @@ class __private_hub extends Hub {
           );
           await this._sendInviteEmail("hub-invite-signup", email,
             `${username} invited you to join ${hubname}`,
-            { inviter_name: username, workspace_name: hubname, link: `${homepath}#/welcome/signup?email=${encodeURIComponent(email)}` });
+            { inviter_name: username, workspace_name: hubname, link: `${homepath}#/welcome/signup?email=${encodeURIComponent(email)}`, preview_items, workspace_restricted, recent_messages });
           results.push({ email, branch: "C", status: "ok" });
         }
       } catch (err) {
@@ -743,7 +755,7 @@ class __private_hub extends Hub {
   /**
    * Nhánh A: tạo token mời share-link + gửi email kèm link.
    */
-  async _inviteViaToken(email, hubId, privilege, expiryTs, username, hubname) {
+  async _inviteViaToken(email, hubId, privilege, expiryTs, username, hubname, preview_items, workspace_restricted, recent_messages) {
     const { randomBytes } = require("crypto");
     const secret = randomBytes(24).toString("hex");
     const method = `hub_invite:${hubId}`;
@@ -755,7 +767,83 @@ class __private_hub extends Hub {
     const link = `${homepath}#/welcome/signup?invite=${encodeURIComponent(secret)}`;
     await this._sendInviteEmail("hub-invite-link", email,
       `${username} invited you to ${hubname}`,
-      { inviter_name: username, workspace_name: hubname, link, expiry_days: 7 });
+      { inviter_name: username, workspace_name: hubname, link, expiry_days: 7, preview_items, workspace_restricted, recent_messages });
+  }
+
+  /**
+   * Top-3 workspace items (folders first, then files) for the invite email
+   * previews. Listing is read from the inviter's perspective (this.uid) since a
+   * not-yet-existing invitee has no permission on the workspace yet. Each item
+   * is { name, date, icon, restricted }; `restricted` is false only for share/
+   * dmz nodes (the "shared" mode in the app) — templates dim restricted rows and
+   * leave shared rows clear. Returns [] on any error so the email renders no
+   * preview rows.
+   */
+  async _workspacePreviewItems() {
+    const ICON_BASE = "https://content.app.drumee.com/icons";
+    try {
+      const params = JSON.stringify({ sort_by: "rank", order: "asc", page: 1, type: "all" });
+      const rows = await this.db.await_proc("mfs_show_node_by", "0", this.uid, params);
+      const list = isArray(rows) ? rows : (rows ? [rows] : []);
+      const isFolder = (it) => it.ftype === "folder" || it.ftype === "hub" || it.filetype === "folder";
+      const top = [...list.filter(isFolder), ...list.filter((it) => !isFolder(it))].slice(0, 3);
+      return top.map((it) => {
+        const base = it.ext ? `${it.filename}.${it.ext}` : it.filename;
+        const name = base.length > 32 ? `${base.slice(0, 31)}…` : base;
+        const ftype = it.ftype || it.filetype;
+        const ts = Number(it.mtime || it.ctime || 0) * 1000;
+        const date = ts
+          ? new Date(ts).toLocaleDateString("en-US", { month: "short", day: "numeric" })
+          : "";
+        // "shared" mode == area share/dmz (matches the app's security-panel
+        // rule); everything else is treated as restricted and dimmed.
+        const restricted = !(it.area === "share" || it.area === "dmz");
+        // Icon by type: folders reflect shared/restricted state; files and
+        // images use their own glyphs.
+        let icon;
+        if (ftype === "folder" || ftype === "hub") icon = restricted ? "restricted.png" : "shared.png";
+        else if (ftype === "image") icon = "image.png";
+        else icon = "files.png";
+        return { name, date, icon: `${ICON_BASE}/${icon}`, restricted };
+      });
+    } catch (err) {
+      this.warn("[hub] invite: preview fetch failed", err && err.message);
+      return [];
+    }
+  }
+
+  /**
+   * Latest 2 real chat messages (newest first) for the invite email "Recent
+   * Activity" preview. Excludes [[MEETING:...]] system messages. Uses a plain
+   * SELECT — NOT channel_list_messages, which has a read-marking side effect
+   * (writes read_channel / _seen_) we must not trigger from an invite. Each
+   * item is { text, initials }. Returns [] on any error.
+   */
+  async _recentMessages() {
+    try {
+      const sql =
+        "SELECT c.message AS message, " +
+        "COALESCE(CONCAT(d.firstname, ' ', d.lastname), du.name, '') AS fullname " +
+        "FROM channel c " +
+        "LEFT JOIN yp.drumate d ON c.author_id = d.id " +
+        "LEFT JOIN yp.dmz_user du ON c.author_id = du.id " +
+        "WHERE c.status = 'active' AND c.message NOT LIKE '[[MEETING:%' " +
+        "ORDER BY c.sys_id DESC LIMIT 2";
+      const rows = await this.db.await_query(sql);
+      const list = isArray(rows) ? rows : (rows ? [rows] : []);
+      return list.map((m) => {
+        const text = String(m.message || "").replace(/\s+/g, " ").trim();
+        const name = String(m.fullname || "").trim();
+        const parts = name.split(/\s+/).filter(Boolean);
+        const initials = parts.length >= 2
+          ? (parts[0][0] + parts[parts.length - 1][0]).toUpperCase()
+          : (name.slice(0, 2) || "?").toUpperCase();
+        return { text: text.length > 80 ? `${text.slice(0, 79)}…` : text, initials };
+      });
+    } catch (err) {
+      this.warn("[hub] invite: recent messages fetch failed", err && err.message);
+      return [];
+    }
   }
 
   /**
