@@ -20,6 +20,7 @@ const { isEmpty } = require('lodash');
 const {
   ID_NOBODY
 } = Constants;
+const { verifyPassword: verifySecureSharePassword } = require('./lib/secure-share-password');
 
 
 //########################################
@@ -129,14 +130,32 @@ class __dmz extends Mfs {
 
 
   /**
- * 
+ *
  */
   async info() {
-    let res = await this.yp.await_proc('dmz_info_next', this.input.need(Attr.token));
-    if (isEmpty(res)) {
-      res.status = 'WRONG_TICKET'
+    const token = this.input.need(Attr.token);
+    let res = await this.yp.await_proc('dmz_info_next', token);
+
+    // If not found in dmz_token, check secure_share_token (no-op for normal DMZ tokens)
+    if (isEmpty(res) || res.failed) {
+      try {
+        const secureRes = await this.yp.await_proc('secure_share_info', token);
+        if (!isEmpty(secureRes) && !secureRes.failed) {
+          res = secureRes;
+          delete res.password_hash;
+        }
+      } catch (e) {
+        this.warn('[dmz.info] secure_share_info lookup failed:', e && e.message);
+      }
+    }
+
+    if (isEmpty(res) || res.failed) {
+      res = res || {};
+      res.status = 'WRONG_TICKET';
+    } else if (res.is_secure) {
+      res.status = res.validity === 'TICKET_OK' ? 'REQUIRED_EMAIL' : res.validity;
     } else if (res.require_password) {
-      res.status = 'REQUIRED_PASSWORD'
+      res.status = 'REQUIRED_PASSWORD';
     }
     const guest_id = Cache.getSysConf("guest_id");
     res.guest_id = guest_id;
@@ -145,11 +164,182 @@ class __dmz extends Mfs {
 
 
   /**
-   * 
+   *
+   */
+  async _loginSecureShare(token, info) {
+    // Extract password_hash before any early returns — never expose it to the client
+    const storedPasswordHash = info.password_hash || null;
+    delete info.password_hash;
+
+    if (info.validity === 'TICKET_REVOKED') {
+      return this.output.data({ status: 'TICKET_REVOKED', is_secure: 1 });
+    }
+    if (info.validity === 'TICKET_EXPIRED') {
+      return this.output.data({ status: 'TICKET_EXPIRED', is_secure: 1 });
+    }
+
+    // Resolve logged-in side user from cookie (mirrors normal login flow)
+    let user = this.user.toJSON();
+    const guest_id = Cache.getSysConf("guest_id");
+    let { regsid } = this.input.get(Attr.cookie);
+    if (regsid) {
+      let u = await this.yp.await_proc("cookie_retrieve_user", regsid);
+      if (u && ![ID_NOBODY, guest_id].includes(u.id)) {
+        if (u.profile) {
+          user.profile = u.profile;
+          user.uid = u.id;
+          user.id  = u.id;
+        }
+      }
+    }
+
+    // Email validation — logged-in Drumee members skip the form if their account
+    // email matches the share (session auth is stronger proof than typing an email)
+    let submittedEmail = (this.input.get(Attr.email) || '').toLowerCase().trim();
+
+    if (!submittedEmail && user.id && ![ID_NOBODY, guest_id].includes(user.id)) {
+      try {
+        const p = typeof user.profile === 'string' ? JSON.parse(user.profile) : (user.profile || {});
+        const accountEmail = (p.email || '').toLowerCase().trim();
+        if (accountEmail) {
+          const recipientCheck = (info.recipient_email || '').toLowerCase().trim();
+          let autoMatch = (accountEmail === recipientCheck);
+          if (!autoMatch && info.domain_restriction) {
+            autoMatch = (accountEmail.split('@')[1] || '') === info.domain_restriction.toLowerCase().trim();
+          }
+          if (autoMatch) submittedEmail = accountEmail;
+        }
+      } catch (e) {
+        this.warn('[dmz.login] secure_share auto-grant parse failed:', e && e.message);
+      }
+    }
+
+    if (!submittedEmail) {
+      return this.output.data({ ...info, status: 'REQUIRED_EMAIL', is_secure: 1 });
+    }
+
+    const recipientEmail = (info.recipient_email || '').toLowerCase().trim();
+    let emailValid = (submittedEmail === recipientEmail);
+
+    if (!emailValid && info.domain_restriction) {
+      const submittedDomain = submittedEmail.split('@')[1] || '';
+      emailValid = (submittedDomain === info.domain_restriction.toLowerCase().trim());
+    }
+
+    if (!emailValid) {
+      return this.output.data({ status: 'EMAIL_MISMATCH', is_secure: 1 });
+    }
+
+    // Password gate — only evaluated after email is confirmed valid
+    if (info.require_password) {
+      const submittedPassword = (this.input.get(Attr.password) || '').trim();
+      if (!submittedPassword) {
+        return this.output.data({ status: 'REQUIRED_PASSWORD', is_secure: 1 });
+      }
+      if (!verifySecureSharePassword(submittedPassword, storedPasswordHash)) {
+        return this.output.data({ status: 'WRONG_PASSWORD', is_secure: 1 });
+      }
+    }
+
+    // Valid access — log it and notify sender in real time
+    const actor_id = (guest_id === user.id) ? null : (user.id || null);
+    try {
+      const track = await this.yp.await_proc('secure_share_access_log', token, actor_id, this.input.get(Attr.socket_id));
+      const row   = toArray(track)[0] || {};
+      if (row.hub_id) {
+        const recipients = await this.yp.await_proc('entity_sockets', { hub_id: row.hub_id });
+        await RedisStore.sendData(
+          this.payload(
+            {
+              event           : 'secure_share_opened',
+              token,
+              nid             : info.node_id,
+              recipient_email : submittedEmail,
+              access_count    : (info.access_count || 0) + 1,
+            },
+            { service: 'share.track_event' }
+          ),
+          recipients
+        );
+      }
+    } catch (e) {
+      this.warn('[dmz.login] secure_share access_log failed:', e && e.message);
+    }
+
+    // Associate session with share creator so hub endpoints (media.show_node_by) work —
+    // mirrors the cookie_touch done for normal DMZ tokens at login line 330.
+    // socket_id must be passed so entity_sockets() includes this guest socket in
+    // hub broadcasts (e.g. secure_share_revoked) — same pattern as session.dmz_login.
+    if (info.creator_id) {
+      try {
+        await this.yp.await_proc('cookie_touch', {
+          sid       : this.input.sid(),
+          uid       : info.creator_id,
+          socket_id : this.input.get(Attr.socket_id)
+        });
+      } catch (e) {
+        this.warn('[dmz.login] secure_share cookie_touch failed:', e && e.message);
+      }
+    }
+
+    // Hub-level expiry display fields (same as normal login)
+    let rows = await this.yp.await_proc('forward_proc', info.hub_id, 'dmz_settings', ``);
+    if (rows && rows[0]) {
+      info.hours      = rows[0].hours;
+      info.days       = rows[0].days;
+      info.dmz_expiry = rows[0].dmz_expiry;
+    }
+
+    // If the shared node is a file (not a folder/hub), show_node_by(file_nid) returns
+    // empty because files have no children. Use the parent folder instead so the file
+    // appears in the listing. Keep node_id as-is for reference.
+    try {
+      const nodeRows = await this.yp.await_proc('forward_proc', info.hub_id, 'mfs_node_attr', `'${info.nid}'`);
+      const nodeAttr = toArray(nodeRows)[0] || {};
+      if (nodeAttr.filetype && nodeAttr.filetype !== 'folder' && nodeAttr.filetype !== 'hub' && nodeAttr.pid) {
+        info.file_nid = info.nid;  // specific file — sent to UI for filtering
+        info.nid = nodeAttr.pid;   // parent folder — used by show_node_by
+      }
+    } catch (e) {
+      this.warn('[dmz.login] secure_share node type check failed:', e && e.message);
+    }
+
+    let area     = this.hub.get(Attr.area);
+    let is_guest = (guest_id === user.id);
+    if (user.profile) {
+      user.profile.is_guest = is_guest;
+    }
+    user.uid = user.id;
+
+    return this.output.data({
+      ...user,
+      ...info,
+      is_secure : 1,
+      status    : 'TICKET_OK',
+      validity  : 'TICKET_OK',
+      guest_id  : info.uid || guest_id,
+      area,
+      is_guest,
+    });
+  }
+
+  /**
+   *
    */
   async login() {
     let token = this.input.need(Attr.token);
     let password = this.input.get(Attr.password);
+
+    // Check secure_share_token first — leaves normal dmz_token flow completely untouched
+    try {
+      const secureInfo = await this.yp.await_proc('secure_share_info', token);
+      if (!isEmpty(secureInfo) && !secureInfo.failed) {
+        return this._loginSecureShare(token, secureInfo);
+      }
+    } catch (e) {
+      this.warn('[dmz.login] secure_share_info lookup failed:', e && e.message);
+    }
+
     let info = await this.yp.await_proc('dmz_info_next', token);
     if (!info) {
       this.output.data({ status: "TICKET_INVALID" });

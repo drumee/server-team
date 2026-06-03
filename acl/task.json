@@ -1,12 +1,24 @@
 {
   "services": {
     "list": {
-      "doc": "List all tasks in the current hub (folder), ordered by Kanban column then rank. Returns all tasks regardless of status.",
+      "doc": "List tasks scoped to a folder node, ordered by Kanban column then rank. Returns all statuses for that folder.",
       "scope": "hub",
       "permission": {
         "src": "read"
       },
-      "params": {},
+      "params": {
+        "nid": {
+          "type": "string",
+          "required": false,
+          "doc": "Folder node id to scope to. Absent/null returns legacy unscoped (nid IS NULL) tasks."
+        },
+        "include_unscoped": {
+          "type": "number",
+          "required": false,
+          "default": 0,
+          "doc": "When 1 (workspace-root view), also include legacy tasks with no folder (nid IS NULL)."
+        }
+      },
       "returns": {
         "type": "array",
         "doc": "Array of task objects ordered by status column then rank",
@@ -20,7 +32,8 @@
             "priority": { "type": "string", "doc": "Priority: low | medium | high | urgent" },
             "due_date": { "type": "string", "doc": "Due date (YYYY-MM-DD), null if not set" },
             "created_by": { "type": "string", "doc": "UID of the user who created the task" },
-            "assignee_uid": { "type": "string", "doc": "UID of the assignee, null if unassigned" },
+            "nid": { "type": "string", "doc": "Folder node id the task belongs to, null if workspace-level (legacy)" },
+            "assignee_uids": { "type": "string", "doc": "Comma-separated list of assignee UIDs, null if unassigned" },
             "rank": { "type": "number", "doc": "Position within the status column" },
             "ctime": { "type": "number", "doc": "Unix timestamp of creation" },
             "mtime": { "type": "number", "doc": "Unix timestamp of last update" },
@@ -30,7 +43,7 @@
       }
     },
     "create": {
-      "doc": "Create a new task in the current hub (folder). The task is placed at the bottom of the target status column.",
+      "doc": "Create a new task scoped to a folder node. The task is placed at the bottom of the target status column within that folder.",
       "scope": "hub",
       "permission": {
         "src": "write"
@@ -65,10 +78,21 @@
           "required": false,
           "doc": "Due date in YYYY-MM-DD format. Optional."
         },
+        "nid": {
+          "type": "string",
+          "required": false,
+          "doc": "Folder node id the task belongs to. Absent/null = workspace-level."
+        },
+        "assignee_uids": {
+          "type": "array",
+          "required": false,
+          "doc": "UIDs of the users to assign. Optional. Each must be a valid drumate.",
+          "items": { "type": "string" }
+        },
         "assignee_uid": {
           "type": "string",
           "required": false,
-          "doc": "UID of the user to assign the task to. Optional."
+          "doc": "Deprecated single-assignee form (use assignee_uids). Still accepted."
         }
       },
       "returns": {
@@ -151,7 +175,7 @@
       ]
     },
     "update_assignee": {
-      "doc": "Assign or unassign a task. Pass assignee_uid=null to clear the assignment.",
+      "doc": "Replace a task's assignee set (multi-assignee). Pass the full new set in assignee_uids; an empty array clears all assignees.",
       "scope": "hub",
       "permission": {
         "src": "write"
@@ -162,10 +186,16 @@
           "required": true,
           "doc": "Task ID"
         },
+        "assignee_uids": {
+          "type": "array",
+          "required": false,
+          "doc": "Full new set of assignee UIDs. [] clears all. Each must be a valid drumate.",
+          "items": { "type": "string" }
+        },
         "assignee_uid": {
           "type": "string",
           "required": false,
-          "doc": "UID of the user to assign the task to. Null to unassign."
+          "doc": "Deprecated single-assignee form (use assignee_uids). Still accepted; null unassigns."
         }
       },
       "returns": {

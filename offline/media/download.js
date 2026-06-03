@@ -53,6 +53,9 @@ class __offline_media_zip extends Offline {
     this.zipid = data.zipid;
     this.nodes = data.nodes;
     this.socket_id = data.socket_id;
+    // Canonical archive name from the handler (folder/file + safe timestamp).
+    // Used both for the on-disk archive and for the zipname echoed to the client.
+    this.zipname = data.zipname;
     this.timestamp = Moment(Moment.now() / 1000, 'X').format("YYYY-MM-DD hh:mm");
     for (let name of ['lang', 'uid', 'zipid', 'socket_id']) {
       if (isEmpty(this[name])) {
@@ -198,7 +201,13 @@ class __offline_media_zip extends Offline {
         progress: Math.ceil(100 * (count / length))
       })
     }
-    let zname = this.filename.replace(/[ \n\<\>'"\(\)\/]/g, '-');
+    // Prefer the canonical name passed by the handler; fall back to a sanitized
+    // node filename. Keep it shell/URL-safe (no spaces/colons) so the archive
+    // on disk matches what the client retrieves via media.zip.
+    let zname =
+      this.zipname ||
+      String(this.filename || `Drumee-${this.timestamp}`).replace(/[^\w.-]+/g, "-");
+    zname = zname.replace(/-+/g, "-").replace(/^-+|-+$/g, "") || "Drumee";
 
     const { spawn } = require('child_process');
     this.zipname = zname;

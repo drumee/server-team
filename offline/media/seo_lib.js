@@ -296,6 +296,36 @@ class SeoIndexer {
   }
 
   /**
+   * Render the document's first page to a static content poster (thumb.png)
+   * so the file browser shows it instead of a generic icon. gm rasterizes PDF
+   * page 0 at natural aspect (the client cover+top-crops it). thumb.png is NOT
+   * in cleanup()'s temp list, so it persists. On success we flag the node
+   * (metadata.poster) so the client only shows the poster once it exists.
+   */
+  async generatePoster(pdfPath) {
+    if (!pdfPath || !existsSync(pdfPath)) return;
+    const mfs_dir = resolve(this.node.mfs_root, this.node.id);
+    const out = join(mfs_dir, 'thumb.png');
+    if (!existsSync(out)) {
+      // -density for crisp text; flatten onto white (PDF pages are transparent);
+      // -resize WxH keeps natural page aspect (no square crop / no letterbox).
+      const cmd = `gm convert -density 150 -auto-orient "${pdfPath}[0]" ` +
+        `-background white -flatten -resize 600x600 +profile "*" "${out}"`;
+      this.execCommand(cmd, 60000);
+    }
+    if (existsSync(out)) {
+      try {
+        await this.db.await_proc('mfs_set_poster', this.node.id);
+        this.log('Poster ready:', out);
+      } catch (e) {
+        this.log('mfs_set_poster failed:', e.message);
+      }
+    } else {
+      this.log('Poster not produced by gm for', pdfPath);
+    }
+  }
+
+  /**
    * Main indexing function
    */
   async index() {
@@ -305,6 +335,8 @@ class SeoIndexer {
     const src = resolve(mfs_dir, `orig.${node.extension}`);
 
     let text = '';
+    // Source PDF used to render the first-page content poster (thumb.png).
+    let posterSrc = null;
     const startTime = Date.now();
 
     try {
@@ -320,6 +352,7 @@ class SeoIndexer {
       switch (ext) {
         // PDF
         case 'pdf':
+          posterSrc = src;
           text = await this.extractFromPdf(src, index);
           break;
 
@@ -333,6 +366,7 @@ class SeoIndexer {
         case 'odt':
         case 'odp':
           const pdfPath = await this.convertToPdf(node);
+          posterSrc = pdfPath;
           text = await this.extractFromPdf(pdfPath, index);
           break;
 
@@ -362,6 +396,18 @@ class SeoIndexer {
 
         default:
           throw new Error(`Unsupported file extension: ${ext}`);
+      }
+
+      // Phase 2: render the first-page content poster while the source PDF
+      // still exists (cleanup() removes preview.pdf afterwards). Done before
+      // text validation so scanned / text-less docs still get a thumbnail;
+      // a poster failure must never abort indexing.
+      if (posterSrc) {
+        try {
+          await this.generatePoster(posterSrc);
+        } catch (e) {
+          this.log('Poster generation failed:', e.message);
+        }
       }
 
       // Validate extraction

@@ -55,11 +55,51 @@ class __private_task extends Entity {
   }
 
   /**
-   * List all tasks in the current hub (folder), ordered by status column then rank.
+   * List tasks scoped to a folder node.
+   * Params: nid (folder node id; null/absent = legacy unscoped), include_unscoped
+   * (1 on the workspace-root view to also surface legacy nid-less tasks).
    */
   async list() {
-    const data = await this.db.await_proc('task_list');
+    const nid = this.input.use('nid', null);
+    const include_unscoped = this.input.use('include_unscoped', 0) ? 1 : 0;
+    // await_run (not await_proc) preserves a JS null nid when binding.
+    const data = await this.db.await_run(
+      'CALL task_list(?, ?)',
+      [nid, include_unscoped]
+    );
     this.output.list(data);
+  }
+
+  /**
+   * Validate that every uid in the list references a real drumate.
+   * Returns the de-duplicated, cleaned uid array, or throws a user exception.
+   */
+  async _validateAssignees(uids) {
+    const clean = [];
+    for (const uid of uids) {
+      if (!uid) continue;
+      if (clean.includes(uid)) continue;
+      const drumate = await this.yp.await_proc('drumate_exists', uid);
+      if (isEmpty(drumate)) {
+        this.exception.user('INVALID_ASSIGNEE');
+        return null;
+      }
+      clean.push(uid);
+    }
+    return clean;
+  }
+
+  /**
+   * Read the assignee set from the request, accepting the multi-assignee
+   * `assignee_uids` array and falling back to the legacy single `assignee_uid`.
+   * Returns null when the caller supplied neither key (i.e. "unchanged").
+   */
+  _readAssignees() {
+    const raw = this.input.use('assignee_uids', null);
+    if (raw != null) return toArray(raw);
+    const single = this.input.use('assignee_uid', null);
+    if (single != null) return single ? [single] : [];
+    return null;
   }
 
   /**
@@ -72,25 +112,30 @@ class __private_task extends Entity {
     let status = this.input.use(Attr.status, 'todo');
     let priority = this.input.use('priority', 'medium');
     const due_date = this.input.use('due_date', null);
-    const assignee_uid = this.input.use('assignee_uid', null);
+    // Folder scope: media node id of the folder the task belongs to (nullable).
+    const nid = this.input.use('nid', null);
+    // Multi-assignee: array (or legacy single). null/[] = unassigned.
+    const assignees = (await this._validateAssignees(this._readAssignees() || []));
+    if (assignees == null) return; // invalid assignee — exception already raised
 
     if (!VALID_STATUSES.includes(status)) status = 'todo';
     if (!VALID_PRIORITIES.includes(priority)) priority = 'medium';
 
-    if (assignee_uid) {
-      const drumate = await this.yp.await_proc('drumate_exists', assignee_uid);
-      if (isEmpty(drumate)) {
-        return this.exception.user('INVALID_ASSIGNEE');
-      }
-    }
-
     const id = await this.yp.await_func('uniqueId');
     // Bypass `await_proc` which coerces JS null to '' before binding —
     // STRICT_TRANS_TABLES rejects '' for nullable DATE / VARCHAR columns.
-    const data = await this.db.await_run(
+    let data = await this.db.await_run(
       'CALL task_create(?, ?, ?, ?, ?, ?, ?, ?)',
-      [id, title, description, status, priority, due_date, this.uid, assignee_uid]
+      [id, title, description, status, priority, due_date, this.uid, nid]
     );
+    if (assignees.length) {
+      // Re-reads the row with assignee_uids populated, so the response/broadcast
+      // reflect the assignments.
+      data = await this.db.await_run(
+        'CALL task_set_assignees(?, ?)',
+        [id, assignees.join(',')]
+      );
+    }
     await this._broadcast('task.create', data);
     this.output.data(data);
   }
@@ -144,23 +189,18 @@ class __private_task extends Entity {
   }
 
   /**
-   * Assign / unassign a task.
-   * Params: id (required), assignee_uid (required — pass null to unassign).
+   * Replace a task's assignee set (multi-assignee).
+   * Params: id (required); assignee_uids (array — the full new set; [] clears
+   * all). Legacy single `assignee_uid` is still accepted.
    */
   async update_assignee() {
     const id = this.input.need(Attr.id);
-    const assignee_uid = this.input.use('assignee_uid', null);
-
-    if (assignee_uid) {
-      const drumate = await this.yp.await_proc('drumate_exists', assignee_uid);
-      if (isEmpty(drumate)) {
-        return this.exception.user('INVALID_ASSIGNEE');
-      }
-    }
+    const assignees = await this._validateAssignees(this._readAssignees() || []);
+    if (assignees == null) return; // invalid assignee — exception already raised
 
     const data = await this.db.await_run(
-      'CALL task_update_assignee(?, ?)',
-      [id, assignee_uid]
+      'CALL task_set_assignees(?, ?)',
+      [id, assignees.join(',')]
     );
     if (isEmpty(data)) {
       return this.exception.user('TASK_NOT_FOUND');
