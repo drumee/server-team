@@ -419,11 +419,11 @@ class __dmz extends Mfs {
       try {
         const nodeRows = await this.yp.await_proc('forward_proc', info.hub_id, 'mfs_node_attr', `'${req_file_nid}'`);
         const nodeAttr = toArray(nodeRows)[0] || {};
-        if (nodeAttr.pid && nodeAttr.filetype !== 'folder' && nodeAttr.filetype !== 'hub'
-            && nodeAttr.pid !== info.nid) {
-          // File is inside a subfolder — navigate to that folder so the file
-          // appears in the listing. Skip when already at workspace root to
-          // preserve the existing "show all files" UX for root-level files.
+        if (nodeAttr.pid && nodeAttr.filetype !== 'folder' && nodeAttr.filetype !== 'hub') {
+          // Set file_nid so show_node_by filters to just this file (fast,
+          // works for both root and subfolder files).
+          // For root files out.nid stays workspace root (nodeAttr.pid === info.nid);
+          // for subfolder files out.nid becomes the parent folder.
           out.file_nid = req_file_nid;
           out.nid = nodeAttr.pid;
         }
