@@ -410,6 +410,28 @@ class __dmz extends Mfs {
     }
     let out = { ...user, ...info, guest_id: info.uid, area, is_guest };
 
+    // If a specific file nid is provided (Share button URL has /<file_nid>/play),
+    // navigate to its parent folder — same pattern as _loginSecureShare.
+    // Validate as 16-char hex before any DB call to prevent SQL injection.
+    const req_file_nid = this.input.use('file_nid');
+    const NID_RE = /^[0-9a-f]{16}$/;
+    if (NID_RE.test(req_file_nid) && out.validity === 'TICKET_OK') {
+      try {
+        const nodeRows = await this.yp.await_proc('forward_proc', info.hub_id, 'mfs_node_attr', `'${req_file_nid}'`);
+        const nodeAttr = toArray(nodeRows)[0] || {};
+        if (nodeAttr.pid && nodeAttr.filetype !== 'folder' && nodeAttr.filetype !== 'hub'
+            && nodeAttr.pid !== info.nid) {
+          // File is inside a subfolder — navigate to that folder so the file
+          // appears in the listing. Skip when already at workspace root to
+          // preserve the existing "show all files" UX for root-level files.
+          out.file_nid = req_file_nid;
+          out.nid = nodeAttr.pid;
+        }
+      } catch (e) {
+        this.warn('[dmz.login] file_nid navigation failed:', e && e.message);
+      }
+    }
+
     // Track link_opened
     try {
       const actor_id = is_guest ? null : (user.id || null);
