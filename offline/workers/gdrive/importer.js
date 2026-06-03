@@ -211,8 +211,26 @@ class GoogleDriveImporter {
       const r = await oauth2.refreshAccessToken();
       credentials = r.credentials;
     } catch (e) {
-      console.warn(`[GDriveImporter] token refresh failed user=${this._userId}:`, e && e.message);
-      throw new Error('NEEDS_RECONNECT');
+      // Distinguish a DEAD token (fatal — the user must re-authorize) from a
+      // TRANSIENT failure (network / Google 5xx — Bull should retry). Folding
+      // both into NEEDS_RECONNECT + job.discard() permanently kills a job that
+      // a transient outage would have recovered on retry. google-auth surfaces
+      // the OAuth error at e.response.data.error: 'invalid_grant' when the
+      // refresh_token is revoked OR was minted by a DIFFERENT OAuth client
+      // (e.g. a later Google *login* clobbered the Drive-client token on the
+      // shared oauth_accounts row); 'invalid_client'/'unauthorized_client'
+      // means the server's drive.json credentials are wrong (retry won't help).
+      const gerr = (e && e.response && e.response.data && e.response.data.error) || '';
+      const msg = (e && e.message) || '';
+      const fatal = /^(invalid_grant|invalid_client|unauthorized_client)$/.test(gerr)
+        || /invalid_grant|invalid_client|unauthorized_client/i.test(msg);
+      console.warn(
+        `[GDriveImporter] token refresh failed user=${this._userId} fatal=${fatal} code=${e && e.code} oauth_error=${gerr || msg}`
+      );
+      if (fatal) throw new Error('NEEDS_RECONNECT');
+      // Transient: rethrow the original error so Bull's retry/backoff handles
+      // it instead of run() discarding the job as a permanent reconnect.
+      throw e;
     }
     if (!credentials || !credentials.access_token) throw new Error('NEEDS_RECONNECT');
     const newExpiresAt = credentials.expiry_date

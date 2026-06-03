@@ -866,6 +866,24 @@ class __butler extends Mfs {
       payload.uid, googleSub, googleEmail, tokens.access_token, tokens.refresh_token || null, scope, expiresAt
     );
 
+    // Confirm the connection is actually USABLE before signaling success. The
+    // refresh_token clause above preserves the prior token when Google returns
+    // none, which can silently keep a dead or wrong-client token on the row. If
+    // after the upsert the row still lacks a refresh_token or a drive.readonly
+    // scope, the migration worker would just fail with NEEDS_RECONNECT — so
+    // surface it now as a failed connection instead of a false "connected".
+    const { toArray } = require('@drumee/server-essentials').utils;
+    const saved = toArray(await this.yp.await_query(
+      'SELECT refresh_token, scope FROM oauth_accounts WHERE user_id=? AND provider=?',
+      payload.uid, 'google'
+    ))[0];
+    if (!saved || !saved.refresh_token
+        || !(saved.scope && saved.scope.includes('drive.readonly'))) {
+      this.warn('[google_drive_callback] connection unusable after upsert: has_refresh='
+        + !!(saved && saved.refresh_token) + ' scope=' + (saved && saved.scope));
+      return this._closingPage(false, 'needs_consent');
+    }
+
     return this._closingPage(true);
   }
 
