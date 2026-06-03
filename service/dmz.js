@@ -270,6 +270,8 @@ class __dmz extends Mfs {
     // mirrors the cookie_touch done for normal DMZ tokens at login line 330.
     // socket_id must be passed so entity_sockets() includes this guest socket in
     // hub broadcasts (e.g. secure_share_revoked) — same pattern as session.dmz_login.
+    // Safe: page.js ensures the hub cookie always has its own independent session id,
+    // so this UPDATE never touches the authenticated user's regsid row.
     if (info.creator_id) {
       try {
         await this.yp.await_proc('cookie_touch', {
