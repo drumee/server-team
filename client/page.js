@@ -3,6 +3,7 @@ const { RuntimeEnv } = require('@drumee/server-core');
 const { resolve, join } = require("path");
 const { readFileSync, existsSync } = require("fs");
 const { readFileSync: readJsonSync } = require("jsonfile");
+const { randomBytes } = require('crypto');
 const {
   DrumeeCache, sysEnv, Permission, Attr, Events, nullValue, getUiInfo, toArray
 } = require("@drumee/server-essentials/lib");
@@ -87,6 +88,19 @@ class MainPage extends RuntimeEnv {
       data.icon = `${endpoint_path}/avatar/${data.owner_id}?type=vignette`;
       keysel = this.hub.get(Attr.id);
       host = this.input.host();
+      // The hub cookie must use its own independent session so that
+      // cookie_touch in dmz.login (which sets uid = dmz guest) cannot
+      // overwrite the authenticated user's regsid session and force a
+      // login prompt when they navigate back.  Reuse an existing separate
+      // hub session if one is already in place; otherwise issue a fresh
+      // one — dmz.login's cookie_touch will register it in the session store.
+      const regsidVal = this.input.cookie(Attr.regsid);
+      const existingHubSid = this.input.cookie(keysel);
+      if (!existingHubSid || existingHubSid === regsidVal) {
+        id = randomBytes(16).toString('hex');
+      } else {
+        id = existingHubSid;
+      }
     }
 
     if (nullValue(keysel)) keysel = Attr.regsid;
