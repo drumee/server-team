@@ -490,7 +490,7 @@ class __private_contact extends Contact {
     const lang = this.user.language() || this.input.app_language();
     const subject = `${Cache.message('_network_non_drumate_subject', lang).format(username)}`;
 
-    const link = `${this.input.homepath()}#/welcome/invitation/${token}`;
+    const link = `${this.input.homepath()}#/welcome/signup/${token}`;
     const tplPath = resolve(__dirname, 'templates', 'butler', 'contact-add-non-drumate.html');
     const msg = new Messenger({
       subject,
