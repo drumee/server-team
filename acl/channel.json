@@ -240,6 +240,16 @@
           "required": false,
           "doc": "Array of file node IDs to attach to the message. Files are moved to the message directory in the sharebox hub."
         },
+        "nid": {
+          "type": "string",
+          "required": false,
+          "doc": "Folder node ID for folder-scoped posts. Scopes the message to that folder and enables folder_attachment promotion."
+        },
+        "folder_attachment": {
+          "type": "array",
+          "required": false,
+          "doc": "Subset of attachment: staged device uploads to move into the folder identified by nid on send. Each node must sit in the hub chat staging directory, be owned by the caller, and the caller must hold write permission on the destination folder; otherwise the node is kept as a regular sbox-only attachment."
+        },
         "socket_id": {
           "type": "string",
           "required": true,

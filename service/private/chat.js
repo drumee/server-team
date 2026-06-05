@@ -1056,6 +1056,17 @@ class privateChat extends Entity {
       res.status = "INVALID_ATTACHMENT";
       return this.output.data(res);
     }
+    // The chat staging folder is writable by every hub member; the ACL doc
+    // promises owner-only removal — enforce it so one member cannot delete
+    // another member's pending attachment.
+    let owners = await this.db.await_query(
+      "SELECT owner_id, origin_id FROM media WHERE id=?", `${nid}`
+    );
+    let owner = toArray(owners)[0] || {};
+    if (`${owner.owner_id}` !== `${this.uid}` && `${owner.origin_id}` !== `${this.uid}`) {
+      res.status = "INVALID_ATTACHMENT";
+      return this.output.data(res);
+    }
 
     await this.db.await_proc("mfs_attachment_remove", nid);
     let mfs_home = await this.db.await_proc("mfs_home");
