@@ -28,6 +28,25 @@ const {
   ID_NOT_FOUND,
 } = Constants;
 const { resolve } = require("path");
+
+/**
+ * Configured envelope sender (email.json -> auth.user), resolved once. Used to
+ * build a "Drumee" <addr> display-name From for butler invite emails, matching
+ * the contact-add emails. The address is read at runtime (it differs per
+ * deployment) rather than hardcoded.
+ */
+let _butlerSender;
+function butlerSender() {
+  if (_butlerSender !== undefined) return _butlerSender;
+  try {
+    const { readFileSync } = require("fs");
+    const f = resolve(sysEnv().credential_dir, "email.json");
+    _butlerSender = (JSON.parse(readFileSync(f, "utf8")).auth || {}).user || null;
+  } catch (e) {
+    _butlerSender = null;
+  }
+  return _butlerSender;
+}
 const { MfsTools } = require("@drumee/server-core");
 const { remove_dir } = MfsTools;
 const { toArray } = utils;
@@ -912,11 +931,16 @@ class __private_hub extends Hub {
     const tplPath = resolve(__dirname, "templates", "butler", `${tpl}.html`);
     const msg = new Messenger({ subject, recipient, handler: this.exception.email });
     const html = msg.renderFrom(tplPath, data);
+    // Display-name From ("Drumee" <butler@...>) so the inbox shows "Drumee",
+    // matching the contact-add emails. Falls back to the default sender when
+    // no address is configured.
+    const sender = butlerSender();
+    const from = sender ? `"Drumee" <${sender}>` : undefined;
     // Messenger.send() always resolves { recipient, error } — it never rejects
     // (errors are routed to the handler). Inspect `error` so an SMTP-time
     // rejection (e.g. unknown mailbox -> 550) surfaces as a failed invitee
     // instead of a silent status:"ok".
-    const result = msg.dispatch({ html });
+    const result = msg.dispatch(from ? { html, from } : { html });
     if (result && result.error) {
       throw new Error(`Email delivery to ${recipient} failed: ${result.error}`);
     }
