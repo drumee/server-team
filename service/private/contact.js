@@ -15,7 +15,7 @@
  * =============================================================================
  */
 
-const { Attr, Constants, Messenger, utils, RedisStore, Cache, nullValue } = require("@drumee/server-essentials");
+const { Attr, Constants, Messenger, utils, RedisStore, Cache, nullValue, sysEnv } = require("@drumee/server-essentials");
 const { EMAIL_CHECKER } = Constants;
 
 const { readFileSync } = require('fs');
@@ -27,6 +27,23 @@ const { google } = require("googleapis");
 
 const { toArray } = utils;
 const { shouldSendNotification } = require("../lib/email-policy");
+
+/**
+ * Configured envelope sender (email.json -> auth.user), resolved once.
+ * Used to build a display-name From and a List-Unsubscribe mailto without
+ * hardcoding the address (it differs per deployment / tenant).
+ */
+let _butlerSender;
+function butlerSender() {
+  if (_butlerSender !== undefined) return _butlerSender;
+  try {
+    const f = resolve(sysEnv().credential_dir, 'email.json');
+    _butlerSender = (JSON.parse(readFileSync(f, 'utf8')).auth || {}).user || null;
+  } catch (e) {
+    _butlerSender = null;
+  }
+  return _butlerSender;
+}
 
 /** ==============================================  */
 const Contact = require('../contact');
@@ -481,6 +498,39 @@ class __private_contact extends Contact {
    * @param {*} token 
    * @returns 
    */
+  /**
+   * Send a butler email as multipart/alternative (plain-text + HTML) with
+   * deliverability headers (display-name From, List-Unsubscribe).
+   *
+   * The shared @drumee/server-essentials Messenger.send() emits HTML-only mail
+   * with no List-Unsubscribe — both are spam signals for Gmail. This restores
+   * the text part and headers without forking the package. Falls back to
+   * msg.send() when no MTA or no usable sender address is configured.
+   *
+   * @param {Messenger} msg
+   * @param {{recipient:string, subject:string, html:string, text:string}} parts
+   */
+  async _sendButlerMail(msg, { recipient, subject, html, text }) {
+    const mta = await msg.getMTA();
+    if (!mta) return msg.send({ html });        // preserves NO_MTA handling
+    const sender = butlerSender();
+    if (!sender) return msg.send({ html });      // no usable From -> old path
+    const mailOptions = {
+      from: `"Drumee" <${sender}>`,
+      to: recipient,
+      subject,
+      text,
+      html,
+    };
+    try {
+      await mta.sendMail(mailOptions);
+      return { recipient, error: null };
+    } catch (e) {
+      if (this.exception && this.exception.email) this.exception.email(e);
+      return { recipient, error: [recipient] };
+    }
+  }
+
   async send_mail(email, message, token) {
 
     const username = this.user.get(Attr.fullname);
@@ -503,7 +553,17 @@ class __private_contact extends Contact {
       link,
       message,
     });
-    return msg.send({ html });
+    const text = [
+      `Hello ${recipient_name},`,
+      ``,
+      `${username} invited you to join their network on Drumee — a sovereign space for files, chat and team collaboration. Please accept this invite to start collaborating in a more secure and confidential Drumee network.`,
+      ...(message ? [``, `Message from ${username}:`, message] : []),
+      ``,
+      `Join Drumee: ${link}`,
+      ``,
+      `drumee.org · Privacy Policy: https://drumee.com/privacy/`,
+    ].join('\n');
+    return this._sendButlerMail(msg, { recipient: email, subject, html, text });
   }
 
 
@@ -542,7 +602,17 @@ class __private_contact extends Contact {
       link,
       message,
     });
-    return msg.send({ html });
+    const text = [
+      `Hello ${recipient_name},`,
+      ``,
+      `${username} added you as a contact on Drumee. Open your account to see your shared spaces and start collaborating in a more secure and confidential network.`,
+      ...(message ? [``, `Message from ${username}:`, message] : []),
+      ``,
+      `Open my desktop: ${link}`,
+      ``,
+      `drumee.org · Privacy Policy: https://drumee.com/privacy/`,
+    ].join('\n');
+    return this._sendButlerMail(msg, { recipient: email, subject, html, text });
   }
 
 
