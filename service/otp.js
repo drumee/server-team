@@ -15,9 +15,27 @@
  * =============================================================================
  */
 
-const { Attr, Messenger, Cache, uniqueId } = require("@drumee/server-essentials");
+const { Attr, Messenger, Cache, uniqueId, sysEnv } = require("@drumee/server-essentials");
 const { Entity } = require("@drumee/server-core");
 const { resolve } = require("path");
+
+/**
+ * Configured envelope sender (email.json -> auth.user), resolved once. Used to
+ * build a "Drumee" <addr> display-name From, matching the other butler emails.
+ * The address is read at runtime (it differs per deployment) not hardcoded.
+ */
+let _butlerSender;
+function butlerSender() {
+  if (_butlerSender !== undefined) return _butlerSender;
+  try {
+    const { readFileSync } = require("fs");
+    const f = resolve(sysEnv().credential_dir, "email.json");
+    _butlerSender = (JSON.parse(readFileSync(f, "utf8")).auth || {}).user || null;
+  } catch (e) {
+    _butlerSender = null;
+  }
+  return _butlerSender;
+}
 
 class Otp extends Entity {
 
@@ -91,9 +109,13 @@ class Otp extends Entity {
     });
     const tplPath = resolve(__dirname, "./templates/otp.html");
     const html = msg.renderFrom(tplPath, data);
+    // Display-name From ("Drumee" <butler@...>) so the inbox shows "Drumee",
+    // matching the other butler emails. Falls back to default sender if unset.
+    const sender = butlerSender();
+    const from = sender ? `"Drumee" <${sender}>` : undefined;
     let sent = 0;
     try {
-      const result = await msg.send({ html });
+      const result = await msg.send(from ? { html, from } : { html });
       if (result && result.error) {
         this.warn(`OTP email delivery failed: ${result.error}`);
       } else {
