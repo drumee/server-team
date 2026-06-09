@@ -191,6 +191,27 @@ class __yp extends Entity {
     };
 
     let r = await session.signin(vars);
+
+    // Block accounts whose email is still pending verification. The signup
+    // email-verification flow stages the address in drumate.unverified_email and
+    // clears it only when the verify link is clicked. registration_verified alone
+    // is unreliable (legacy accounts default to 0 with no pending email), so gate
+    // on unverified_email being set. Tear down the session that signin just
+    // established (mirrors the BLOCKED/ARCHIVED handling inside session.signin).
+    if (r && r.status === "ok" && r.user && r.user.id) {
+      let row = await this.yp.await_query(
+        "SELECT unverified_email FROM drumate WHERE id=?", r.user.id
+      );
+      if (isArray(row)) row = row[0];
+      row = row || {};
+      if (row.unverified_email) {
+        await this.yp.await_proc(
+          "session_reset", this.input.sid(), r.user.id, this.input.get(Attr.socket_id)
+        );
+        return this.output.data({ status: "EMAIL_NOT_VERIFIED", email: row.unverified_email });
+      }
+    }
+
     this.output.data(r);
   }
 
