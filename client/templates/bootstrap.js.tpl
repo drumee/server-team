@@ -1,7 +1,7 @@
 
 
 <%= renderer.include('scripts.tpl') %>
-
+<%= renderer.include('errors-handlers.tpl') %>
 let count = 0;
 function load_bundle(id, src){
   let el = document.createElement('script');

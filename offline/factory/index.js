@@ -118,10 +118,23 @@ class __drumee_factory extends Offline {
   }
 
   /**
+   * Reports whether the cached template scripts already exist on disk, so the
+   * factory can skip rebuilding them (used by the `--rebuild=no` startup path).
    *
-   * @param {*} type
+   * Called two ways:
+   *  - With a `type` (and optional `ext`): checks a single file's existence and
+   *    returns the boolean. This is the recursion base case.
+   *  - With no arguments: fans out to verify all four expected files are present
+   *    — the `.sql` dump and its `.ok` sentinel for both `drumate` and `hub`.
+   *
+   * @param {string} [type] - entity type ("drumate" | "hub"); omit to check all
+   * @param {string} [ext] - file extension passed to script_path (defaults to "sql")
+   * @returns {boolean} true when the requested template(s) exist
    */
-  scripts_clean() {
+  scripts_clean(type, ext) {
+    if (type) {
+      return existsSync(this.script_path(type, ext));
+    }
     let a = this.scripts_clean("drumate") && this.scripts_clean("hub");
     let b =
       this.scripts_clean("drumate", "ok") && this.scripts_clean("hub", "ok");

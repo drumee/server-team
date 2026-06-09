@@ -46,13 +46,3 @@
   }
 
   const DEBUG =  {};
-
-
-  window.onerror = function (msg, url, line, col, error) {
-    fetch('<%= svcPath %>bootstrap.report_error', {
-      method: 'POST',
-      body: JSON.stringify({ msg, url, line, col, stack: error?.stack }),
-      headers: { 'Content-Type': 'application/json' }
-    });
-  };
-

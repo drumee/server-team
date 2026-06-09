@@ -125,7 +125,26 @@ class __bootstrap extends RuntimeEnv {
    * 
    */
   async report_error() {
-    this.debug("AAAA:78", this.input.data())
+    const { msg, url, stack } = this.input.data() || {};
+
+    // Drop noise from the user's browser, not from Drumee: extension content
+    // scripts (wallet provider collisions, etc.) and benign recurring warnings.
+    // Mirrors the client-side filter in client/templates/scripts.tpl, so even
+    // older cached clients still running the unfiltered script are covered here.
+    const haystack = `${url || ''}${stack || ''}`;
+    const isExtension = /(chrome|moz|safari(-web)?)-extension:\/\//.test(haystack);
+    const isNoiseMsg = [
+      /Cannot redefine property:\s*(ethereum|solana|web3|tron(Link|Web)?|keplr)/i,
+      /Cannot (set|assign to read only) property '?(ethereum|solana)'?/i,
+      /ResizeObserver loop (limit exceeded|completed with undelivered notifications)/i,
+      /AbortError|The (operation was aborted|user aborted a request)/i,
+    ].some((re) => re.test(msg || ''));
+
+    if (isExtension || isNoiseMsg) {
+      return this.output.text("OK");
+    }
+
+    this.warn("client_error", { msg, url, stack });
     this.output.text("OK");
   }
 
