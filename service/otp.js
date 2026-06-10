@@ -159,8 +159,7 @@ class Otp extends Entity {
       email: user.email,
       link,
       expiry: "1 hour",
-      support_email: "support@drumee.io",
-      support_phone: "+1 (555) 123-4567",
+      support_email: "contact@drumee.org",
       support_hours: "Monday - Friday, 9:00 AM - 6:00 PM EST",
     };
 
