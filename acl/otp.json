@@ -165,6 +165,60 @@
         }
       ]
     },
+    "send_link": {
+      "doc": "Send a password-reset link email (the styled 'Reset your Drumee password' template). Validates socket binding, checks the user exists, generates a forgot-password token via token_generate_next, builds a reset link (#/welcome/reset/{uid}/{token}) and emails the reset-password.html template. Returns a status/sent flag.",
+      "scope": "hub",
+      "permission": {
+        "src": "anonymous",
+        "fast_check": "public-api"
+      },
+      "params": {
+        "email": {
+          "type": "string",
+          "required": true,
+          "description": "Email address of the user to send the reset link to"
+        },
+        "socket_id": {
+          "type": "string",
+          "required": true,
+          "description": "WebSocket connection ID that must be bound to the current session. Returns INVALID_SOCKET error if not bound."
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "On success: { status: 'ok', sent, email }. On user-not-found: { status: 'no-user', email }.",
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "ok on success, no-user if no account found for the email"
+          },
+          "sent": {
+            "type": "integer",
+            "description": "1 if the reset-link email was sent successfully, 0 if delivery failed"
+          },
+          "email": {
+            "type": "string",
+            "description": "Email address the reset link was sent to, echoed from input"
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "INVALID_SOCKET",
+          "message": "WebSocket socket_id is not bound to the current session",
+          "returns": {
+            "status": "INVALID_SOCKET"
+          }
+        },
+        {
+          "code": "no-user",
+          "message": "No user account found for the provided email address",
+          "returns": {
+            "status": "no-user"
+          }
+        }
+      ]
+    },
     "send": {
       "doc": "Send an OTP code to the user identified by email. Validates socket binding, checks the user exists, generates a secret and code via stored procedure secret_create (or otp_create if method is otp), then sends the code to the user email using the OTP email template. Returns the secret and user info for use in subsequent verify or set_password calls. The sent field indicates whether the email was delivered successfully.",
       "scope": "hub",

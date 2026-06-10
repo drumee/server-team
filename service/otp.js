@@ -15,7 +15,8 @@
  * =============================================================================
  */
 
-const { Attr, Messenger, Cache, uniqueId, sysEnv } = require("@drumee/server-essentials");
+const { Attr, Messenger, Cache, Constants, uniqueId, sysEnv } = require("@drumee/server-essentials");
+const { FORGOT_PASSWORD } = Constants;
 const { Entity } = require("@drumee/server-core");
 const { resolve } = require("path");
 
@@ -125,6 +126,67 @@ class Otp extends Entity {
       this.warn(e);
     }
     this.output.data({ status: 'ok', sent, ...user, secret, email });
+  }
+
+  /**
+   * Send a password-reset *link* email (the Figma "Reset your Drumee password"
+   * template). Like send(), but instead of an OTP code it generates a
+   * forgot-password token, builds a reset link (#/welcome/reset/{uid}/{token})
+   * and emails the styled reset-password.html template.
+   */
+  async send_link() {
+    const email = this.input.need(Attr.email);
+    const socket_id = this.input.need(Attr.socket_id);
+    const socket_ok = await this.yp.await_func("is_socket_bound", socket_id, this.input.sid());
+    if (!socket_ok) {
+      return this.exception.user("INVALID_SOCKET");
+    }
+    const user = await this.yp.await_proc("drumate_exists", email);
+    if (!user || !user.email) {
+      return this.output.data({ status: "no-user", email });
+    }
+
+    // Generate a forgot-password token and build the reset link (same shape
+    // the set_password flow validates via token_get_next).
+    const token = uniqueId();
+    await this.yp.await_proc("token_generate_next", email, email, token, FORGOT_PASSWORD, user.id);
+    const link = `${this.input.homepath()}#/welcome/reset/${user.id}/${token}`;
+
+    const ulang = this.input.ua_language();
+    const lex = Cache.lex(ulang);
+    const data = {
+      recipient: user.firstname || user.fullname || "there",
+      email: user.email,
+      link,
+      expiry: "1 hour",
+      support_email: "support@drumee.io",
+      support_phone: "+1 (555) 123-4567",
+      support_hours: "Monday - Friday, 9:00 AM - 6:00 PM EST",
+    };
+
+    const subject = (lex && lex._password_reset_link) || "Reset your Drumee password";
+    const msg = new Messenger({
+      subject,
+      recipient: user.email,
+      handler: this.exception.email,
+    });
+    const tplPath = resolve(__dirname, "./templates/reset-password.html");
+    const html = msg.renderFrom(tplPath, data);
+    const sender = butlerSender();
+    const from = sender ? `"Drumee" <${sender}>` : undefined;
+
+    let sent = 0;
+    try {
+      const result = await msg.send(from ? { html, from } : { html });
+      if (result && result.error) {
+        this.warn(`Reset-link email delivery failed: ${result.error}`);
+      } else {
+        sent = 1;
+      }
+    } catch (e) {
+      this.warn(e);
+    }
+    this.output.data({ status: 'ok', sent, email });
   }
 }
 
