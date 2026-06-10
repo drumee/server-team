@@ -409,6 +409,103 @@
           }
         }
       }
+    },
+    "comment_list": {
+      "doc": "List a task's comments (flat, chronological). Author name/avatar is resolved client-side from the hub member list.",
+      "scope": "hub",
+      "permission": { "src": "read" },
+      "params": {
+        "task_id": { "type": "string", "required": true, "doc": "Task ID to list comments for" }
+      },
+      "returns": {
+        "type": "array",
+        "doc": "Comments ordered by ctime ASC",
+        "items": {
+          "type": "object",
+          "properties": {
+            "id":         { "type": "string", "doc": "Comment ID" },
+            "task_id":    { "type": "string", "doc": "Parent task ID" },
+            "author_uid": { "type": "string", "doc": "UID of the comment author" },
+            "body":       { "type": "string", "doc": "Comment body in marker form [@Name](user:uid)" },
+            "edited":     { "type": "number", "doc": "1 if the comment was edited" },
+            "ctime":      { "type": "number", "doc": "Unix timestamp of creation" },
+            "mtime":      { "type": "number", "doc": "Unix timestamp of last edit" }
+          }
+        }
+      }
+    },
+    "comment_create": {
+      "doc": "Add a comment to a task. @-mentioned members are notified.",
+      "scope": "hub",
+      "permission": { "src": "write" },
+      "params": {
+        "task_id": { "type": "string", "required": true, "doc": "Task ID to comment on" },
+        "body":    { "type": "string", "required": true, "doc": "Comment body in marker form [@Name](user:uid)" },
+        "parent_id": { "type": "string", "required": false, "doc": "Root comment id when this is a reply; omit/null for a top-level comment" },
+        "mention_uids": {
+          "type": "array",
+          "required": false,
+          "doc": "UIDs @-mentioned in the body. Server notifies each (excluding self).",
+          "items": { "type": "string" }
+        }
+      },
+      "returns": { "type": "object", "doc": "The created comment row" }
+    },
+    "comment_react": {
+      "doc": "Toggle the caller's emoji reaction on a comment (add if absent, remove if present).",
+      "scope": "hub",
+      "permission": { "src": "write" },
+      "params": {
+        "comment_id": { "type": "string", "required": true, "doc": "Comment ID to react to" },
+        "task_id":    { "type": "string", "required": true, "doc": "Parent task ID (so the broadcast targets the right feed)" },
+        "emoji":      { "type": "string", "required": true, "doc": "Reaction emoji" }
+      },
+      "returns": {
+        "type": "object",
+        "doc": "Toggled reaction summary",
+        "properties": {
+          "comment_id": { "type": "string" },
+          "emoji":      { "type": "string" },
+          "count":      { "type": "number", "doc": "Remaining count for that emoji" }
+        }
+      }
+    },
+    "comment_update": {
+      "doc": "Edit your own comment. Returns COMMENT_NOT_FOUND if the caller is not the author.",
+      "scope": "hub",
+      "permission": { "src": "write" },
+      "params": {
+        "id":   { "type": "string", "required": true, "doc": "Comment ID to edit" },
+        "body": { "type": "string", "required": true, "doc": "New comment body in marker form" },
+        "mention_uids": {
+          "type": "array",
+          "required": false,
+          "doc": "UIDs @-mentioned in the body. Server notifies each (excluding self).",
+          "items": { "type": "string" }
+        }
+      },
+      "returns": { "type": "object", "doc": "The updated comment row" },
+      "errors": [
+        { "code": "COMMENT_NOT_FOUND", "message": "No comment with that ID owned by the caller", "http_status": 404 }
+      ]
+    },
+    "comment_delete": {
+      "doc": "Delete your own comment.",
+      "scope": "hub",
+      "permission": { "src": "write" },
+      "params": {
+        "id":      { "type": "string", "required": true, "doc": "Comment ID to delete" },
+        "task_id": { "type": "string", "required": true, "doc": "Parent task ID (so the broadcast targets the right feed)" }
+      },
+      "returns": {
+        "type": "object",
+        "doc": "Deleted comment ID and affected row count",
+        "properties": {
+          "id":       { "type": "string" },
+          "task_id":  { "type": "string" },
+          "affected": { "type": "number" }
+        }
+      }
     }
   },
   "modules": {

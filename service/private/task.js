@@ -39,6 +39,11 @@ class __private_task extends Entity {
     this.unlink_label = this.unlink_label.bind(this);
     this.get_labels = this.get_labels.bind(this);
     this.search_files = this.search_files.bind(this);
+    this.comment_list = this.comment_list.bind(this);
+    this.comment_create = this.comment_create.bind(this);
+    this.comment_update = this.comment_update.bind(this);
+    this.comment_delete = this.comment_delete.bind(this);
+    this.comment_react = this.comment_react.bind(this);
   }
 
   /**
@@ -379,6 +384,122 @@ class __private_task extends Entity {
       [this.uid, task_id, pattern, page]
     );
     this.output.list(data);
+  }
+
+  /**
+   * Notify members @-mentioned in a comment body. Reuses _notifyMentions with a
+   * task-shaped context ({ id: task_id, title }) so the activity reads
+   * "mentioned you in <task>". Best-effort.
+   * (Watcher notifications — assignee/creator on every comment — are a planned
+   * follow-up; they need distinct "commented on" activity copy.)
+   */
+  async _notifyCommentMentions(task_id, mentionUids) {
+    if (isEmpty(toArray(mentionUids))) return;
+    let title = '';
+    try {
+      const rows = await this.db.await_run('SELECT title FROM task WHERE id = ?', [task_id]);
+      const t = toArray(rows)[0];
+      title = (t && t.title) || '';
+    } catch (e) {
+      this.warn('[task._notifyCommentMentions] title lookup failed:', e && e.message);
+    }
+    await this._notifyMentions({ id: task_id, title }, mentionUids);
+  }
+
+  /**
+   * List a task's comments (flat, chronological). Author display is resolved
+   * client-side from the hub member list.
+   * Params: task_id (required).
+   */
+  async comment_list() {
+    const task_id = this.input.need('task_id');
+    const data = await this.db.await_proc('task_comment_list', task_id);
+    this.output.list(data);
+  }
+
+  /**
+   * Add a comment to a task. Body is marker form ("[@Name](user:uid) ...").
+   * Params: task_id (required), body (required), mention_uids (optional).
+   */
+  async comment_create() {
+    const task_id = this.input.need('task_id');
+    const body = this.input.need('body');
+    // parent_id (a reply's root comment) is nullable — await_run preserves the
+    // JS null when binding (await_proc would coerce it to '').
+    const parent_id = this.input.use('parent_id', null);
+    const id = await this.yp.await_func('uniqueId');
+    const data = await this.db.await_run(
+      'CALL task_comment_create(?, ?, ?, ?, ?)',
+      [id, task_id, this.uid, parent_id, body]
+    );
+    const row = Array.isArray(data) ? data[0] : data;
+    await this._broadcast('task.comment_create', row);
+    // Notify @-mentioned members; on a reply, also notify the parent author.
+    let notify = toArray(this.input.use('mention_uids', null));
+    if (parent_id) {
+      try {
+        const p = toArray(
+          await this.db.await_run('SELECT author_uid FROM task_comment WHERE id = ?', [parent_id])
+        )[0];
+        if (p && p.author_uid) notify = notify.concat(p.author_uid);
+      } catch (e) {
+        this.warn('[task.comment_create] parent lookup failed:', e && e.message);
+      }
+    }
+    await this._notifyCommentMentions(task_id, [...new Set(notify)]);
+    this.output.data(row);
+  }
+
+  /**
+   * Edit one's own comment. Returns empty (→ COMMENT_NOT_FOUND) if the caller
+   * is not the author. Params: id (required), body (required), mention_uids.
+   */
+  async comment_update() {
+    const id = this.input.need('id');
+    const body = this.input.need('body');
+    const data = await this.db.await_proc('task_comment_update', id, this.uid, body);
+    const row = Array.isArray(data) ? data[0] : data;
+    if (isEmpty(row)) return this.exception.user('COMMENT_NOT_FOUND');
+    await this._broadcast('task.comment_update', row);
+    await this._notifyCommentMentions(row.task_id, this.input.use('mention_uids', null));
+    this.output.data(row);
+  }
+
+  /**
+   * Delete one's own comment. Params: id (required), task_id (required — so the
+   * broadcast can target the right task's feed).
+   */
+  async comment_delete() {
+    const id = this.input.need('id');
+    const task_id = this.input.need('task_id');
+    const data = await this.db.await_proc('task_comment_delete', id, this.uid);
+    const row = Array.isArray(data) ? data[0] : data;
+    await this._broadcast('task.comment_delete', {
+      id,
+      task_id,
+      affected: row && row.affected,
+    });
+    this.output.data({ id, task_id, affected: row && row.affected });
+  }
+
+  /**
+   * Toggle the caller's emoji reaction on a comment (add if absent, remove if
+   * present). Params: comment_id (required), emoji (required), task_id
+   * (required — so the broadcast targets the right task's feed).
+   */
+  async comment_react() {
+    const comment_id = this.input.need('comment_id');
+    const emoji = this.input.need('emoji');
+    const task_id = this.input.need('task_id');
+    const data = await this.db.await_proc('task_comment_react', comment_id, this.uid, emoji);
+    const row = Array.isArray(data) ? data[0] : data;
+    await this._broadcast('task.comment_react', {
+      task_id,
+      comment_id,
+      emoji,
+      count: row && row.count,
+    });
+    this.output.data(row);
   }
 }
 
