@@ -364,7 +364,9 @@ class SeoIndexer {
         case 'ppt':
         case 'pptx':
         case 'odt':
+        case 'ods':
         case 'odp':
+        case 'rtf':
           const pdfPath = await this.convertToPdf(node);
           posterSrc = pdfPath;
           text = await this.extractFromPdf(pdfPath, index);
@@ -402,16 +404,35 @@ class SeoIndexer {
       // still exists (cleanup() removes preview.pdf afterwards). Done before
       // text validation so scanned / text-less docs still get a thumbnail;
       // a poster failure must never abort indexing.
+      let posterDone = false;
       if (posterSrc) {
         try {
           await this.generatePoster(posterSrc);
+          // generatePoster writes thumb.png + flags the node via mfs_set_poster.
+          posterDone = existsSync(join(mfs_dir, 'thumb.png'));
         } catch (e) {
           this.log('Poster generation failed:', e.message);
         }
       }
 
-      // Validate extraction
+      // The content poster (thumbnail) is the user-visible deliverable and is
+      // INDEPENDENT of text indexing. Many valid documents have no extractable
+      // text (data-only spreadsheets, charts, scanned/image PDFs). When we still
+      // produced a poster, COMPLETE the job — failing here only burns 3 Bull
+      // retries (each re-running soffice) and leaves the node with no poster.
       if (!text || text.trim().length === 0) {
+        if (posterDone) {
+          const duration = Date.now() - startTime;
+          this.log(`Poster ready (no text) for ${node.filename} in ${duration}ms`);
+          return {
+            success: true,
+            poster: true,
+            filename: node.filename,
+            words: 0,
+            duration,
+            extension: ext
+          };
+        }
         throw new Error('No text extracted from file');
       }
 
