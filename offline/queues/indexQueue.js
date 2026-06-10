@@ -62,6 +62,13 @@ const indexQueue = new Queue('drumee:seo-indexing', {
   }
 });
 
+// Bull's native close, captured BEFORE `module.exports.close = close` (below)
+// overwrites indexQueue.close. Since `module.exports = indexQueue`, that
+// assignment replaces the Bull method with our wrapper, so a wrapper that calls
+// `indexQueue.close()` would call itself → infinite recursion ("Maximum call
+// stack size exceeded"), which crash-loops the indexWorker on shutdown.
+const _bullClose = indexQueue.close.bind(indexQueue);
+
 // Event Handlers for Monitoring //
 
 indexQueue.on('error', (error) => {
@@ -394,7 +401,7 @@ async function getHealth() {
  */
 async function close() {
   try {
-    await indexQueue.close();
+    await _bullClose();
     console.log('[IndexQueue] Queue closed');
   } catch (error) {
     console.error('[IndexQueue] Error closing queue:', error.message);
