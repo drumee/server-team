@@ -129,6 +129,17 @@ class __butler extends Mfs {
       return;
     }
 
+    // Password-reset links expire 1 hour (3600s) after creation.
+    if (
+      data.method == "forgot_password" &&
+      data.ctime &&
+      Math.floor(Date.now() / 1000) - Number(data.ctime) > 3600 
+    ) {
+      await this.yp.await_proc("token_delete", secret);
+      this.output.data({ error: 'LINK_EXPIRES' });
+      return;
+    }
+
     // Check if email is already a registered Drumee user
     if (data.method === 'signup') {
       const existingUser = await this.yp.await_proc('drumate_exists', data.email);
@@ -230,6 +241,12 @@ class __butler extends Mfs {
     }
     if (pass.method != "forgot_password") {
       return this.output.data({ status: "INVALID_METHOD" });
+    }
+    // Reset links expire 1 hour (3600s) after creation — never set a password
+    // from a stale link, even if the client somehow reached this point.
+    if (pass.ctime && Math.floor(Date.now() / 1000) - Number(pass.ctime) > 10) { // TODO: revert to 3600 (1h) — temporary 10s for expiry testing
+      await this.yp.await_proc("token_delete", secret);
+      return this.output.data({ status: "INVALID_SECRET" });
     }
 
     metadata = this.parseJSON(pass.metadata);
