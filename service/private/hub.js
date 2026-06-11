@@ -1225,9 +1225,21 @@ class __private_hub extends Hub {
     await RedisStore.sendData(this.payload(outout), sockets);
 
     await this.db.await_proc(`remove_all_members`, 0);
-    let entity = await this.yp.await_proc("entity_delete", hub_id);
-    remove_dir(entity.home_dir, 1);
+    // Respond BEFORE entity_delete: that proc drops the hub's whole database,
+    // which scales with workspace size (seconds+ for big hubs) and used to
+    // hold the HTTP response — the deleting client sat frozen for all of it.
+    // Every client was already notified via the WS broadcast above, and the
+    // directory removal is a detached `rm -rf` child process either way.
+    // Deferring the drop only risks a brief flicker on a hard refresh while
+    // it completes; failures are logged for ops.
     this.output.data(outout);
+    this.yp.await_proc("entity_delete", hub_id)
+      .then((entity) => {
+        if (entity && entity.home_dir) remove_dir(entity.home_dir, 1);
+      })
+      .catch((e) => {
+        this.warn(`delete_hub: deferred entity_delete failed for ${hub_id}`, (e && e.message) || e);
+      });
   }
 
   /**
