@@ -31,6 +31,11 @@ const { Mfs } = require("@drumee/server-core");
 
 const { stringify } = JSON;
 
+// Lifetime of a password-reset link, in seconds (1 hour). Enforced in both
+// check_token (open/recheck) and set_password (actual set) — keep it single-
+// sourced so the two checks can never drift out of sync.
+const RESET_TOKEN_TTL = 3600;
+
 class __butler extends Mfs {
 
   constructor(...args) {
@@ -129,11 +134,11 @@ class __butler extends Mfs {
       return;
     }
 
-    // Password-reset links expire 1 hour (3600s) after creation.
+    // Password-reset links expire RESET_TOKEN_TTL seconds after creation.
     if (
       data.method == "forgot_password" &&
       data.ctime &&
-      Math.floor(Date.now() / 1000) - Number(data.ctime) > 3600 
+      Math.floor(Date.now() / 1000) - Number(data.ctime) > RESET_TOKEN_TTL
     ) {
       await this.yp.await_proc("token_delete", secret);
       this.output.data({ error: 'LINK_EXPIRES' });
@@ -242,9 +247,9 @@ class __butler extends Mfs {
     if (pass.method != "forgot_password") {
       return this.output.data({ status: "INVALID_METHOD" });
     }
-    // Reset links expire 1 hour (3600s) after creation — never set a password
+    // Reset links expire after RESET_TOKEN_TTL seconds — never set a password
     // from a stale link, even if the client somehow reached this point.
-    if (pass.ctime && Math.floor(Date.now() / 1000) - Number(pass.ctime) > 10) { // TODO: revert to 3600 (1h) — temporary 10s for expiry testing
+    if (pass.ctime && Math.floor(Date.now() / 1000) - Number(pass.ctime) > RESET_TOKEN_TTL) {
       await this.yp.await_proc("token_delete", secret);
       return this.output.data({ status: "INVALID_SECRET" });
     }

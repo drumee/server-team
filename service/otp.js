@@ -136,10 +136,18 @@ class Otp extends Entity {
    */
   async send_link() {
     const email = this.input.need(Attr.email);
-    const socket_id = this.input.need(Attr.socket_id);
-    const socket_ok = await this.yp.await_func("is_socket_bound", socket_id, this.input.sid());
-    if (!socket_ok) {
-      return this.exception.user("INVALID_SOCKET");
+    // socket_id is best-effort. When present and bound it confirms a live
+    // browser session, but right after logout the client's cached socket is
+    // stale — its row was already deleted, and the still-open ws gets no close
+    // event, so it stays stale until a page refresh rebinds it. Don't block a
+    // legitimate password reset on that: the link is only ever emailed to an
+    // existing user (drumate_exists below).
+    const socket_id = this.input.get(Attr.socket_id);
+    if (socket_id) {
+      const socket_ok = await this.yp.await_func("is_socket_bound", socket_id, this.input.sid());
+      if (!socket_ok) {
+        this.warn(`send_link: socket ${socket_id} not bound to current session; proceeding (likely a stale socket after logout)`);
+      }
     }
     const user = await this.yp.await_proc("drumate_exists", email);
     if (!user || !user.email) {
