@@ -426,21 +426,29 @@ class __dmz extends Mfs {
     // no email to match on refresh, and the approved grant was never applied → the
     // download/chat stayed gated even after approval. Fall back to the account email.
     let grantEmail = submittedEmail;
-    // Explicit grant-lookup email replayed by the recipient UI from localStorage
-    // (the email they sent the Request Access with). Used ONLY to match an approved
-    // grant — never the email gate (the gate uses submittedEmail) — so it cannot let
-    // anyone bypass a restricted share; it only resolves a grant already issued to
-    // that exact email. Lets anonymous (incognito) recipients keep access after a
-    // refresh, where there is no account email to key on.
-    if (!grantEmail) {
-      const ge = (this.input.get('grant_email') || '').toLowerCase().trim();
-      if (ge) grantEmail = ge;
-    }
+    // Authenticated viewers: key the grant lookup to their OWN account email, and
+    // NEVER a client-supplied grant_email. Otherwise one signed-in account could
+    // replay another requester's approved email (the response event even carries
+    // requester_email) to claim that grant. Account email takes precedence; the
+    // client value is ignored for an authenticated session.
     if (!grantEmail && isAuthenticated && user.profile) {
       try {
         const p = typeof user.profile === 'string' ? JSON.parse(user.profile) : user.profile;
         grantEmail = (p.email || '').toLowerCase().trim();
       } catch (e) { /* ignore */ }
+    }
+    // ANONYMOUS (incognito) viewers only: fall back to the email they requested with,
+    // replayed by the UI from localStorage, so they keep access after a refresh (no
+    // account email to key on). It only resolves a grant already issued to that exact
+    // email and never affects the email gate (which uses submittedEmail).
+    // ⚠ KNOWN RESIDUAL: on a PUBLIC link this is replayable — a determined anonymous
+    // viewer who learns another requester's approved email could claim that grant.
+    // Fully closing it needs the anonymous guest-identity fix (see
+    // secure-share-enforcement-gap.md). Guarded to !isAuthenticated so it can never
+    // override an authenticated session's own account email.
+    if (!grantEmail && !isAuthenticated) {
+      const ge = (this.input.get('grant_email') || '').toLowerCase().trim();
+      if (ge) grantEmail = ge;
     }
     if (grantEmail) {
       try {
