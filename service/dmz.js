@@ -696,9 +696,12 @@ class __dmz extends Mfs {
       return this.output.data({ status: 'INVALID_TOKEN' });
     }
 
-    if (row.hub_id) {
+    // Notify ONLY the share creator (their desk activity panel), not the whole hub.
+    // A hub-wide broadcast (entity_sockets) carries requester_email + the free-form
+    // message to every other recipient who has the share open — a privacy leak.
+    if (row.creator_id) {
       try {
-        const recipients = await this.yp.await_proc('entity_sockets', { hub_id: row.hub_id });
+        const recipients = await this.yp.await_proc('user_sockets', row.creator_id);
         await RedisStore.sendData(
           this.payload(
             {

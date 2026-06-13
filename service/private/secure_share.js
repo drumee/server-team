@@ -251,6 +251,15 @@ class __secure_share extends Mfs {
     let   email  = (this.input.get(Attr.email) || '').toLowerCase().trim();
     let   uid    = (this.input.get(Attr.uid) || '').trim() || null;
 
+    // Only the secure-share CREATOR may revoke a recipient. secure_share_list is
+    // creator-scoped (filters by this.uid), so a non-empty result means the caller
+    // owns a share on this node. Otherwise deny — a workspace contributor with mere
+    // write access on the node must not be able to strip another user's grant.
+    const owned = toArray(await this.yp.await_proc('secure_share_list', hub_id, nid, this.uid));
+    if (!owned.length) {
+      return this.output.data({ status: 'FORBIDDEN' });
+    }
+
     // Resolve the uid from the email when the row didn't carry one (signed-in
     // recipients have actor_id; anonymous public viewers do not).
     if (!uid && email) {
