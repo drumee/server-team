@@ -173,7 +173,11 @@ class __dmz extends Mfs {
         const secureRes = await this.yp.await_proc('secure_share_info', token);
         if (!isEmpty(secureRes) && !secureRes.failed) {
           res = secureRes;
+          // Never expose secrets/recipient lists to an unauthenticated info probe
+          // (mirrors _loginSecureShare's safeInfo): allowed_emails would otherwise let
+          // a viewer enumerate the allow-list before passing the gate.
           delete res.password_hash;
+          delete res.allowed_emails;
         }
       } catch (e) {
         this.warn('[dmz.info] secure_share_info lookup failed:', e && e.message);
@@ -184,7 +188,20 @@ class __dmz extends Mfs {
       res = res || {};
       res.status = 'WRONG_TICKET';
     } else if (res.is_secure) {
-      res.status = res.validity === 'TICKET_OK' ? 'REQUIRED_EMAIL' : res.validity;
+      // Report the share's ACTUAL gate, not a blanket REQUIRED_EMAIL. A revoked/
+      // expired share keeps its validity; a valid one is email-gated only if it
+      // requires email (or a legacy single recipient), else password-gated, else
+      // public (TICKET_OK). The only caller (sharebox revoke poller) acts solely on
+      // TICKET_REVOKED/TICKET_EXPIRED, so this is safe for it.
+      if (res.validity !== 'TICKET_OK') {
+        res.status = res.validity;
+      } else if (res.require_email || res.recipient_email) {
+        res.status = 'REQUIRED_EMAIL';
+      } else if (res.require_password) {
+        res.status = 'REQUIRED_PASSWORD';
+      } else {
+        res.status = 'TICKET_OK';
+      }
     } else if (res.require_password) {
       res.status = 'REQUIRED_PASSWORD';
     }
