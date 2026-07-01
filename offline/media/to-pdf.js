@@ -17,7 +17,8 @@
  * =============================================================================
  */
 const { writeFileSync, readFileSync } = require('jsonfile');
-const { resolve, join } = require('path');
+const { resolve, join, basename } = require('path');
+const { normalizeWideSections, isWordprocessing } = require('./normalize-docx-sections');
 const { remove_dir } = require('@drumee/server-core').MfsTools;
 const { getPdfInfo } = require('@drumee/server-core').Document;
 const { rmSync, renameSync, mkdirSync, existsSync } = require("fs");
@@ -74,10 +75,10 @@ class __pdf_builder extends Offline {
   async build() {
     if (this.info.origFile) {
       this.syslog(`Building from MFS location`);
-      this.buildFromOrig();
+      await this.buildFromOrig();
     } else {
       this.syslog(`Building from cache location`);
-      this.buildFromCache();
+      await this.buildFromCache();
     }
 
     this.syslog(`FINISHED SUCCESSFULY`);
@@ -185,9 +186,36 @@ class __pdf_builder extends Offline {
 
 
   /**
-   * 
+   * For wordprocessing docs, rewrite any portrait section whose widest table or
+   * inline image overflows the page into landscape BEFORE soffice runs — soffice
+   * renders faithfully and would otherwise clip that content off the right edge.
+   * The normalized copy keeps the original basename (so the .pdf output name is
+   * unchanged) and lives in a throwaway `.norm` dir; the stored original is never
+   * touched. Any failure falls back to converting the original untouched.
+   * @returns {Promise<string>} path of the file soffice should convert
    */
-  buildFromCache() {
+  async normalizeInput(inputFile, outdir) {
+    try {
+      if (!inputFile || !isWordprocessing(inputFile)) return inputFile;
+      const dir = resolve(outdir, '.norm');
+      mkdirSync(dir, { recursive: true });
+      const target = join(dir, basename(inputFile));
+      const res = await normalizeWideSections(inputFile, target);
+      if (res && res.changed) {
+        this.syslog(`Normalized overflowing sections ${JSON.stringify(res.sections)} -> landscape`);
+        return target;
+      }
+      return inputFile;
+    } catch (e) {
+      this.syslog(`Section normalization skipped (non-fatal):`, (e && e.message) || e);
+      return inputFile;
+    }
+  }
+
+  /**
+   *
+   */
+  async buildFromCache() {
     let node = this.node;
     let mfs_root = node.mfs_root || this.mfs_dir;
     const mfs_dir = resolve(mfs_root, node.id);
@@ -197,7 +225,8 @@ class __pdf_builder extends Offline {
     mkdirSync(outdir, { recursive: true });
 
     // Build PDF from this.info.tmpfile into tmp_pdf
-    let cmd = `${Script.soffice} ${outdir} ${this.info.tmpfile}`;
+    const src = await this.normalizeInput(this.info.tmpfile, outdir);
+    let cmd = `${Script.soffice} ${outdir} ${src}`;
     this.exec(cmd);
     if (!existsSync(tmp_pdf)) {
       throw `Failed to build preview with CMD=${cmd}`;
@@ -220,16 +249,17 @@ class __pdf_builder extends Offline {
   /**
    * 
    */
-  buildFromOrig() {
+  async buildFromOrig() {
     let node = this.node;
     let mfs_root = node.mfs_root || this.mfs_dir;
     const mfs_dir = resolve(mfs_root, node.id);
     const orig_pdf = join(mfs_dir, 'orig.pdf');
     const preview = join(mfs_dir, 'preview.pdf');
 
-    let cmd = `${Script.soffice} ${mfs_dir} ${this.info.origFile}`;
-    console.log("AAA:231", cmd)
+    const src = await this.normalizeInput(this.info.origFile, mfs_dir);
+    let cmd = `${Script.soffice} ${mfs_dir} ${src}`;
     this.exec(cmd);
+    rmSync(resolve(mfs_dir, '.norm'), { recursive: true, force: true });
 
     if (!existsSync(orig_pdf)) {
       throw `Failed to build preview with CMD=${cmd}`;
