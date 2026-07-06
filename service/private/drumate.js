@@ -20,7 +20,7 @@ const { resolve } = require('path');
 const { isEmpty, isArray } = require('lodash');
 const {
   Attr, toArray, Remit, Constants, sendSms,
-  Messenger, DrumeeCache, RedisStore
+  Messenger, DrumeeCache, RedisStore, Cache
 } = require("@drumee/server-essentials")
 
 const {
@@ -435,7 +435,37 @@ class __private_drumate extends Entity {
   }
 
   /**
-   * 
+   * Get or create the signed-in user's referral code + link.
+   * Reads the live reward DB from reward_hub_conf, calls the reward-hub
+   * proc (idempotent get-or-create), and builds a per-tenant referral link.
+   */
+  async get_referral_code() {
+    let rewardDb = null;
+    try {
+      rewardDb = JSON.parse(Cache.getSysConf('reward_hub_conf') || '{}').db_name;
+    } catch (e) {
+      rewardDb = null;
+    }
+    if (!rewardDb) {
+      return this.output.data({ error: 'reward_not_configured' });
+    }
+    let code = null;
+    try {
+      const rows = toArray(await this.yp.await_proc(`${rewardDb}.reward_get_referral_code`, this.uid));
+      code = (rows[0] || {}).referral_code || null;
+    } catch (e) {
+      this.warn('[drumate.get_referral_code] proc failed', e && e.message);
+      return this.output.data({ error: 'referral_unavailable' });
+    }
+    if (!code) {
+      return this.output.data({ error: 'referral_unavailable' });
+    }
+    const referral_url = `${this.input.homepath()}#/welcome/signup?ref=${encodeURIComponent(code)}`;
+    this.output.data({ referral_code: code, referral_url });
+  }
+
+  /**
+   *
    */
   async get_settings() {
     const user_id = this.input.need(Attr.user_id);

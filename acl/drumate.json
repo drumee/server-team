@@ -70,6 +70,11 @@
         }
       ]
     },
+    "get_referral_code": {
+      "doc": "Get or create the signed-in user's referral code and link.",
+      "scope": "hub",
+      "permission": { "src": "owner" }
+    },
     "change_password": {
       "doc": "Change user password with old password verification",
       "scope": "hub",
