@@ -35,8 +35,8 @@ class __drumee_factory extends Offline {
     this.timer = 5000;
     const { watermark } = load() || {}
     this.watermark = {
-      hub: watermark.hub || 210,
-      drumate: watermark.drumate || 210,
+      hub: watermark?.hub || 210,
+      drumate: watermark?.drumate || 210,
     };
     this.info = this.checkSanity().then(async () => {
       if (argv.rebuild === "no" && this.scripts_clean()) {
@@ -236,7 +236,6 @@ try {
 } catch (e) {
   let msg = "Failed to Drumee Factory" + e.toString();
   console.error(msg, e);
-  this.syslog(msg);
   process.exit(1);
 }
 // ==========================================
