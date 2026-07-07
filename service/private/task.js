@@ -522,10 +522,11 @@ class __private_task extends Entity {
    * Search media files in the current hub that can be linked to a task.
    * Filters by user read-permission. Files already linked to task_id
    * (when provided) are excluded.
-   * Params: pattern (required, ≥1 char), task_id (optional), page (optional, default 1).
+   * Params: pattern (optional — empty lists all linkable files, most-recent
+   * first), task_id (optional), page (optional, default 1).
    */
   async search_files() {
-    const pattern = this.input.need('pattern');
+    const pattern = this.input.use('pattern', '');
     const task_id = this.input.use('task_id', null);
     const page    = this.input.use('page', 1);
 
