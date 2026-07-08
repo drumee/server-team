@@ -284,7 +284,8 @@ class __private_task extends Entity {
 
   /**
    * Create a new task in the current hub (folder).
-   * Params: title (required), description, status, priority, due_date, assignee_uid (all optional)
+   * Params: title (required), description, status, priority, due_date,
+   * start_date, assignee_uid (all optional)
    */
   async create() {
     const title = this.input.need(Attr.title);
@@ -292,6 +293,8 @@ class __private_task extends Entity {
     let status = this.input.use(Attr.status, 'todo');
     let priority = this._readPriority('medium');
     const due_date = this.input.use('due_date', null);
+    // Optional range start (Duration toggle). null = single-date task.
+    const start_date = this.input.use('start_date', null);
     // Folder scope: media node id of the folder the task belongs to (nullable).
     const nid = this.input.use('nid', null);
     // Multi-assignee: array (or legacy single). null/[] = unassigned.
@@ -305,8 +308,8 @@ class __private_task extends Entity {
     // Bypass `await_proc` which coerces JS null to '' before binding —
     // STRICT_TRANS_TABLES rejects '' for nullable DATE / VARCHAR columns.
     let data = await this.db.await_run(
-      'CALL task_create(?, ?, ?, ?, ?, ?, ?, ?)',
-      [id, title, description, status, priority, due_date, this.uid, nid]
+      'CALL task_create(?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [id, title, description, status, priority, due_date, start_date, this.uid, nid]
     );
     if (assignees.length) {
       // Re-reads the row with assignee_uids populated, so the response/broadcast
@@ -326,10 +329,12 @@ class __private_task extends Entity {
   }
 
   /**
-   * Update task title, description, priority, and/or due_date.
-   * Params: id (required); title / description / priority / due_date (optional).
+   * Update task title, description, priority, due_date, and/or start_date.
+   * Params: id (required); title / description / priority / due_date /
+   * start_date (optional).
    * For title / description / priority: omit the key to keep existing value.
-   * For due_date: the value is always written through (pass null to clear).
+   * For due_date / start_date: the value is always written through (pass null
+   * to clear; start_date null = Duration toggle OFF).
    */
   async update() {
     const id = this.input.need(Attr.id);
@@ -337,14 +342,17 @@ class __private_task extends Entity {
     const description = this.input.use('description', null);
     const priority = this._readPriority(null);
     const due_date = this.input.use('due_date', null);
+    // Range start (Duration toggle). Always written through: null clears it
+    // (toggle OFF), matching the due_date pass-through in task_update.
+    const start_date = this.input.use('start_date', null);
 
     if (priority != null && !VALID_PRIORITIES.includes(priority)) {
       return this.exception.user('INVALID_PRIORITY');
     }
 
     const data = await this.db.await_run(
-      'CALL task_update(?, ?, ?, ?, ?)',
-      [id, title, description, priority, due_date]
+      'CALL task_update(?, ?, ?, ?, ?, ?)',
+      [id, title, description, priority, due_date, start_date]
     );
     if (isEmpty(data)) {
       return this.exception.user('TASK_NOT_FOUND');
