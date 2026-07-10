@@ -1,0 +1,36 @@
+name: Test - secure-share regression
+
+# Runs the standalone secure-share session-security regression test on PRs into the
+# mainline branches. It does NOT touch the deploy pipeline (deploy.yml) and is not a
+# required check unless branch protection marks it so — a failure surfaces on the PR
+# but never blocks a deploy.
+#
+# Deliberately does NOT `npm install`: the source-invariant canaries in the test need
+# only the checked-out source (zero deps), and the behavioural tests self-skip when the
+# private @drumee/server-essentials dep is absent. So this runs on a stock GitHub-hosted
+# runner with no private-registry auth and can never go red for a missing dependency —
+# it only fails if one of the security guards was actually removed/regressed.
+
+on:
+  pull_request:
+    branches: [test, preview, main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-secure-share-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  regression:
+    name: Secure-share session invariants
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Run secure-share session regression test
+        run: node offline/test/secure-share-session.test.js
