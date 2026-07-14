@@ -16,7 +16,14 @@ const WORKER_NAME = process.env.WORKER_NAME || 'trash-worker-1';
 console.log(`[TrashWorker] Starting worker: ${WORKER_NAME}`);
 console.log(`[TrashWorker] Concurrency: ${CONCURRENCY}`);
 
-const { server_home, tmp_dir } = sysEnv();
+const { tmp_dir } = sysEnv();
+// Resolve the purge worker relative to THIS file, not sysEnv().server_home —
+// server_home comes back as the bare runtime/server root (no endpoint segment),
+// so `resolve(server_home, 'offline', 'media', 'purge.js')` pointed at a path
+// that doesn't exist (the worker lives under <endpoint>/offline/media/purge.js),
+// spawning ENOENT and failing every empty-trash job. __dirname is always inside
+// the running endpoint's tree. Mirrors service/media.js's OFFLINE_DIR.
+const PURGE_WORKER = resolve(__dirname, '..', 'media', 'purge.js');
 const SPAWN_OPT = { detached: true, stdio: ['ignore', 'ignore', 'ignore'] };
 const JSON_OPT = { spaces: 2, EOL: '\r\n' };
 
@@ -67,8 +74,8 @@ trashQueue.process('empty_trash', CONCURRENCY, async (job) => {
     
     console.log(`[TrashWorker] Found ${entities.length} files to purge`);
     
-    // Spawn purge.js
-    const cmd = resolve(server_home, 'offline', 'media', 'purge.js');
+    // Spawn purge.js (path resolved relative to this worker — see PURGE_WORKER)
+    const cmd = PURGE_WORKER;
     const args = { entities, uid };
     
     const queueDir = resolve(tmp_dir, 'offline', 'queue');

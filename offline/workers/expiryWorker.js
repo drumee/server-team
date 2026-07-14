@@ -21,7 +21,13 @@ const EXPIRY_SCHEDULE = process.env.EXPIRY_SCHEDULE || '0 2 * * *'; // Default: 
 console.log(`[ExpiryWorker] Starting worker: ${WORKER_NAME}`);
 console.log(`[ExpiryWorker] Schedule: ${EXPIRY_SCHEDULE}`);
 
-const { server_home, tmp_dir } = sysEnv();
+const { tmp_dir } = sysEnv();
+// Resolve the purge worker relative to THIS file, not sysEnv().server_home —
+// server_home is the bare runtime/server root (no endpoint segment), so the old
+// resolve(server_home, 'offline', 'media', 'purge.js') spawned a nonexistent
+// path (ENOENT). __dirname stays inside the running endpoint's tree. Mirrors
+// service/media.js's OFFLINE_DIR.
+const PURGE_WORKER = resolve(__dirname, '..', 'media', 'purge.js');
 const SPAWN_OPT = { detached: true, stdio: ['ignore', 'ignore', 'ignore'] };
 const JSON_OPT = { spaces: 2, EOL: '\r\n' };
 
@@ -127,8 +133,8 @@ async function processHub(hub) {
 
     console.log(`[ExpiryWorker] Spawning purge.js for ${entities.length} files`);
 
-    // Spawn purge.js
-    const cmd = resolve(server_home, 'offline', 'media', 'purge.js');
+    // Spawn purge.js (path resolved relative to this worker — see PURGE_WORKER)
+    const cmd = PURGE_WORKER;
     const args = {
       entities,
       uid: 'system' // System-triggered deletion
