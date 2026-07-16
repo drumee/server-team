@@ -1664,9 +1664,31 @@ class __media extends Mfs {
    * both codes.
    */
   async _send_thumb(format) {
-    const node = this.source_granted();
+    let node = this.source_granted();
+    // Some grant flows hand back a MINIMAL row (id only — no ext/filetype/
+    // mfs_root); path resolution then fails and healthy thumbs would
+    // degrade to 204. Load the full node the same way send_media's
+    // string-arg path does before deciding anything.
+    if (node && !(node.target_mfs_root || node.mfs_root)) {
+      const nid = node.id || node.nid;
+      if (nid) {
+        try {
+          const full = await this.db.await_proc("mfs_node_attr", nid);
+          if (full && (full.id || full.nid)) node = full;
+        } catch (e) {
+          this.debug(`mfs_node_attr failed for ${nid}:`, e.message);
+        }
+      }
+    }
     if (node) {
-      const orig = get_node_content(node);
+      let orig = null;
+      try {
+        orig = get_node_content(node);
+      } catch (e) {
+        // Unresolvable shape — keep the legacy behavior untouched.
+        await this.send_media(node, format);
+        return;
+      }
       if (orig && existsSync(orig)) {
         // Pre-run the (idempotent) generator: it swallows gm/convert
         // failures and returns nothing, after which FileIo would X-Accel
