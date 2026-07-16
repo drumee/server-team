@@ -1,8 +1,98 @@
 // service/public/stripe_webhook.js
 const { Entity } = require('@drumee/server-core');
+const { Messenger } = require('@drumee/server-essentials');
+const { resolve } = require('path');
 const { stripeClient, endpointSecret } = require('../lib/stripe');
+const { sendButlerMail } = require('../lib/butler-mail');
+
+// "What's unlocked" checklist per plan (payment-receipt email, Figma 2803-1288).
+// Static marketing copy matching the billing plans page; unknown plans get none.
+const PLAN_FEATURES = {
+  pro: ['50 GB storage', '5 editor seats included', '7-day version history', 'Permissions & roles', 'Guest access'],
+  team: ['50 GB storage per seat', 'Org-wide entitlement', '30-day version history', 'Admin-managed billing'],
+};
+
+const CURRENCY_SYMBOL = { eur: '€', usd: '$', gbp: '£' };
 
 class __public_stripe_webhook extends Entity {
+  // "€169.90" from Stripe minor units; falls back to "<CODE> 12.34".
+  _money(minor, currency) {
+    const n = (Number(minor) || 0) / 100;
+    const sym = CURRENCY_SYMBOL[(currency || 'eur').toLowerCase()];
+    return sym ? `${sym}${n.toFixed(2)}` : `${(currency || '').toUpperCase()} ${n.toFixed(2)}`;
+  }
+
+  // "January 7, 2026" (en-US, UTC) from a unix timestamp.
+  _longDate(ts) {
+    if (!ts) return '';
+    return new Date(Number(ts) * 1000).toLocaleDateString('en-US', {
+      year: 'numeric', month: 'long', day: 'numeric', timeZone: 'UTC',
+    });
+  }
+
+  /**
+   * Payment-receipt email for a paid invoice (Figma 2803-1288). Recipient is
+   * the Stripe customer email, falling back to the payer's account email.
+   * Stripe never emails customers in test mode (and live receipts are a
+   * dashboard opt-in), so the app owns this email. Callers must not let a
+   * mail failure fail the webhook.
+   */
+  async _sendReceiptEmail(invoice, sub, smd, { seat_total } = {}) {
+    let recipient = invoice.customer_email || null;
+    if (!recipient && smd.entity_id && (smd.entity_type || 'user') !== 'org') {
+      const payer = await this.yp.await_proc('payment_get_payer', smd.entity_id);
+      recipient = (payer && payer.email) || null;
+    }
+    if (!recipient) {
+      this.warn(`receipt email skipped for ${invoice.id}: no recipient email`);
+      return;
+    }
+    const plan = (smd.plan || 'pro').toLowerCase();
+    const plan_label = plan.charAt(0).toUpperCase() + plan.slice(1);
+    const cycle_label = (smd.period || 'month') === 'year' ? 'billed yearly' : 'billed monthly';
+    const paidTs = (invoice.status_transitions && invoice.status_transitions.paid_at) || invoice.created;
+    const items = (sub && sub.items && sub.items.data) || [];
+    const nextTs = (sub && sub.current_period_end) || (items[0] && items[0].current_period_end) || 0;
+    const currency = invoice.currency || 'eur';
+    const lines = ((invoice.lines && invoice.lines.data) || []).map((l) => ({
+      label: l.description || plan_label,
+      amount: this._money(l.amount, l.currency || currency),
+    }));
+    let app_link = '';
+    try { app_link = this.input.homepath(); } catch (e) { app_link = ''; }
+    const subject = `Your Drumee ${plan_label} plan is active — receipt ${invoice.number || ''}`.trim();
+    const msg = new Messenger({ subject, recipient, handler: this.exception && this.exception.email });
+    const tpl = resolve(__dirname, '..', 'private', 'templates', 'butler', 'payment-receipt.html');
+    const html = msg.renderFrom(tpl, {
+      plan_label,
+      cycle_label,
+      seats: Number(seat_total) || 0,
+      next_billing_date: nextTs ? this._longDate(nextTs) : '',
+      amount: this._money(invoice.amount_paid, currency),
+      paid_date_long: this._longDate(paidTs),
+      invoice_number: invoice.number || invoice.id || '',
+      invoice_url: invoice.hosted_invoice_url || '',
+      receipt_url: invoice.invoice_pdf || '',
+      lines,
+      total: this._money(invoice.amount_paid, currency),
+      features: PLAN_FEATURES[plan] || [],
+      app_link,
+      support_email: 'contact@drumee.org',
+    });
+    const text = [
+      `Your Drumee ${plan_label} plan is active.`,
+      ``,
+      `Receipt from Drumee: ${this._money(invoice.amount_paid, currency)} — paid ${this._longDate(paidTs)}.`,
+      `Invoice number: ${invoice.number || invoice.id || ''}`,
+      ...(nextTs ? [`Next billing date: ${this._longDate(nextTs)}`] : []),
+      ...(invoice.hosted_invoice_url ? [``, `Download invoice: ${invoice.hosted_invoice_url}`] : []),
+      ``,
+      `Need help? contact@drumee.org`,
+      `drumee.org · Privacy Policy: https://drumee.com/privacy/`,
+    ].join('\n');
+    await sendButlerMail(msg, { recipient, subject, html, text });
+  }
+
   // Classify subscription line items: the base plan item (quantity = seats for
   // org) vs add-on items (entity_type='addon' in yp.plan) — storage add-ons sum
   // disk * quantity into extra_disk (P4); pro_seat add-ons sum seat * quantity
@@ -151,6 +241,15 @@ class __public_stripe_webhook extends Entity {
               const seat_total = await this._seatTotal(smd.entity_type || 'user', smd.plan || 'pro', smd.period || 'month', seats, extra_seats);
               await this.yp.await_proc('payment_apply_entitlement', eid, smd.plan || 'pro', pend, smd.entity_type || 'user', seat_total, extra_disk);
               await this.notify_user(eid, { service: 'payment.plan_updated', plan: smd.plan, status: 'active' });
+              // Payment-receipt email (initial payment AND every renewal both
+              // arrive as invoice.paid). A mail failure must never fail the
+              // webhook — the entitlement above is already applied and Stripe
+              // would re-deliver the whole event on a 500.
+              try {
+                await this._sendReceiptEmail(obj, sub, smd, { seat_total });
+              } catch (e4) {
+                this.error(`receipt email failed for ${event.id}: ${e4.message}`);
+              }
             } else {
               // Payment failed -> keep entitlement during Stripe's smart retries
               // (grace); final failure downgrades via customer.subscription.deleted.
