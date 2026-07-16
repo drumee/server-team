@@ -1,0 +1,106 @@
+<%
+// Final dunning warning — Figma 2803-2971 ("3 · Final Warning").
+// Sent when Stripe has exhausted its smart retries (next_payment_attempt is
+// null) and the plan will lapse to Free. Vars: plan_label, card_label (''
+// generalises the copy), downgrade_date ('' generalises), features [string]
+// ("What you'll lose"), billing_link, support_email.
+var FONT = "'Geist','SF Pro Display',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif";
+%><!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="x-apple-disable-message-reformatting">
+  <title>Your Drumee <%= plan_label %> plan is about to downgrade</title>
+</head>
+<body style="margin:0;padding:0;background:#fff;-webkit-font-smoothing:antialiased;font-family:'Geist','SF Pro Display',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#fff;">
+    <tr>
+      <td align="center" style="padding:0;">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;max-width:600px;background:#fff;border:1px solid #d1d1d6;border-radius:8px;overflow:hidden;">
+
+          <!-- Header -->
+          <tr>
+            <td bgcolor="#433cc5" align="center" style="padding:24px;background:#433cc5;">
+              <table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr><td align="center" style="line-height:0;">
+                <img src="https://content.app.drumee.com/icons/logo.png" width="170" height="36" alt="Drumee" style="display:block;border:0;outline:0;text-decoration:none;-ms-interpolation-mode:bicubic;">
+              </td></tr></table>
+            </td>
+          </tr>
+
+          <!-- Main -->
+          <tr>
+            <td style="padding:32px;">
+
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+                <tr><td align="center" style="padding:8px 0 16px 0;">
+                  <table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr>
+                    <td align="center" valign="middle" width="56" height="56" style="width:56px;height:56px;border-radius:28px;background:#fdf3e3;font-family:<%= FONT %>;font-size:26px;line-height:56px;color:#e8a13c;">&#9888;</td>
+                  </tr></table>
+                </td></tr>
+                <tr><td align="center">
+                  <h1 style="margin:0 0 8px 0;padding:0;font-family:<%= FONT %>;font-weight:600;font-size:24px;line-height:1.2;color:#0b0a21;">Your <%= plan_label %> plan is about to downgrade</h1>
+                  <p style="margin:0;padding:0;font-family:<%= FONT %>;font-weight:400;font-size:14px;line-height:1.5;color:#65656c;"><% if (card_label) { %>We still haven't been able to charge <%= card_label %>.<% } else { %>We still haven't been able to process your payment.<% } %> Without payment, your workspace moves to Free<% if (downgrade_date) { %> on <%= downgrade_date %><% } %>.</p>
+                </td></tr>
+              </table>
+
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td style="height:24px;line-height:24px;font-size:0;">&nbsp;</td></tr></table>
+
+              <!-- Downgrade date (amber box) -->
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#fdf6e8;border-radius:8px;">
+                <tr><td style="padding:16px 20px;font-family:<%= FONT %>;font-size:13px;line-height:1.5;color:#0b0a21;">
+                  <strong>Downgrade date:</strong> if payment isn't updated, your plan downgrades to Free automatically<% if (downgrade_date) { %> on <strong><%= downgrade_date %></strong><% } %> &mdash; no further reminders after this one.
+                </td></tr>
+              </table>
+
+              <% if (features && features.length) { %>
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td style="height:24px;line-height:24px;font-size:0;">&nbsp;</td></tr></table>
+              <p style="margin:0 0 10px 0;padding:0;font-family:<%= FONT %>;font-size:14px;font-weight:600;color:#0b0a21;">What you'll lose</p>
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+                <% features.forEach(function (f) { %>
+                <tr>
+                  <td width="22" valign="top" style="padding:3px 0;font-family:<%= FONT %>;font-size:13px;color:#d64e49;">&#10005;</td>
+                  <td style="padding:3px 0;font-family:<%= FONT %>;font-size:13px;color:#0b0a21;"><%= f %></td>
+                </tr>
+                <% }); %>
+              </table>
+              <% } %>
+
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td style="height:24px;line-height:24px;font-size:0;">&nbsp;</td></tr></table>
+
+              <!-- CTA (red, per design) -->
+              <% if (billing_link) { %>
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+                <tr><td align="center" bgcolor="#d64e49" style="border-radius:6px;background:#d64e49;">
+                  <a href="<%= billing_link %>" style="display:block;padding:13px 24px;font-family:<%= FONT %>;font-size:14px;font-weight:600;color:#ffffff;text-decoration:none;">Update payment method now</a>
+                </td></tr>
+              </table>
+              <% } %>
+
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td style="height:28px;line-height:28px;font-size:0;">&nbsp;</td></tr></table>
+
+              <p style="margin:0 0 6px 0;padding:0;font-family:<%= FONT %>;font-size:14px;font-weight:600;color:#0b0a21;">Need Help?</p>
+              <p style="margin:0;padding:0;font-family:<%= FONT %>;font-size:13px;color:#65656c;">Our customer support team is available to assist you:<br>
+                <a href="mailto:<%= support_email %>" style="color:#433cc5;text-decoration:underline;"><%= support_email %></a>
+              </p>
+
+            </td>
+          </tr>
+
+          <!-- Footer -->
+          <tr>
+            <td bgcolor="#f2f2f7" align="center" style="padding:20px;background:#f2f2f7;">
+              <p style="margin:0;padding:0;font-family:<%= FONT %>;font-size:12px;color:#65656c;">
+                <a href="https://drumee.org" style="color:#65656c;text-decoration:none;">drumee.org</a>
+                &nbsp;|&nbsp;
+                <a href="https://drumee.com/privacy/" style="color:#65656c;text-decoration:underline;">Privacy Policy</a>
+              </p>
+            </td>
+          </tr>
+
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>

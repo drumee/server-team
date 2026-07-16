@@ -1,0 +1,116 @@
+<%
+// Payment-failed (retry pending) email — Figma 2803-2624.
+// Vars: plan_label, cycle_label, amount_due, attempted_on, card_label ('' hides
+// row), retry_hint (e.g. "in 5 days" or "on January 12, 2026"; '' generalises
+// the copy), billing_link, support_email.
+var FONT = "'Geist','SF Pro Display',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif";
+%><!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="x-apple-disable-message-reformatting">
+  <title>We couldn't process your payment</title>
+</head>
+<body style="margin:0;padding:0;background:#fff;-webkit-font-smoothing:antialiased;font-family:'Geist','SF Pro Display',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#fff;">
+    <tr>
+      <td align="center" style="padding:0;">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;max-width:600px;background:#fff;border:1px solid #d1d1d6;border-radius:8px;overflow:hidden;">
+
+          <!-- Header -->
+          <tr>
+            <td bgcolor="#433cc5" align="center" style="padding:24px;background:#433cc5;">
+              <table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr><td align="center" style="line-height:0;">
+                <img src="https://content.app.drumee.com/icons/logo.png" width="170" height="36" alt="Drumee" style="display:block;border:0;outline:0;text-decoration:none;-ms-interpolation-mode:bicubic;">
+              </td></tr></table>
+            </td>
+          </tr>
+
+          <!-- Main -->
+          <tr>
+            <td style="padding:32px;">
+
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+                <tr><td align="center" style="padding:8px 0 16px 0;">
+                  <table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr>
+                    <td align="center" valign="middle" width="56" height="56" style="width:56px;height:56px;border-radius:28px;background:#fdeaea;font-family:<%= FONT %>;font-size:26px;line-height:56px;color:#d64e49;">&#10005;</td>
+                  </tr></table>
+                </td></tr>
+                <tr><td align="center">
+                  <h1 style="margin:0 0 8px 0;padding:0;font-family:<%= FONT %>;font-weight:600;font-size:24px;line-height:1.2;color:#0b0a21;">We couldn't process your payment</h1>
+                  <p style="margin:0;padding:0;font-family:<%= FONT %>;font-weight:400;font-size:14px;line-height:1.5;color:#65656c;"><% if (card_label) { %>Your card <%= card_label %> was declined for your <%= plan_label %> plan renewal.<% } else { %>Your payment for the <%= plan_label %> plan renewal was declined.<% } %></p>
+                </td></tr>
+              </table>
+
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td style="height:28px;line-height:28px;font-size:0;">&nbsp;</td></tr></table>
+
+              <!-- Detail rows -->
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border-top:1px solid #e5e5ea;">
+                <tr>
+                  <td style="padding:10px 0;font-family:<%= FONT %>;font-size:13px;color:#65656c;">Plan</td>
+                  <td align="right" style="padding:10px 0;font-family:<%= FONT %>;font-size:13px;font-weight:600;color:#0b0a21;"><%= plan_label %> &mdash; <%= cycle_label %></td>
+                </tr>
+                <tr>
+                  <td style="padding:10px 0;font-family:<%= FONT %>;font-size:13px;color:#65656c;">Amount due</td>
+                  <td align="right" style="padding:10px 0;font-family:<%= FONT %>;font-size:13px;font-weight:600;color:#0b0a21;"><%= amount_due %></td>
+                </tr>
+                <tr>
+                  <td style="padding:10px 0;font-family:<%= FONT %>;font-size:13px;color:#65656c;">Attempted on</td>
+                  <td align="right" style="padding:10px 0;font-family:<%= FONT %>;font-size:13px;font-weight:600;color:#0b0a21;"><%= attempted_on %></td>
+                </tr>
+                <% if (card_label) { %>
+                <tr>
+                  <td style="padding:10px 0;font-family:<%= FONT %>;font-size:13px;color:#65656c;">Payment method</td>
+                  <td align="right" style="padding:10px 0;font-family:<%= FONT %>;font-size:13px;font-weight:600;color:#0b0a21;"><%= card_label %></td>
+                </tr>
+                <% } %>
+              </table>
+
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td style="height:20px;line-height:20px;font-size:0;border-top:1px solid #e5e5ea;">&nbsp;</td></tr></table>
+
+              <!-- What happens next (pink box) -->
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#fdeeee;border-radius:8px;">
+                <tr><td style="padding:16px 20px;font-family:<%= FONT %>;font-size:13px;line-height:1.5;color:#0b0a21;">
+                  <strong>What happens next:</strong> we'll automatically retry this charge<% if (retry_hint) { %> <%= retry_hint %><% } %>. Your workspace and every <%= plan_label %> feature stay active in the meantime &mdash; no action needed yet, unless you'd rather fix it now.
+                </td></tr>
+              </table>
+
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td style="height:24px;line-height:24px;font-size:0;">&nbsp;</td></tr></table>
+
+              <!-- CTA -->
+              <% if (billing_link) { %>
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+                <tr><td align="center" bgcolor="#433cc5" style="border-radius:6px;background:#433cc5;">
+                  <a href="<%= billing_link %>" style="display:block;padding:13px 24px;font-family:<%= FONT %>;font-size:14px;font-weight:600;color:#ffffff;text-decoration:none;">Update payment method</a>
+                </td></tr>
+              </table>
+              <% } %>
+
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td style="height:28px;line-height:28px;font-size:0;">&nbsp;</td></tr></table>
+
+              <p style="margin:0 0 6px 0;padding:0;font-family:<%= FONT %>;font-size:14px;font-weight:600;color:#0b0a21;">Need Help?</p>
+              <p style="margin:0;padding:0;font-family:<%= FONT %>;font-size:13px;color:#65656c;">Our customer support team is available to assist you:<br>
+                <a href="mailto:<%= support_email %>" style="color:#433cc5;text-decoration:underline;"><%= support_email %></a>
+              </p>
+
+            </td>
+          </tr>
+
+          <!-- Footer -->
+          <tr>
+            <td bgcolor="#f2f2f7" align="center" style="padding:20px;background:#f2f2f7;">
+              <p style="margin:0;padding:0;font-family:<%= FONT %>;font-size:12px;color:#65656c;">
+                <a href="https://drumee.org" style="color:#65656c;text-decoration:none;">drumee.org</a>
+                &nbsp;|&nbsp;
+                <a href="https://drumee.com/privacy/" style="color:#65656c;text-decoration:underline;">Privacy Policy</a>
+              </p>
+            </td>
+          </tr>
+
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>

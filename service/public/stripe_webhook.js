@@ -93,6 +93,94 @@ class __public_stripe_webhook extends Entity {
     await sendButlerMail(msg, { recipient, subject, html, text });
   }
 
+  // "Visa **** 2363" from the failed invoice's charge, when retrievable.
+  // Purely decorative — every caller treats '' as "omit the row".
+  async _cardLabel(stripe, invoice) {
+    try {
+      const chargeId = typeof invoice.charge === 'string' ? invoice.charge : null;
+      if (!chargeId) return '';
+      const charge = await stripe.charges.retrieve(chargeId);
+      const card = charge && charge.payment_method_details && charge.payment_method_details.card;
+      if (!card || !card.last4) return '';
+      const brand = (card.brand || 'card').replace(/^\w/, (c) => c.toUpperCase());
+      return `${brand} **** ${card.last4}`;
+    } catch (e) { return ''; }
+  }
+
+  /**
+   * Dunning emails for a failed renewal charge (Figma 2803-2624 / 2803-2971).
+   * Stripe fires invoice.payment_failed on EVERY smart-retry attempt:
+   *  - next_payment_attempt set   → "we couldn't process your payment, we'll
+   *    retry on {date}" (workspace stays active meanwhile).
+   *  - next_payment_attempt null  → FINAL warning: retries exhausted, the plan
+   *    lapses to Free ("no further reminders after this one").
+   * Callers must not let a mail failure fail the webhook.
+   */
+  async _sendDunningEmail(stripe, invoice, sub, smd) {
+    let recipient = invoice.customer_email || null;
+    if (!recipient && smd.entity_id && (smd.entity_type || 'user') !== 'org') {
+      const payer = await this.yp.await_proc('payment_get_payer', smd.entity_id);
+      recipient = (payer && payer.email) || null;
+    }
+    if (!recipient) {
+      this.warn(`dunning email skipped for ${invoice.id}: no recipient email`);
+      return;
+    }
+    const plan = (smd.plan || 'pro').toLowerCase();
+    const plan_label = plan.charAt(0).toUpperCase() + plan.slice(1);
+    const cycle_label = (smd.period || 'month') === 'year' ? 'billed yearly' : 'billed monthly';
+    const currency = invoice.currency || 'eur';
+    const card_label = await this._cardLabel(stripe, invoice);
+    let billing_link = '';
+    try { billing_link = this.input.homepath(); } catch (e) { billing_link = ''; }
+    const isFinal = !invoice.next_payment_attempt;
+    const tplName = isFinal ? 'payment-final-warning.html' : 'payment-failed.html';
+    const subject = isFinal
+      ? `Final reminder — your Drumee ${plan_label} plan is about to downgrade`
+      : `Action needed — we couldn't process your Drumee payment`;
+    const msg = new Messenger({ subject, recipient, handler: this.exception && this.exception.email });
+    const tpl = resolve(__dirname, '..', 'private', 'templates', 'butler', tplName);
+    let html, text;
+    if (isFinal) {
+      // Retries exhausted: the sub lapses at cancel_at when Stripe's dunning is
+      // configured to cancel, else at the already-paid period's end.
+      const downTs = (sub && (sub.cancel_at || sub.current_period_end)) || 0;
+      const downgrade_date = downTs ? this._longDate(downTs) : '';
+      html = msg.renderFrom(tpl, {
+        plan_label, card_label, downgrade_date,
+        features: PLAN_FEATURES[plan] || [],
+        billing_link, support_email: 'contact@drumee.org',
+      });
+      text = [
+        `Your Drumee ${plan_label} plan is about to downgrade.`,
+        ``,
+        `We still haven't been able to process your payment. Without payment, your workspace moves to Free${downgrade_date ? ` on ${downgrade_date}` : ''}. No further reminders after this one.`,
+        ...(billing_link ? [``, `Update payment method: ${billing_link}`] : []),
+        ``,
+        `Need help? contact@drumee.org`,
+      ].join('\n');
+    } else {
+      const retry_hint = invoice.next_payment_attempt ? `on ${this._longDate(invoice.next_payment_attempt)}` : '';
+      html = msg.renderFrom(tpl, {
+        plan_label, cycle_label, card_label,
+        amount_due: this._money(invoice.amount_due, currency),
+        attempted_on: this._longDate(invoice.created),
+        retry_hint,
+        billing_link, support_email: 'contact@drumee.org',
+      });
+      text = [
+        `We couldn't process your payment for the Drumee ${plan_label} plan.`,
+        ``,
+        `Amount due: ${this._money(invoice.amount_due, currency)} — attempted ${this._longDate(invoice.created)}.`,
+        `We'll automatically retry this charge${retry_hint ? ` ${retry_hint}` : ''}. Your workspace stays active in the meantime.`,
+        ...(billing_link ? [``, `Update payment method: ${billing_link}`] : []),
+        ``,
+        `Need help? contact@drumee.org`,
+      ].join('\n');
+    }
+    await sendButlerMail(msg, { recipient, subject, html, text });
+  }
+
   // Classify subscription line items: the base plan item (quantity = seats for
   // org) vs add-on items (entity_type='addon' in yp.plan) — storage add-ons sum
   // disk * quantity into extra_disk (P4); pro_seat add-ons sum seat * quantity
@@ -254,6 +342,13 @@ class __public_stripe_webhook extends Entity {
               // Payment failed -> keep entitlement during Stripe's smart retries
               // (grace); final failure downgrades via customer.subscription.deleted.
               await this.notify_user(eid, { service: 'payment.payment_failed', plan: smd.plan, status: 'past_due' });
+              // Dunning email (retry notice / final warning). Mail failures log
+              // only — a 500 here would make Stripe re-deliver the whole event.
+              try {
+                await this._sendDunningEmail(stripe, obj, sub, smd);
+              } catch (e5) {
+                this.error(`dunning email failed for ${event.id}: ${e5.message}`);
+              }
             }
           }
           break;
