@@ -53,6 +53,7 @@ const {
   MfsTools,
 } = require("@drumee/server-core");
 const { remove_dir, mv } = MfsTools;
+const { get_node_content } = require("@drumee/server-core/lib/utils/mfs");
 
 const {
   mkdirSync,
@@ -1654,25 +1655,67 @@ class __media extends Mfs {
   galery() { }
 
   /**
-   * 
+   * Thumb-class assets (vignette/thumb/card/preview/slide) are best-effort:
+   * they are generated on demand from the original file, so when the source
+   * is gone from disk (orphan DB row, lost content) there is nothing to
+   * build. Reply 204 instead of 404 in that case — browsers log a console
+   * error for every 404 fetch, so a desk full of orphan tiles used to flood
+   * the console on every load; the UI falls back to the filetype icon on
+   * both codes.
+   */
+  async _send_thumb(format) {
+    const node = this.source_granted();
+    if (node) {
+      const orig = get_node_content(node);
+      if (orig && existsSync(orig)) {
+        // Pre-run the (idempotent) generator: it swallows gm/convert
+        // failures and returns nothing, after which FileIo would X-Accel
+        // a nonexistent path and nginx would emit the 404. The thumb is
+        // served ONLY when the output file actually exists after the
+        // attempt — a corrupted/truncated source, a missing generator for
+        // this filetype, or an unresolvable output path all degrade to 204.
+        const output = get_node_content(node, format, "png");
+        const g =
+          Generator[`create_${node.filetype}_${format}`] ||
+          Generator[`create_${node.category}_${format}`];
+        if (isFunction(g) && output) {
+          try {
+            g(output, orig, node);
+          } catch (e) {
+            this.debug(`thumb generation failed nid=${node.id}:`, e.message);
+          }
+        }
+        if (!output || !existsSync(output)) {
+          this.output.head({ "Cache-Control": "no-store" }, 204);
+          return;
+        }
+        await this.send_media(node, format);
+        return;
+      }
+    }
+    this.output.head({ "Cache-Control": "no-store" }, 204);
+  }
+
+  /**
+   *
    */
   async vignette() {
     //const nid = this.input.need(Attr.nid);
-    await this.send_media(this.source_granted(), VIGNETTE);
+    await this._send_thumb(VIGNETTE);
   }
 
   /**
-   * 
+   *
    */
   async thumb() {
-    await this.send_media(this.source_granted(), THUMBNAIL);
+    await this._send_thumb(THUMBNAIL);
   }
 
   /**
-   * 
+   *
    */
   async card() {
-    await this.send_media(this.source_granted(), CARD);
+    await this._send_thumb(CARD);
   }
 
   /**
@@ -1707,14 +1750,14 @@ class __media extends Mfs {
    *
    */
   async slide() {
-    await this.send_media(this.source_granted(), SLIDE);
+    await this._send_thumb(SLIDE);
   }
 
   /**
    *
    */
   async preview() {
-    await this.send_media(this.source_granted(), PREVIEW);
+    await this._send_thumb(PREVIEW);
   }
 
   /**
