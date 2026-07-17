@@ -100,6 +100,27 @@ class __public_stripe_webhook extends Entity {
     await sendButlerMail(msg, { recipient, subject, html, text });
   }
 
+  // A payer who upgrades to TEAM after already paying for a personal plan
+  // (e.g. Pro bought before the org existed) must not keep being billed for
+  // both — the org entitlement supersedes the personal one entirely. Cancels
+  // the payer's own Stripe subscription immediately (not cancel_at_period_end:
+  // they're gaining entitlement, not losing it, so there is no "keep access
+  // until period end" to honor). The resulting customer.subscription.deleted
+  // event cleans up the personal mirror/quota row through the normal path.
+  // Best-effort and idempotent: an already-canceled/missing subscription
+  // throws from Stripe, which is caught and ignored — never let this fail
+  // the org webhook event that triggered it.
+  async _cancelSupersededPersonalSubscription(payer_id, stripe) {
+    const personal = await this.yp.await_proc('payment_get_subscription', payer_id);
+    const subId = personal && personal.subscription_id;
+    if (!subId || personal.status === 'canceled') return;
+    try {
+      await stripe.subscriptions.cancel(subId);
+    } catch (e) {
+      this.warn(`superseded personal subscription cancel skipped for ${payer_id}: ${e.message}`);
+    }
+  }
+
   // TEAM bootstrap resolution: metadata for org subscriptions created before
   // the org existed carries entity_id = payer uid plus payer_id (+ org_ident/
   // org_name on the bootstrap checkout). Resolve the payer's organisation —
@@ -108,7 +129,7 @@ class __public_stripe_webhook extends Entity {
   // session event and an early invoice.paid can race safely). A provisioning
   // failure throws so the event returns 500 and Stripe retries instead of
   // applying a mis-keyed entitlement.
-  async _resolveOrgEntity(md) {
+  async _resolveOrgEntity(md, stripe) {
     if ((md.entity_type || 'user') !== 'org' || !md.payer_id) return md.entity_id;
     let org = await this.yp.await_proc('payment_get_org', md.payer_id);
     if ((!org || !org.id) && md.org_ident) {
@@ -129,6 +150,9 @@ class __public_stripe_webhook extends Entity {
           link: org.link,
         });
       }
+    }
+    if (org && org.id && stripe) {
+      await this._cancelSupersededPersonalSubscription(md.payer_id, stripe);
     }
     return (org && org.id) ? org.id : md.entity_id;
   }
@@ -201,7 +225,7 @@ class __public_stripe_webhook extends Entity {
           const period = md.period || 'month';
           // TEAM bootstrap: the organisation may not exist at checkout time —
           // resolve (and provision if needed) before billing the ORG entity.
-          entity_id = await this._resolveOrgEntity(md);
+          entity_id = await this._resolveOrgEntity(md, stripe);
           if (entity_id) {
             // Mirror the live subscription for the status panel + Billing Portal.
             const customer_id = obj.customer || null;
@@ -310,7 +334,7 @@ class __public_stripe_webhook extends Entity {
           // Bootstrap-era org subscriptions carry entity_id = payer uid —
           // resolve (and, on an early invoice.paid racing the session event,
           // provision) the real org before applying entitlement.
-          const eid = await this._resolveOrgEntity(smd);
+          const eid = await this._resolveOrgEntity(smd, stripe);
           if (eid) {
             if (event.type === 'invoice.paid') {
               // Recurring renewal succeeded -> re-apply entitlement (bumps period_end).
