@@ -23,6 +23,15 @@
         "fast_check": "public-api"
       },
       "params": {}
+    },
+    "portal_return": {
+      "doc": "Stripe Billing Portal return. UX-only same-site bounce: redirects the browser to the desk so the SameSite=Strict session cookie survives the cross-site return (avoids apparent logout).",
+      "scope": "hub",
+      "permission": {
+        "src": "read",
+        "fast_check": "public-api"
+      },
+      "params": {}
     }
   },
   "modules": {

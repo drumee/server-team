@@ -35,6 +35,20 @@ class __callback extends Entity {
     const flag = sid ? `?checkout=success&session_id=${sid}` : '?checkout=success';
     this.output.html(`<script> window.location.href = '${this.input.homepath()}${flag}#/desk/' </script>`);
   }
+
+  // Stripe Billing Portal return. The portal's return_url points HERE (a
+  // same-origin /svc endpoint) rather than straight at the desk, on purpose:
+  // the session cookie is SameSite=Strict, so it is withheld on the FIRST
+  // request of a cross-site top-level navigation (the browser coming back from
+  // billing.stripe.com). Landing directly on the SPA would boot it without the
+  // cookie → yp.get_env sees a guest → the user appears logged out. This tiny
+  // HTML bounce turns the return into a SAME-SITE navigation (drumee.in's own
+  // script setting location), so the cookie IS sent on the desk load and the
+  // session survives — the exact mechanism the checkout success/cancel returns
+  // already rely on.
+  async portal_return() {
+    this.output.html(`<script> window.location.href = '${this.input.homepath()}#/desk/' </script>`);
+  }
 }
 
 module.exports = __callback;

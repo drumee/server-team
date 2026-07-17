@@ -225,9 +225,16 @@ class __private_payment extends Entity {
     const sub = await this._subscription_row();
     const customer_id = sub && sub.customer_id;
     if (!customer_id) return this.output.data({ status: 'NO_CUSTOMER' });
+    // Return through a same-origin /svc bounce (callback.portal_return), not
+    // straight at the desk: the session cookie is SameSite=Strict and is
+    // withheld on the first request of the cross-site return from Stripe, so a
+    // direct return lands the SPA as a guest → apparent logout. The bounce
+    // makes the final desk navigation same-site, so the cookie is sent. Same
+    // pattern as the checkout success/cancel URLs above.
+    const return_url = this.input.homepath().replace(/\/+$/, '') + '/svc/?service=callback.portal_return';
     const session = await stripe.billingPortal.sessions.create({
       customer: customer_id,
-      return_url: this.input.homepath() + '#/desk/',
+      return_url,
     });
     this.output.data({ url: session.url });
   }
