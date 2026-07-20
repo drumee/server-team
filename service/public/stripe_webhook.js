@@ -42,6 +42,15 @@ class __public_stripe_webhook extends Entity {
    */
   async _sendReceiptEmail(invoice, sub, smd, { seat_total, heading, intro, subject } = {}) {
     let recipient = invoice.customer_email || null;
+    // Org (Team) subscriptions: the org's Stripe customer is created without
+    // an email when the organisation already exists (payment.checkout sets
+    // email only on the payer-keyed bootstrap customer), so customer_email
+    // can be null. payer_id always travels in the subscription metadata —
+    // fall back to the paying user's account email.
+    if (!recipient && smd.payer_id) {
+      const payer = await this.yp.await_proc('payment_get_payer', smd.payer_id);
+      recipient = (payer && payer.email) || null;
+    }
     if (!recipient && smd.entity_id && (smd.entity_type || 'user') !== 'org') {
       const payer = await this.yp.await_proc('payment_get_payer', smd.entity_id);
       recipient = (payer && payer.email) || null;
@@ -241,7 +250,16 @@ class __public_stripe_webhook extends Entity {
             // so the UI status line reads "will be canceled on {period_end}"
             // (the design's Settings-card copy). Entitlement stays until the
             // final customer.subscription.deleted.
-            const status = obj.cancel_at_period_end ? 'canceled' : (obj.status || 'active');
+            // checkout.session.completed carries the SESSION in obj, whose
+            // status is 'complete' — a session status, not a subscription one.
+            // subscription_new.status is a strict-mode ENUM of SUBSCRIPTION
+            // statuses, so mirroring 'complete' raised 1265 Data truncated on
+            // the shared yp handle and killed the CONCURRENT invoice.paid
+            // handler mid-flight — before its payment receipt email — which is
+            // why a Pro→Team upgrade paid fine but never emailed. A completed
+            // session means the subscription is live: mirror 'active'.
+            const status = obj.cancel_at_period_end ? 'canceled'
+              : (obj.object === 'checkout.session' ? 'active' : (obj.status || 'active'));
             const entity_type = md.entity_type || 'user';
             // Line items: the subscription object carries them; a checkout.session
             // does not, so retrieve the subscription to read base + add-ons.
