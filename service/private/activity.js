@@ -376,13 +376,21 @@ class MfsActivity extends Entity {
           if (r.timestamp == null) r.timestamp = r.ctime;
           result.push(r);
         }
-        // Task @-mentions / assignments live in yp.contact_activity → under
-        // Unread OFF they already come from activity_get_feed_all; merge their
-        // UNREAD rows only under Unread ON so they show in the default view
-        // without double-showing under OFF. Each proc is independently
-        // best-effort so a missing/failing one never sinks the others.
+        // Task @-mentions / assignments and admin-console storage alerts live
+        // in yp.contact_activity → under Unread OFF they already come from
+        // activity_get_feed_all; merge their UNREAD rows only under Unread ON
+        // so they show in the default view without double-showing under OFF.
+        // Every new contact_activity event needs its own *_unread proc here —
+        // storage_alert was added without one, so recipients got the email but
+        // no in-app notification (the panel opens on Unread ON). Each proc is
+        // independently best-effort so a missing/failing one never sinks the
+        // others.
         if (unreadOnly) {
-          for (const proc of ['contact_task_assigned_unread', 'contact_task_mention_unread']) {
+          for (const proc of [
+            'contact_task_assigned_unread',
+            'contact_task_mention_unread',
+            'contact_storage_alert_unread',
+          ]) {
             try {
               const rows = toArray(await this.yp.await_proc(proc, this.uid));
               for (const r of rows) {
