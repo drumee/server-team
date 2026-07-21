@@ -5,6 +5,15 @@ const HttpServer = require("http");
 const { server: SocketServer } = require("websocket");
 const Page = require("./client/page");
 
+// The accept-language singleton (used by server-core input.language()) parses
+// NOTHING until languages() is called — uninitialized, .get() returns null for
+// every header, so input.language() fell through to its hardcoded 'fr' and the
+// page shell served <html lang="fr"> to EVERY visitor regardless of browser
+// language (mixed fr/en UI). Initialize once per process; module is shared
+// with server-core through node's require cache. 'en' first = default for
+// missing/unsupported Accept-Language.
+require("accept-language").languages(["en", "fr", "es", "ru", "km", "zh"]);
+
 const configs = require("./configs");
 const env = configs.env();
 configs.load();

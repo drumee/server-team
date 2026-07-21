@@ -2,6 +2,11 @@
 const { Cache, RedisStore, Events } = require("@drumee/server-essentials");
 const { Session, Input, Output } = require("@drumee/server-core");
 
+// Same init as index.js: without languages(), accept-language .get() returns
+// null for every header and input.language() falls back to hardcoded 'fr' —
+// wrong language for service-side lex/mail copy. 'en' first = default.
+require("accept-language").languages(["en", "fr", "es", "ru", "km", "zh"]);
+
 const { ERROR, START } = Events;
 const configs = require("./configs");
 const env = configs.env();
