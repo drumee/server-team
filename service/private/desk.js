@@ -24,6 +24,17 @@ const {
   RedisStore, uniqueId, sysEnv
 } = require("@drumee/server-essentials");
 
+// Desk search only looks at chat messages once the query is at least this long.
+// A single letter matches almost every message, which buries the file/folder
+// hits under hundreds of chat rows. Same threshold as channel.search().
+const MIN_MESSAGE_SEARCH_LENGTH = 2;
+
+// System events are stored in the channel as an `[[EVENT:payload]]` envelope
+// (e.g. `[[MEETING:start:{...}]]`) and rendered as activity rows, never typed
+// by a user. They must not surface as search hits: a query matching their
+// markup or embedded ids (`MEETING`, hub ids, ...) is a false positive.
+const SYSTEM_EVENT_MESSAGE = /^\s*\[\[[A-Z_]+:/;
+
 class __private_desk extends Media {
 
   /**
@@ -327,7 +338,10 @@ class __private_desk extends Media {
     // Message search across all active hubs owned by the current user
     let messageResults = [];
     try {
-      const hubs = toArray(
+      // A too-short query skips the chat stage entirely (no hub lookup, no
+      // channel_search) so file/folder hits are not buried — see
+      // MIN_MESSAGE_SEARCH_LENGTH. File search still runs for any length.
+      const hubs = pattern.length < MIN_MESSAGE_SEARCH_LENGTH ? [] : toArray(
         await this.yp.await_query(
           `SELECT e.id, e.db_name FROM entity e JOIN hub h ON h.id = e.id
            WHERE h.owner_id = ? AND e.type = 'hub' AND e.status = 'active'`,
@@ -342,6 +356,8 @@ class __private_desk extends Media {
             await this.yp.await_proc(`${hub.db_name}.channel_search`, pattern)
           );
           for (const row of rows) {
+            // System event envelopes are activity rows, not user text
+            if (SYSTEM_EVENT_MESSAGE.test(row.preview || '')) continue;
             row.hub_id      = hub.id;
             row.result_type = 'message';
             messageResults.push(row);
