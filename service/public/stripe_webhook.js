@@ -70,8 +70,24 @@ class __public_stripe_webhook extends Entity {
       label: l.description || plan_label,
       amount: this._money(l.amount, l.currency || currency),
     }));
+    // "Open Drumee" must (a) target the RECIPIENT's host — the session cookie
+    // is host-scoped, so an org member's session lives on their org vhost and
+    // a main-domain link lands signed-out — and (b) go through the
+    // callback.portal_return same-site bounce: the cookie is SameSite=Strict,
+    // so it is withheld on the cross-site click from the mail client; the
+    // bounce re-enters same-site and the session survives (QA: "click Open
+    // Drumee → it requires sign in again").
     let app_link = '';
-    try { app_link = this.input.homepath(); } catch (e) { app_link = ''; }
+    try {
+      const home = new URL(this.input.homepath());
+      if ((smd.entity_type || 'user') === 'org' && smd.payer_id) {
+        const org = await this.yp.await_proc('payment_get_org', smd.payer_id);
+        if (org && org.link) home.host = org.link;
+      }
+      let path = home.pathname || '/';
+      if (!/\/$/.test(path)) path = `${path}/`;
+      app_link = `${home.protocol}//${home.host}${path}svc/?service=callback.portal_return`;
+    } catch (e) { app_link = ''; }
     heading = heading || `Your Drumee ${plan_label} plan is active`;
     intro = intro || "Your payment went through. Here's your receipt.";
     subject = subject || `${heading} — receipt ${invoice.number || ''}`.trim();

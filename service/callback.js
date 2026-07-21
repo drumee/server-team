@@ -36,18 +36,27 @@ class __callback extends Entity {
     this.output.html(`<script> window.location.href = '${this.input.homepath()}${flag}#/desk/' </script>`);
   }
 
-  // Stripe Billing Portal return. The portal's return_url points HERE (a
-  // same-origin /svc endpoint) rather than straight at the desk, on purpose:
+  // Same-site bounce into the desk. Used as the Stripe Billing Portal
+  // return_url AND as the "Open Drumee" target in outgoing emails, on purpose:
   // the session cookie is SameSite=Strict, so it is withheld on the FIRST
-  // request of a cross-site top-level navigation (the browser coming back from
-  // billing.stripe.com). Landing directly on the SPA would boot it without the
-  // cookie → yp.get_env sees a guest → the user appears logged out. This tiny
-  // HTML bounce turns the return into a SAME-SITE navigation (drumee.in's own
-  // script setting location), so the cookie IS sent on the desk load and the
-  // session survives — the exact mechanism the checkout success/cancel returns
-  // already rely on.
+  // request of a cross-site top-level navigation (coming back from
+  // billing.stripe.com, or clicking a link in Gmail). Landing directly on the
+  // SPA would boot it without the cookie → yp.get_env sees a guest → the user
+  // appears logged out. This tiny HTML bounce turns the arrival into a
+  // SAME-SITE navigation (our own script setting location), so the cookie IS
+  // sent on the desk load and the session survives.
+  //
+  // The redirect is RELATIVE (path only, no host): the session cookie is
+  // HOST-scoped — an org member's session lives on their org vhost
+  // (e.g. team.drumee.in), and homepath() on this cookie-less request resolves
+  // to the MAIN domain, which would jump off the vhost and land signed-out
+  // (verified live). Keeping only homepath's PATH preserves the endpoint
+  // segment (/-/<endpoint>/) while the browser keeps the host.
   async portal_return() {
-    this.output.html(`<script> window.location.href = '${this.input.homepath()}#/desk/' </script>`);
+    let path = '/';
+    try { path = new URL(this.input.homepath()).pathname || '/'; } catch (e) { }
+    if (!/\/$/.test(path)) path = `${path}/`;
+    this.output.html(`<script> window.location.href = '${path}#/desk/' </script>`);
   }
 }
 
