@@ -174,6 +174,15 @@ class __private_payment extends Entity {
     // resolve/provision the organisation regardless of which event arrives
     // first; org_ident/org_name are present only on the TEAM bootstrap.
     const metadata = { entity_type, entity_id, plan, period, payer_id: this.uid };
+    // Team→Pro switch: the FE flags a personal checkout that supersedes the
+    // caller's ORG subscription (confirmed by the user in the switch popup).
+    // Threaded through the session metadata; the webhook cancels the org's
+    // Team sub at period end once THIS payment completes. Only honoured for
+    // personal (user) checkouts — an org checkout cancels the personal sub
+    // through _cancelSupersededPersonalSubscription instead.
+    if (entity_type === 'user' && this.input.use('supersede', '') === 'org') {
+      metadata.supersede = 'org';
+    }
     if (org_bootstrap) {
       metadata.org_ident = org_bootstrap.ident;
       metadata.org_name = org_bootstrap.org_name;

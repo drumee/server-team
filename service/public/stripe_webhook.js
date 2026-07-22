@@ -228,9 +228,38 @@ class __public_stripe_webhook extends Entity {
     const subId = personal && personal.subscription_id;
     if (!subId || personal.status === 'canceled') return;
     try {
+      // Team→Pro switch guard: a personal sub bought to SUPERSEDE the org
+      // (metadata.supersede='org') must never be killed from the org
+      // direction — the very cancel_at_period_end update that switch puts on
+      // the org sub re-enters this path and would otherwise cancel the
+      // just-purchased Pro.
+      const live = await stripe.subscriptions.retrieve(subId);
+      if (live && live.metadata && live.metadata.supersede === 'org') return;
       await stripe.subscriptions.cancel(subId);
     } catch (e) {
       this.warn(`superseded personal subscription cancel skipped for ${payer_id}: ${e.message}`);
+    }
+  }
+
+  // Team→Pro switch (metadata.supersede='org', set by payment.checkout when
+  // the owner confirmed the switch popup): cancel the payer's ORG/Team
+  // subscription AT PERIOD END once the personal checkout completes — the
+  // Team workspace stays fully usable until the paid period runs out, then
+  // the owner continues on the new personal plan. Contrast with the Pro→Team
+  // direction above, which cancels the superseded personal sub immediately
+  // (the owner moves onto the org domain the moment the org is provisioned).
+  // Idempotent: re-applying cancel_at_period_end is a no-op, and a mirror
+  // already marked canceled is skipped.
+  async _cancelSupersededOrgSubscription(payer_id, stripe) {
+    const org = await this.yp.await_proc('payment_get_org', payer_id);
+    if (!org || !org.id) return;
+    const sub = await this.yp.await_proc('payment_get_subscription', org.id);
+    const subId = sub && sub.subscription_id;
+    if (!subId || sub.status === 'canceled') return;
+    try {
+      await stripe.subscriptions.update(subId, { cancel_at_period_end: true });
+    } catch (e) {
+      this.warn(`superseded org subscription cancel skipped for ${payer_id}: ${e.message}`);
     }
   }
 
@@ -339,6 +368,13 @@ class __public_stripe_webhook extends Entity {
           // TEAM bootstrap: the organisation may not exist at checkout time —
           // resolve (and provision if needed) before billing the ORG entity.
           entity_id = await this._resolveOrgEntity(md, stripe);
+          // Team→Pro switch: a personal checkout flagged to supersede the
+          // payer's org subscription — end the Team plan (at period end) now
+          // that the Pro payment is confirmed.
+          if ((md.entity_type || 'user') === 'user' && md.supersede === 'org'
+            && md.payer_id && stripe) {
+            await this._cancelSupersededOrgSubscription(md.payer_id, stripe);
+          }
           if (entity_id) {
             // Mirror the live subscription for the status panel + Billing Portal.
             const customer_id = obj.customer || null;
