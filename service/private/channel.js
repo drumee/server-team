@@ -1929,6 +1929,12 @@ class __private_channel extends Entity {
 
     // Include task @-mentions (logged by task._notifyMentions) for mention/all.
     // `name` carries the task title so the item renders "mentioned you in <task>".
+    // NULLIF on the JSON reads: JSON_UNQUOTE(JSON_EXTRACT(...)) returns the 4-char
+    // STRING 'null' for a JSON null, not SQL NULL. The client then navigated to
+    // nid='null', which matches no node → "the file you requested does not exist".
+    // Collapsing it back to a real NULL makes a nid-less row fall back to the
+    // workspace root instead of erroring. `task_kind` distinguishes a reply
+    // ('reply') from a true @-mention so the item can render the right sentence.
     if (type === "mention" || type === "all") {
       try {
         const taskMentions = toArray(
@@ -1936,7 +1942,8 @@ class __private_channel extends Entity {
             `SELECT ca.id, ca.timestamp AS ctime, ca.uid AS author_id,
               JSON_UNQUOTE(JSON_EXTRACT(ca.data, '$.task_id')) AS task_id,
               JSON_UNQUOTE(JSON_EXTRACT(ca.data, '$.hub_id')) AS hub_id,
-              JSON_UNQUOTE(JSON_EXTRACT(ca.data, '$.nid')) AS nid,
+              NULLIF(JSON_UNQUOTE(JSON_EXTRACT(ca.data, '$.nid')), 'null') AS nid,
+              NULLIF(JSON_UNQUOTE(JSON_EXTRACT(ca.data, '$.kind')), 'null') AS task_kind,
               JSON_UNQUOTE(JSON_EXTRACT(ca.data, '$.title')) AS name,
               CONCAT('["', ca.target_uid, '"]') AS mention_ids,
               COALESCE(CONCAT(d.firstname, ' ', d.lastname), d.email, '') AS fullname,

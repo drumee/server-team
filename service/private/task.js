@@ -111,8 +111,11 @@ class __private_task extends Entity {
    * mentioned users' sockets so their activity badge updates immediately.
    * Mirrors the chat/channel mention path. `mentionUids` is the set to notify —
    * create() passes all tagged uids, update() passes only the newly-added ones.
+   * `kind` marks a non-mention variant carried by the same row (currently only
+   * 'reply' — a reply to your comment); omitted for real @-mentions, so their
+   * stored data stays exactly as before.
    */
-  async _notifyMentions(data, mentionUids) {
+  async _notifyMentions(data, mentionUids, kind = null) {
     const uids = toArray(mentionUids).filter((u) => u && u !== this.uid);
     if (isEmpty(uids)) return;
     const hub_id = this.hub && this.hub.get(Attr.id);
@@ -125,6 +128,7 @@ class __private_task extends Entity {
       title: (data && data.title) || '',
       nid: (data && data.nid) || null,
     };
+    if (kind) meta.kind = kind;
     for (const target_uid of uids) {
       try {
         await this.yp.await_proc(
@@ -689,22 +693,26 @@ class __private_task extends Entity {
 
   /**
    * Notify members @-mentioned in a comment body. Reuses _notifyMentions with a
-   * task-shaped context ({ id: task_id, title }) so the activity reads
-   * "mentioned you in <task>". Best-effort.
-   * (Watcher notifications — assignee/creator on every comment — are a planned
-   * follow-up; they need distinct "commented on" activity copy.)
+   * task-shaped context ({ id: task_id, title, nid }) so the activity reads
+   * "mentioned you in <task>". Best-effort. `kind` is forwarded as-is ('reply'
+   * for a reply to someone's comment).
+   * The task's `nid` (its folder) MUST travel with the notification: without it
+   * the click can only fall back to the workspace root instead of opening the
+   * folder the task actually lives in.
    */
-  async _notifyCommentMentions(task_id, mentionUids) {
+  async _notifyCommentMentions(task_id, mentionUids, kind = null) {
     if (isEmpty(toArray(mentionUids))) return;
     let title = '';
+    let nid = null;
     try {
-      const rows = await this.db.await_run('SELECT title FROM task WHERE id = ?', [task_id]);
+      const rows = await this.db.await_run('SELECT title, nid FROM task WHERE id = ?', [task_id]);
       const t = toArray(rows)[0];
       title = (t && t.title) || '';
+      nid = (t && t.nid) || null;
     } catch (e) {
       this.warn('[task._notifyCommentMentions] title lookup failed:', e && e.message);
     }
-    await this._notifyMentions({ id: task_id, title }, mentionUids);
+    await this._notifyMentions({ id: task_id, title, nid }, mentionUids, kind);
   }
 
   /**
@@ -736,19 +744,25 @@ class __private_task extends Entity {
     const row = Array.isArray(data) ? data[0] : data;
     await this._logActivity(task_id, 'comment', {});
     await this._broadcast('task.comment_create', row);
-    // Notify @-mentioned members; on a reply, also notify the parent author.
-    let notify = toArray(this.input.use('mention_uids', null));
+    // Notify @-mentioned members. On a reply, the parent author is notified too
+    // — but as a 'reply', NOT a mention: they were never @-mentioned, and
+    // labelling it "mentioned you" is what the notification wrongly claimed.
+    const mentions = [...new Set(toArray(this.input.use('mention_uids', null)).filter(Boolean))];
+    await this._notifyCommentMentions(task_id, mentions);
     if (parent_id) {
       try {
         const p = toArray(
           await this.db.await_run('SELECT author_uid FROM task_comment WHERE id = ?', [parent_id])
         )[0];
-        if (p && p.author_uid) notify = notify.concat(p.author_uid);
+        // Already @-mentioned in the same comment → one notification, not two.
+        // (_notifyMentions drops self, so replying to yourself notifies nobody.)
+        if (p && p.author_uid && !mentions.includes(p.author_uid)) {
+          await this._notifyCommentMentions(task_id, [p.author_uid], 'reply');
+        }
       } catch (e) {
         this.warn('[task.comment_create] parent lookup failed:', e && e.message);
       }
     }
-    await this._notifyCommentMentions(task_id, [...new Set(notify)]);
     // Notify watchers of the commented task's column.
     const tmeta = await this._taskColMeta(task_id);
     if (tmeta) await this._notifyColumnWatchers(tmeta, tmeta.status);

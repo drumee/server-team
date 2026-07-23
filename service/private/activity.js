@@ -93,6 +93,10 @@ function flattenTaskFields(rows) {
       // it (and nid, when the task carries one) from the task meta.
       if (meta.hub_id != null) r.hub_id = meta.hub_id;
       if (r.nid == null && meta.nid != null) r.nid = meta.nid;
+      // A reply to your comment rides the same row with kind='reply'; surfacing
+      // it lets the item say "replied to your comment in" instead of the
+      // (untrue) "mentioned you in". Absent on real @-mentions.
+      if (r.task_kind == null && meta.kind != null) r.task_kind = meta.kind;
     }
   }
   return rows;
