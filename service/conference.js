@@ -553,47 +553,37 @@ class conference extends __yp {
 
     let peer_id = entity_id;
 
-    let acknowledge = {};
-    acknowledge.message_id = message_id;
-    acknowledge.entity_id = entity_id;
-    acknowledge.uid = author_id;
+    // P2P call logs must land in p2p_channel — the store chat.messages reads
+    // through p2p_list_messages. The legacy `channel` table this used to write
+    // to is no longer read by any p2p surface, so those rows were invisible in
+    // chat-p2p and bigchat alike.
+    //
+    // Like every other p2p message this is a SINGLE write in the caller's DB
+    // with peer_id = callee; p2p_list_messages unions both sides, so the callee
+    // reads the same row cross-DB. p2p_post_message also marks the author
+    // _seen_/_delivered_, which is what the old acknowledge_message call did.
+    //
+    // One shared row means `role` can no longer be baked per copy, so carry
+    // caller_id and let each side derive incoming-vs-outgoing. `role` stays for
+    // rows written before this change.
+    let metadata = {
+      message_type: msg_type,
+      call_status: event,
+      duration: duration,
+      role: "caller",
+      caller_id: author_id,
+    };
 
     let myinput = {
       message_id: message_id,
       author_id: author_id,
-      entity_id: entity_id,
-      metadata: {
-        message_type: msg_type,
-        call_status: event,
-        duration: duration,
-        role: "caller",
-      },
+      peer_id: peer_id,
+      metadata,
     };
 
     let mydata = await this.yp.await_proc(
-      `${author.db_name}.channel_post_message`,
+      `${author.db_name}.p2p_post_message`,
       myinput,
-      msg_type
-    );
-    await this.yp.await_proc(
-      `${author.db_name}.acknowledge_message`,
-      acknowledge
-    );
-
-    let hisinput = {
-      message_id: message_id,
-      author_id: author_id,
-      entity_id: author_id,
-      metadata: {
-        message_type: msg_type,
-        call_status: event,
-        duration: duration,
-        role: "callee",
-      },
-    };
-    let hisdata = await this.yp.await_proc(
-      `${peer.db_name}.channel_post_message`,
-      hisinput,
       msg_type
     );
 
@@ -612,23 +602,16 @@ class conference extends __yp {
       recipients = await this.yp.await_proc("user_sockets", author_id);
       await RedisStore.sendData(this.payload(mydata, { service }), recipients);
 
-      // this.pushLiveUpdate({
-      //   service: "chat.post",
-      //   dest: {
-      //     area: Attr.personal,
-      //     type: Attr.drumate,
-      //     hub_id: author_id
-      //   },
-      //   model: mydata,
-      //   keys: '*'
-      // });
-    }
-
-    if (!isEmpty(hisdata)) {
+      // Same row, second push. peer_id must name the OTHER party from each
+      // recipient's point of view — the chat widget matches it against its own
+      // peerId (chat/index.js onWsMessage → privateMach), so a payload without
+      // it (or with the callee's own id) is silently dropped and the call event
+      // only appears after a reload.
+      let hisdata = { ...mydata, peer_id: author_id };
       let hiscount = await this.yp.await_proc(
         `${peer.db_name}.count_yet_read_next`,
-        author_id,
-        peer_id
+        peer_id,
+        author_id
       );
       hisdata.entity = await this.contactInfo(peer.db_name, contact_id);
       hisdata.service = "chat.post";
@@ -637,17 +620,6 @@ class conference extends __yp {
       hisdata.to_id = peer_id;
       recipients = await this.yp.await_proc("user_sockets", peer_id);
       await RedisStore.sendData(this.payload(hisdata, { service }), recipients);
-
-      // this.pushLiveUpdate({
-      //   service: "chat.post",
-      //   dest: {
-      //     area: Attr.personal,
-      //     type: Attr.drumate,
-      //     hub_id: peer_id
-      //   },
-      //   model: hisdata,
-      //   keys: '*'
-      // });
     }
   }
 

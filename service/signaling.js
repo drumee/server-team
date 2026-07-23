@@ -217,50 +217,28 @@ class __service_signaling extends Entity {
     my = author_id;
     his = entity_id;
 
-    let acknowledge = {};
-    acknowledge.message_id = message_id
-    acknowledge.entity_id = entity_id
-    acknowledge.uid = my
-
+    // Mirrors conference.writeLog — see the long note there. Single write into
+    // p2p_channel in the caller's DB (peer_id = callee); p2p_list_messages
+    // unions both sides so the callee reads the same row cross-DB. The legacy
+    // `channel` table this used to write to is not read by any p2p surface.
+    let metadata = {
+      message_type: msg_type,
+      call_status: type,
+      duration: duration,
+      role: 'caller',
+      caller_id: author_id
+    };
 
     let myinput = {
       message_id: message_id,
       author_id: author_id,
-      entity_id: entity_id,
-      metadata: {
-        message_type: msg_type,
-        call_status: type,
-        duration: duration,
-        role: 'caller'
-      }
+      peer_id: entity_id,
+      metadata
     };
 
     let mydata = await this.yp.await_proc('forward_proc', my,
-      'channel_post_message',
+      'p2p_post_message',
       `'${stringify(myinput)}','${msg_type}'`
-    );
-
-
-    let hisinput = {
-      message_id: message_id,
-      author_id: author_id,
-      entity_id: author_id,
-      metadata: {
-        message_type: msg_type,
-        call_status: type,
-        duration: duration,
-        role: 'callee'
-      }
-    };
-    //this.debug("AAAAA:383", hisinput);
-    let hisdata = await this.yp.await_proc('forward_proc', his,
-      'channel_post_message',
-      `'${stringify(hisinput)}','${msg_type}'`
-    );
-
-
-    await this.yp.await_proc('forward_proc', my, 'acknowledge_message',
-      `'${stringify(acknowledge)}'`
     );
 
     if (!isEmpty(mydata)) {
@@ -275,11 +253,13 @@ class __service_signaling extends Entity {
       mydata.to_id = my;
 
       recipients = await this.yp.await_proc('user_sockets', mydata.to_id);
-      await RedisStore.sendData(this.payload(mydata), recipients);
-    }
+      // The push must be tagged chat.post: the chat widget dispatches on
+      // options.service, so without this the payload arrives under the
+      // signaling.message service and never reaches onWsMessage's post branch.
+      await RedisStore.sendData(this.payload(mydata, { service: 'chat.post' }), recipients);
 
-
-    if (!isEmpty(hisdata)) {
+      // peer_id names the OTHER party per recipient — see conference.writeLog.
+      let hisdata = { ...mydata, peer_id: my };
       let hiscount = await this.yp.await_proc('forward_proc',
         his, 'count_yet_read_next', `'${his}','${my}'`
       );
@@ -289,7 +269,7 @@ class __service_signaling extends Entity {
       hisdata.total = hiscount.total
       hisdata.to_id = his;
       recipients = await this.yp.await_proc('user_sockets', hisdata.to_id);
-      await RedisStore.sendData(this.payload(hisdata), recipients);
+      await RedisStore.sendData(this.payload(hisdata, { service: 'chat.post' }), recipients);
     }
   }
 
