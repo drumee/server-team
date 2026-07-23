@@ -682,6 +682,11 @@
           "required": false,
           "doc": "Root comment id when this is a reply; omit/null for a top-level comment"
         },
+        "reply_to_uid": {
+          "type": "string",
+          "required": false,
+          "doc": "Author of the comment this reply answers, when it is a child comment. Notified as a reply, not a mention."
+        },
         "mention_uids": {
           "type": "array",
           "required": false,

@@ -744,24 +744,40 @@ class __private_task extends Entity {
     const row = Array.isArray(data) ? data[0] : data;
     await this._logActivity(task_id, 'comment', {});
     await this._broadcast('task.comment_create', row);
-    // Notify @-mentioned members. On a reply, the parent author is notified too
-    // — but as a 'reply', NOT a mention: they were never @-mentioned, and
-    // labelling it "mentioned you" is what the notification wrongly claimed.
+    // Notify @-mentioned members. Repliers are notified too — but as a 'reply',
+    // NOT a mention: they were never @-mentioned, and labelling it "mentioned
+    // you" is what the notification wrongly claimed.
     const mentions = [...new Set(toArray(this.input.use('mention_uids', null)).filter(Boolean))];
-    await this._notifyCommentMentions(task_id, mentions);
+    // Threads are flattened to one level (parent_id is always the ROOT), so when
+    // the client answers a CHILD comment it names that child's author here — the
+    // person the reply is actually addressed to, who is otherwise invisible to
+    // this endpoint. They are a replier, so take them out of the mention set.
+    // (The client also still lists them in mention_uids, so a server without
+    // this parameter keeps notifying them exactly as before — which makes the
+    // two deploys independent, in either order.)
+    const replyTo = this.input.use('reply_to_uid', null);
+    const mentionSet = new Set(mentions);
+    if (replyTo) mentionSet.delete(replyTo);
+    await this._notifyCommentMentions(task_id, [...mentionSet]);
+    // Everyone who gets the "replied to your comment" copy: the author of the
+    // comment being answered, plus the root author of the thread. Deduped, and
+    // never someone already notified as a genuine @-mention, so one person gets
+    // exactly one notification per comment. (_notifyMentions drops self, so
+    // replying to yourself notifies nobody.)
+    const repliers = new Set();
+    if (replyTo && !mentionSet.has(replyTo)) repliers.add(replyTo);
     if (parent_id) {
       try {
         const p = toArray(
           await this.db.await_run('SELECT author_uid FROM task_comment WHERE id = ?', [parent_id])
         )[0];
-        // Already @-mentioned in the same comment → one notification, not two.
-        // (_notifyMentions drops self, so replying to yourself notifies nobody.)
-        if (p && p.author_uid && !mentions.includes(p.author_uid)) {
-          await this._notifyCommentMentions(task_id, [p.author_uid], 'reply');
-        }
+        if (p && p.author_uid && !mentionSet.has(p.author_uid)) repliers.add(p.author_uid);
       } catch (e) {
         this.warn('[task.comment_create] parent lookup failed:', e && e.message);
       }
+    }
+    if (repliers.size) {
+      await this._notifyCommentMentions(task_id, [...repliers], 'reply');
     }
     // Notify watchers of the commented task's column.
     const tmeta = await this._taskColMeta(task_id);
