@@ -57,9 +57,15 @@ class __private_payment extends Entity {
     }
     // The org URL is `${ident}.${main_domain()}` (domain_create convention) —
     // reject when the fqdn or domain row already exists.
+    // COLLATE utf8mb4_general_ci on both CONCATs: the bound `?` parameter
+    // gives the expression a "NONE" collation derivation (driver binds it
+    // without the connection's collation), which clashes with vhost.fqdn /
+    // domain.name's column collation (utf8mb4_general_ci, "IMPLICIT") on
+    // comparison — ER_CANT_AGGREGATE_2COLLATIONS (1267), confirmed live on
+    // prod 2026-07-23. Forcing the expression's collation resolves it.
     let rows = await this.yp.await_query(
-      `SELECT (SELECT COUNT(*) FROM vhost  WHERE fqdn = CONCAT(?, '.', main_domain()))
-            + (SELECT COUNT(*) FROM domain WHERE name = CONCAT(?, '.', main_domain())) AS c`,
+      `SELECT (SELECT COUNT(*) FROM vhost  WHERE fqdn = CONCAT(?, '.', main_domain()) COLLATE utf8mb4_general_ci)
+            + (SELECT COUNT(*) FROM domain WHERE name = CONCAT(?, '.', main_domain()) COLLATE utf8mb4_general_ci) AS c`,
       ident, ident
     );
     if (Array.isArray(rows)) rows = rows[0];
