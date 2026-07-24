@@ -38,6 +38,11 @@ function mapNotificationRow(r) {
     author_firstname: r.author_firstname,
     author_lastname: r.author_lastname,
     author_email: r.author_email,
+    // 'start' | 'end' for a team-chat rollup whose latest unread meeting event is
+    // a [[MEETING:...]] system message (notification_center_next). Lets the client
+    // render "started/ended a meeting in <folder>" instead of "posted in". Absent
+    // (undefined) for every other category — the client falls back to "posted in".
+    meeting_action: r.meeting_action,
   };
 
   if (r.category === 'media') {
