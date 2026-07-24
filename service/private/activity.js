@@ -55,6 +55,10 @@ function mapNotificationRow(r) {
     item.filetype = firstValue(r.target_filetype, r.filetype, 'folder');
     item.target_filetype = item.filetype;
     item.item_filetype = firstValue(r.item_filetype, r.uploaded_filetype, r.src_filetype);
+    // The uploaded file's own name (notification_center_next surfaces it as
+    // item_filename) so a single-file upload rollup can show the file name
+    // instead of its destination folder/workspace. Absent for multi-file rollups.
+    item.item_filename = r.item_filename;
     item.filename = targetName;
     item.link_label = targetName;
     item.author_id = firstValue(r.author_id, r.owner_id, r.drumate_id);
