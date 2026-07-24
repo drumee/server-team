@@ -123,6 +123,23 @@ function platform() {
   }
   platform.intl = this.supportedLanguage();
   platform.arch = global.myDrumee.arch || "pod";
+  // Explicit on/off switch for the billing "upgrade plan" affordances
+  // (desk sidebar entry + admin-console CTAs), set in
+  // /etc/drumee/conf.d/myDrumee.json as `billing_upgrade`.
+  //
+  //   omitted -> the client derives it (arch 'cloud' + a live payment
+  //              service), i.e. the behaviour every existing install
+  //              already has; nothing to set to keep things as they are.
+  //   0/false -> force OFF everywhere (kill switch).
+  //   1/true  -> force ON, overriding the arch check — for a pod that does
+  //              have Stripe configured.
+  //
+  // Deliberately passed through untouched (no ~~/Boolean coercion): the
+  // client must be able to tell "unset" from "explicitly 0", and those two
+  // mean different things.
+  if (global.myDrumee.billing_upgrade !== undefined) {
+    platform.billing_upgrade = global.myDrumee.billing_upgrade;
+  }
   platform.cdnHost = global.myDrumee.cdnHost;
   platform.version = global.VERSION;
   platform.TfaMethods = TfaMethods;
