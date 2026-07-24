@@ -35,6 +35,31 @@ const { googleDriveCredentials, googleDriveServiceAccount } = require('../../../
 
 const PROGRESS_BATCH = 5;
 const PAGE_SIZE = 1000;
+
+/**
+ * Mirror of the filename rewriting mfs_create_node does before it stores a node
+ * (schemas common/procedures/mfs/mfs_create_node.sql, the two REGEXP_REPLACE
+ * calls right before unique_filename):
+ *
+ *   REGEXP_REPLACE(_fname, '^[/ ]+|\<.*\>|[/ ]+$', '')   -- (a)
+ *   REGEXP_REPLACE(_fname, '( *)(/+)( *)', '')           -- (b)
+ *
+ * Drive allows '/' in a name; the MFS does not, so 'Marketing report 2024/2025'
+ * is STORED as 'Marketing report 20242025'. Callers must therefore look the
+ * node up by the rewritten name, never by the Drive name — see _createFolder.
+ *
+ * Verified against MariaDB (the authority) on: 'a<b>c<d>e'->'ae' (the <.*> is
+ * greedy, so it eats everything between the FIRST '<' and the LAST '>'),
+ * 'x<y'->'x<y', '<only>'->'', '/'->'', 'a / / b'->'ab', '  /lead'->'lead',
+ * 'trail/  '->'trail', 'Tài liệu / Kế hoạch'->'Tài liệuKế hoạch'.
+ *
+ * NB `\<` in the SQL literal is just '<' (MariaDB drops the unknown escape).
+ */
+function storedNodeName(name) {
+  return String(name == null ? '' : name)
+    .replace(/^[/ ]+|<[\s\S]*>|[/ ]+$/g, '')
+    .replace(/ *\/+ */g, '');
+}
 // Refresh the access token 60s before its server-side expiry so a
 // long-running job (large files, slow network) doesn't fail mid-traverse
 // with a 401 on every Drive request.
@@ -732,7 +757,21 @@ class GoogleDriveImporter {
     // than crash on join(undefined, …). Worst case: a duplicate on re-run.
     const destPath = opts.destFolder && opts.destFolder.file_path;
     if (destPath) {
-      const existingId = await opts.hubDb.await_func('node_id_from_path', join(destPath, filename));
+      // Probe with the name the node is actually STORED under, not the Drive
+      // one: mfs_create_node rewrites it (storedNodeName).
+      // A '/' happens to survive this probe either way — node_id_from_path
+      // compares REPLACE(file_path,'/','') against REPLACE(_path,'/',''), so
+      // '<dest>/a/b.pdf' and the stored '<dest>/ab.pdf' collapse to the same
+      // string. The rewrites it does NOT tolerate are the other ones: a name
+      // like 'doc <v2>.docx' is stored as 'doc .docx' and 'trailing .pdf' as
+      // 'trailing.pdf', so probing the raw name missed them and a re-run
+      // duplicated the file instead of skipping it.
+      const probeExt = extname(filename).replace(/^\.+/, '').toLowerCase();
+      const probeBase = storedNodeName(
+        probeExt ? filename.slice(0, -(probeExt.length + 1)) : filename
+      );
+      const probeName = probeExt ? `${probeBase}.${probeExt}` : probeBase;
+      const existingId = await opts.hubDb.await_func('node_id_from_path', join(destPath, probeName));
       if (existingId != null) {
         if (opts.conflictPolicy === 'skip') return;        // silent skip
         throw new Error('conflict policy not implemented yet'); // Phase 2 handles overwrite/rename
@@ -902,6 +941,23 @@ class GoogleDriveImporter {
     return (row && row.id) || null;
   }
 
+  /**
+   * Folder counterpart of _findNewestChildId, with the same contract: exact
+   * only while called inside the pid lock. Needed as the last-resort resolve
+   * after a create, because unique_filename() auto-renames a duplicate
+   * (S → S(1)) and a by-name lookup cannot follow that rename.
+   */
+  async _findNewestFolderChildId(hubDb, pid) {
+    const rows = await hubDb.await_query(
+      `SELECT id FROM media
+         WHERE parent_id = ? AND category = 'folder'
+         ORDER BY sys_id DESC LIMIT 1`,
+      pid
+    );
+    const row = toArray(rows)[0];
+    return (row && row.id) || null;
+  }
+
   async _createFolder(name, parentFolder, hubDb, ownerId) {
     const pid = parentFolder && parentFolder.nid;
     if (pid == null) throw new Error(`_createFolder: parent has no nid (name=${name})`);
@@ -913,29 +969,60 @@ class GoogleDriveImporter {
     // (this is exactly what media.make_dir does: owner_id = uid).
     const owner_id = ownerId
       || (parentFolder && (parentFolder.owner_id || parentFolder.hub_id || parentFolder.home_id));
-    // Idempotent: reuse an existing child folder, else create. Resolve the id
-    // with a direct query (not the unreliable mfs_create_node CALL return),
-    // then re-read via mfs_node_attr for a clean { nid, file_path, home_dir }.
-    let id = await this._findChildId(hubDb, pid, name, true);
-    if (id == null) {
-      await hubDb.await_proc('mfs_create_node', {
-        owner_id,
-        filename: name,
-        pid,
-        category: 'folder',
-        ext: '',
-        // media.mimetype is NOT NULL — a folder INSERT with a null mimetype
-        // hits the proc's SQLEXCEPTION handler and silently rolls back (files
-        // worked because they resolve a mimetype from filecap). 'folder'
-        // mirrors what media.make_dir stores.
-        mimetype: 'folder',
-        filesize: 0,
-        showResults: 1,
-      }, {}, { isOutput: 1 });
-      id = await this._findChildId(hubDb, pid, name, true);
-    }
-    if (id == null) throw new Error(`could not resolve folder '${name}' under pid=${pid} (owner_id=${owner_id})`);
-    return await hubDb.await_proc('mfs_node_attr', id);
+    // mfs_create_node REWRITES the filename before storing it (storedNodeName
+    // mirrors the proc's regexes): Drive allows '/' in a name, the MFS does
+    // not, so a folder 'Marketing report 2024/2025' is stored as
+    // 'Marketing report 20242025'. Look up AND create with that stored form.
+    //
+    // Matching on the raw Drive name instead used to miss the node the proc had
+    // just created, and since this throw is NOT caught per-item (unlike files,
+    // which go through _importItemGuarded) it aborted the entire migration —
+    // reported to the user as "Migration failed … 0 errors". Worse, the
+    // existence check missed it too, so every "Try again" left behind another
+    // unique_filename duplicate ('…(1)', '…(2)', …).
+    //
+    // A name that rewrites to empty (a folder literally called '/' or '<x>')
+    // cannot be matched meaningfully; fall back to a usable name. Two such
+    // folders under one parent would then share a node — vanishingly rare, and
+    // still better than aborting the run.
+    const stored = storedNodeName(name) || 'folder';
+    // Serialize per parent, like the file path already does: the newest-child
+    // fallback below is only exact while creates under this pid can't
+    // interleave. Folders are created serially by _traverse anyway, so this
+    // costs no parallelism.
+    return await this._withPidLock(pid, async () => {
+      // Idempotent: reuse an existing child folder, else create. Resolve the id
+      // with a direct query (not the unreliable mfs_create_node CALL return),
+      // then re-read via mfs_node_attr for a clean { nid, file_path, home_dir }.
+      let id = await this._findChildId(hubDb, pid, stored, true);
+      if (id == null) {
+        await hubDb.await_proc('mfs_create_node', {
+          owner_id,
+          filename: stored,
+          pid,
+          category: 'folder',
+          ext: '',
+          // media.mimetype is NOT NULL — a folder INSERT with a null mimetype
+          // hits the proc's SQLEXCEPTION handler and silently rolls back (files
+          // worked because they resolve a mimetype from filecap). 'folder'
+          // mirrors what media.make_dir stores.
+          mimetype: 'folder',
+          filesize: 0,
+          showResults: 1,
+        }, {}, { isOutput: 1 });
+        id = await this._findChildId(hubDb, pid, stored, true);
+        // unique_filename() auto-renames a duplicate (S → S(1)), which a
+        // by-name lookup cannot follow. Inside the lock, the newest folder
+        // child under pid IS the node we just created.
+        if (id == null) id = await this._findNewestFolderChildId(hubDb, pid);
+      }
+      if (id == null) {
+        throw new Error(
+          `could not resolve folder '${name}' (stored as '${stored}') under pid=${pid} (owner_id=${owner_id})`
+        );
+      }
+      return await hubDb.await_proc('mfs_node_attr', id);
+    });
   }
 }
 
