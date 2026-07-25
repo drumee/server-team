@@ -637,7 +637,10 @@ class __private_drumate extends Entity {
           { nid: hub.home_id, uid: this.uid, show_nodes: 1 }
         );
         for (const row of toArray(result?.[0])) {
-          const size = Number(row.size) || 0;
+          // The column is `filesize`; `size` doesn't exist on these rows and
+          // silently read as undefined -> 0, which is how the dialog first
+          // reported 0 B for an account holding 1.58 GB.
+          const size = Number(row.filesize) || 0;
           if (row.area == Attr.personal) {
             // backup.js skips hub rows in the personal branch; mirror that or
             // the figure would count containers that never get archived.
