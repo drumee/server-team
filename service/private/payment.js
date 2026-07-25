@@ -222,10 +222,10 @@ class __private_payment extends Entity {
       // preserve here (invoices and payment history stay on the old record and
       // remain visible in Stripe), so the recovery is simply to mint a fresh
       // one for this entity and retry once.
-      const clash = /combine currencies/i.test((e && e.message) || '');
+      const clash = /combine currencies/i.test(e?.message || '');
       if (!clash) {
-        this.warn && this.warn('payment.checkout failed', e && e.message);
-        return this.output.data({ status: 'CHECKOUT_FAILED', reason: (e && e.message) || '' });
+        this.warn?.('payment.checkout failed', e?.message);
+        return this.output.data({ status: 'CHECKOUT_FAILED', reason: e?.message || '' });
       }
       const fresh = await stripe.customers.create({
         email, name, metadata: { id: entity_id },
@@ -273,7 +273,7 @@ class __private_payment extends Entity {
     // so here.
     const org = await this.yp.await_proc('payment_get_org', this.uid);
     const is_personal = ~~this.user.domain_id() <= 1; // can bootstrap an org
-    const owns_org = !!(org && org.id);               // can pay for their own
+    const owns_org = !!org?.id;                        // can pay for their own
     row.can_buy = is_personal || owns_org;
     if (!row.can_buy) row.buy_blocked = 'NOT_ORG_OWNER';
     this.output.data(row);
