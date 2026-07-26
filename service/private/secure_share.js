@@ -390,6 +390,29 @@ class __secure_share extends Mfs {
   }
 
   /**
+   * Drop a recipient's node-scoped secure-share grant — the exact inverse of the
+   * permission_grant(node_id, uid, ...) issued in _grantHubMembership. Best-effort
+   * and safe to call with no uid (anonymous viewers never held one).
+   *
+   * permission_revoke deletes only the (node_id, uid) row, so a recipient who is
+   * ALSO a real workspace member keeps their '*' membership untouched.
+   *
+   * @returns {Promise<boolean>} true when a grant was actually revoked
+   */
+  async _revokeNodeGrant(hub_id, node_id, uid) {
+    if (!uid || !hub_id || !node_id) return false;
+    try {
+      const db_name = await this.yp.await_func('get_db_name', hub_id);
+      if (!db_name) return false;
+      await this.yp.await_proc(`${db_name}.permission_revoke`, node_id, uid);
+      return true;
+    } catch (e) {
+      this.warn('[secure_share] permission_revoke failed:', e && e.message);
+      return false;
+    }
+  }
+
+  /**
    * Revoke a single recipient's current access grant for this node and drop their
    * rows from the access-event log. "Revoke current grant only" — the email is NOT
    * blocklisted, so the recipient can request access again later. Best-effort and
@@ -419,21 +442,7 @@ class __secure_share extends Mfs {
       uid = member && member.id ? member.id : null;
     }
 
-    let revoked = false;
-    if (uid) {
-      try {
-        const db_name = await this.yp.await_func('get_db_name', hub_id);
-        if (db_name) {
-          // Exact inverse of the node-scoped secure-share grant
-          // (permission_grant(node_id, uid, ...) in _grantHubMembership). nid is the
-          // shared node carried by the access-list row.
-          await this.yp.await_proc(`${db_name}.permission_revoke`, nid, uid);
-          revoked = true;
-        }
-      } catch (e) {
-        this.warn('[secure_share.revoke_recipient] permission_revoke failed:', e && e.message);
-      }
-    }
+    const revoked = await this._revokeNodeGrant(hub_id, nid, uid);
 
     // Clear the recipient's access-event rows so they drop off the list.
     if (email) {
@@ -445,6 +454,76 @@ class __secure_share extends Mfs {
     }
 
     this.output.data({ status: 'OK', revoked, email, uid });
+  }
+
+  /**
+   * Cut ONE recipient off a link while the link keeps working for everyone else.
+   *
+   * The address goes on the token's deny list, which the DMZ gate refuses before
+   * it considers any allow rule — so it holds whether the link names addresses,
+   * allows a whole @domain, or accepts any email. It is deny-only: it can never
+   * admit someone, so it cannot widen access.
+   *
+   * Enforcement is exact for a SIGNED-IN recipient (their email comes from their
+   * authenticated account). For an anonymous visitor the email gate is a typed
+   * value with no ownership proof (pre-existing — see the capped-guest-principal
+   * work), so a denied person could return under another accepted address; on a
+   * public link there is no gate at all, which is why the panel offers this only
+   * where an email was actually captured.
+   */
+  async revoke_email() {
+    const token = this.input.need(Attr.token);
+    const email = (this.input.need(Attr.email) || '').toLowerCase().trim();
+    if (!email) {
+      return this.output.data({ status: 'INVALID_EMAIL', denied: 0 });
+    }
+
+    // Creator-scoped inside the SP: an empty row means the token is unknown or is
+    // not this caller's, and nothing was written.
+    const row = toArray(
+      await this.yp.await_proc('secure_share_deny_email', token, this.uid, email)
+    )[0] || {};
+    if (isEmpty(row) || !row.denied) {
+      return this.output.data({ status: 'FORBIDDEN', denied: 0 });
+    }
+
+    // Resolve the account behind the address so an already-granted recipient also
+    // loses the standing node grant the capped-principal binding gave them —
+    // otherwise the gate refuses them while their ACL quietly still holds.
+    let uid = null;
+    try {
+      let member = await this.yp.await_proc('drumate_exists', email);
+      if (Array.isArray(member)) member = member[0];
+      uid = member && member.id ? member.id : null;
+    } catch (e) {
+      this.warn('[secure_share.revoke_email] drumate lookup failed:', e && e.message);
+    }
+    const revoked = await this._revokeNodeGrant(row.hub_id, row.node_id, uid);
+
+    // Cut a session this person already has open on THIS link. Targeted at their
+    // own sockets (never the token's active socket, which may belong to someone
+    // else still legitimately using the link); the sharebox only reacts when the
+    // event's token matches the share it has open.
+    if (uid) {
+      try {
+        const targets = await this.yp.await_proc('user_sockets', uid);
+        if (!isEmpty(targets)) {
+          await RedisStore.sendData(
+            this.payload(
+              { event: 'secure_share_revoked', token, nid: row.node_id, recipient_email: email },
+              { service: 'share.track_event' }
+            ),
+            targets
+          );
+        }
+      } catch (e) {
+        this.warn('[secure_share.revoke_email] recipient broadcast failed:', e && e.message);
+      }
+    }
+
+    // The access-event history is deliberately kept: the sender's panel is built on
+    // it, and erasing a visit does not un-happen it.
+    this.output.data({ status: 'OK', denied: 1, token, email, revoked });
   }
 
   /**

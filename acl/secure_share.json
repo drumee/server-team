@@ -184,6 +184,26 @@
         }
       }
     },
+    "revoke_email": {
+      "doc": "Cut one recipient off a secure share link while the link keeps working for everyone else. Adds the address to the token's deny list, which the DMZ gate refuses before any allow rule, drops that account's node-scoped grant, and pushes secure_share_revoked to that user's own sockets. Creator-scoped in the stored procedure. Access-event history is kept.",
+      "scope": "hub",
+      "permission": {
+        "src": "write"
+      },
+      "log": true,
+      "params": {
+        "token": {
+          "type": "string",
+          "required": true,
+          "doc": "Secure share token the recipient came through"
+        },
+        "email": {
+          "type": "string",
+          "required": true,
+          "doc": "Recipient email to cut off this link"
+        }
+      }
+    },
     "delete": {
       "doc": "Hard-delete a secure share token. Only succeeds when the token is already revoked or expired — active tokens are rejected.",
       "scope": "hub",

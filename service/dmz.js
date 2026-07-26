@@ -33,7 +33,34 @@ try {
   _ssOwnerSecret = JSON.parse(require('fs').readFileSync(_secPath, 'utf8')).drumee || null;
 } catch (e) { /* owner_edit_token disabled when the secret is unavailable */ }
 
+// Recipients the sender cut off this link individually (secure_share.revoke_email).
+// Deny-only: it can refuse an address, never admit one, so it cannot widen access
+// however the allow rule was written. Kept separate from allowed_emails so the
+// sender's own configuration is never rewritten — and because emptying an
+// allow-list would make the gate below read it as "no restriction".
+function _isDeniedEmail(email, info) {
+  if (!email || !info || !info.denied_emails) return false;
+  let list = null;
+  try {
+    const parsed = typeof info.denied_emails === 'string'
+      ? JSON.parse(info.denied_emails)
+      : info.denied_emails;
+    if (Array.isArray(parsed) && parsed.length > 0) list = parsed;
+  } catch (e) {
+    // Malformed JSON: fail CLOSED is not an option (it would lock out every
+    // recipient of this link), so treat it as no denials — same posture as the
+    // allow-list parse below, which is the pre-existing behaviour.
+    return false;
+  }
+  if (!list) return false;
+  const target = String(email).toLowerCase().trim();
+  return list.some(entry => String(entry || '').toLowerCase().trim() === target);
+}
+
 function _emailMatchesAllowed(email, info) {
+  // A denied recipient is refused before any allow rule is considered — this is
+  // the single point both gate call sites (signed-in and anonymous) go through.
+  if (_isDeniedEmail(email, info)) return false;
   let allowedList = null;
   if (info.allowed_emails) {
     try {
@@ -189,6 +216,7 @@ class __dmz extends Mfs {
           // a viewer enumerate the allow-list before passing the gate.
           delete res.password_hash;
           delete res.allowed_emails;
+          delete res.denied_emails;
         }
       } catch (e) {
         this.warn('[dmz.info] secure_share_info lookup failed:', e && e.message);
@@ -272,6 +300,9 @@ class __dmz extends Mfs {
     const safeInfo = { ...info };
     delete safeInfo.password_hash;
     delete safeInfo.allowed_emails;
+    // Same reason as allowed_emails: who the sender revoked is sender-only data,
+    // and must never reach a viewer sitting at the gate.
+    delete safeInfo.denied_emails;
 
     // Email gate: active for restricted shares (require_email=1 via v2 allowed_emails,
     // or legacy recipient_email set). Skipped entirely for public shares.
@@ -359,6 +390,11 @@ class __dmz extends Mfs {
         }
       }
     }
+
+    // Both gates are behind us, so nothing downstream needs the deny list — and the
+    // success response below spreads `info` straight to the viewer. Drop it here so
+    // a recipient who passes the gate can never enumerate who the sender revoked.
+    delete info.denied_emails;
 
     // Valid access — log it and notify sender in real time.
     // Attribute the open to the viewer's OWN account ONLY when they are genuinely
