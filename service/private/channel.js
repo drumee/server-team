@@ -20,6 +20,7 @@ const {
 } = require("@drumee/server-essentials");
 const { Entity, MfsTools } = require("@drumee/server-core");
 const { remove_node, move_node, copy_node } = MfsTools;
+const { stampAuthorIdentity } = require("../lib/message-author");
 
 const { stringify, parse: jsonParse } = JSON;
 const { isEmpty } = require("lodash");
@@ -1153,9 +1154,7 @@ class __private_channel extends Entity {
       data.thread = await this.threadInfo(thread_id, this.hub.get(Attr.id));
     }
 
-    let profile = this.user.get("profile") || {};
-    data.firstname = this.user.attributes.firstname;
-    data.lastname = profile.lastname;
+    stampAuthorIdentity(this.user, data);
     data.hub_id = this.hub.get(Attr.id);
     if (nid) data.nid = nid;
     data.echoId = this.input.get("echoId");
@@ -1599,9 +1598,7 @@ class __private_channel extends Entity {
     if (!isEmpty(thread_id)) {
       data.thread = await this.threadInfo(thread_id, hub_id);
     }
-    const profile = this.user.get("profile") || {};
-    data.firstname = this.user.attributes.firstname;
-    data.lastname = profile.lastname;
+    stampAuthorIdentity(this.user, data);
     data.hub_id = hub_id;
     data.echoId = this.input.get("echoId");
     data.file_thread_id = file_thread_id;
