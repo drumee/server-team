@@ -137,13 +137,22 @@ class __private_payment extends Entity {
     // checkout, so they get their own status rather than a generic failure.
     //
     // One exception: a subscription held by the OTHER kind of entity. A legacy
-    // personal 'pro' holder buying an org plan (or the reverse) cannot be
-    // served by an in-place update — change_plan refuses it with
-    // PLAN_ENTITY_MISMATCH because the plan is not sold to that entity kind.
-    // Refusing here as well left that caller in a circle with no working path,
-    // so this is exactly the supersede CHECKOUT the webhook already knows how
-    // to finish: it cancels the superseded subscription once the new one is
-    // paid (_cancelSupersededPersonalSubscription / metadata.supersede).
+    // personal 'pro' holder buying an org plan cannot be served by an in-place
+    // update — change_plan refuses it with PLAN_ENTITY_MISMATCH because the
+    // plan is not sold to that entity kind. Refusing here as well left that
+    // caller in a circle with no working path, so this is exactly the supersede
+    // CHECKOUT the webhook already knows how to finish: it cancels the
+    // superseded subscription once the new one is paid
+    // (_cancelSupersededPersonalSubscription / metadata.supersede).
+    //
+    // That cancel does NOT disturb the org it just paid for. yp.quota is keyed
+    // UNIQUE(domain_id, payer_id) — a composite, verified against the deployed
+    // schema, not the unshipped tables/quota.sql which claims domain_id alone —
+    // so the org row (org_domain, org_id) and the payer's own
+    // (org_domain, payer_uid) coexist. The customer.subscription.deleted for
+    // the superseded personal subscription writes the payer's row, and the
+    // tenant-first cascade in disk_limit/get_quota resolves the org row ahead
+    // of it for every member, the payer included.
     const current = await this._subscription_row();
     const now = Math.floor(Date.now() / 1000);
     const status = String((current && current.status) || '');
@@ -332,18 +341,44 @@ class __private_payment extends Entity {
     const owns_org = !!org?.id;                        // can pay for their own
     row.can_buy = is_personal || owns_org;
     if (!row.can_buy) row.buy_blocked = 'NOT_ORG_OWNER';
-    // How many members the org ACTUALLY has. `seats` on this row is the plan's
-    // member CAP copied out of quota, so a client warning about downgrades or
-    // cancellation that reads it as a headcount says things like "your team has
-    // 100000 members" — the cap compared against a cap. Only the real count can
-    // tell a caller whether a smaller plan would push anyone out.
+    // How many members the org ACTUALLY has, and how much it actually stores.
+    // `seats` on this row is the plan's member CAP copied out of quota, so a
+    // client warning about downgrades or cancellation that reads it as a
+    // headcount says things like "your team has 100000 members" — the cap
+    // compared against a cap. Only the real figures can tell a caller whether a
+    // smaller plan would push anyone out or block uploads.
+    //
+    // Same filters as the platform's own headcount (yp member_list_stats):
+    // archived members and system profiles are not seats anybody is using, and
+    // counting them would contradict the number the Admin console shows.
     if (org && org.id) {
+      const dom = ~~(org.domain_id || this.user.domain_id());
       let c = await this.yp.await_query(
-        `SELECT COUNT(*) AS c FROM entity WHERE dom_id = ? AND type = 'drumate'`,
-        ~~(org.domain_id || this.user.domain_id())
+        `SELECT COUNT(*) AS c
+           FROM privilege p
+           INNER JOIN drumate d ON p.uid = d.id
+           INNER JOIN entity   e ON d.id = e.id
+          WHERE p.domain_id = ?
+            AND COALESCE(JSON_VALUE(d.profile, '$.category'), '') <> 'system'
+            AND e.status <> 'archived'`,
+        dom
       );
       if (Array.isArray(c)) c = c[0];
       row.member_count = ~~(c && c.c);
+      // Org-wide usage, not the caller's own. The downgrade warning compares it
+      // against the target plan's allowance, and Visitor.diskUsed() on the
+      // client is only the signed-in user's share — an org well over the cap
+      // looked fine to whoever happened to store little.
+      // actual_usage is the recalculated figure; cached_usage is what the
+      // running total says. Take the larger — under-reporting here would let a
+      // downgrade through without the warning it exists to give.
+      let u = await this.yp.await_query(
+        `SELECT GREATEST(IFNULL(actual_usage, 0), IFNULL(cached_usage, 0)) AS used
+           FROM quota_usage WHERE domain_id = ?`,
+        dom
+      );
+      if (Array.isArray(u)) u = u[0];
+      if (u && u.used != null) row.disk_used = Number(u.used) || 0;
     }
     this.output.data(row);
   }
@@ -468,23 +503,26 @@ class __private_payment extends Entity {
     try {
       live = await stripe.subscriptions.retrieve(subscription_id);
     } catch (e) {
+      // The mirror points at a subscription Stripe no longer has (a deleted
+      // event lost while the endpoint was down, a key/account rotation). Left
+      // alone that row is a permanent dead end: checkout() still reads it as
+      // live and refuses to sell, while every switch fails here. Clear it so
+      // the caller can buy again, and say what is true — they have no
+      // subscription.
+      if (/resource_missing|No such subscription/i.test(String((e && e.message) || ''))) {
+        try {
+          await this.yp.await_proc('subscription_remove', sub.entity_id || this.uid, subscription_id);
+        } catch (e2) { /* best effort: the answer below is right either way */ }
+        return this.output.data({ status: 'NO_SUBSCRIPTION' });
+      }
       return this.output.data({ status: 'CHANGE_FAILED', error: e && e.message });
     }
     const items = (live.items && live.items.data) || [];
-    // Swapping items[0] blind would replace an ADD-ON line on a legacy
-    // multi-item subscription (storage_*/pro_seat), leaving the real plan line
-    // in place and billing both. Those add-ons are retired, so this should not
-    // occur — refuse rather than double-bill if it ever does.
-    if (items.length !== 1) {
-      return this.output.data({
-        status: 'MULTI_ITEM_SUBSCRIPTION', items: items.length,
-      });
-    }
     const item = items[0];
     const live_md = live.metadata || {};
     const cur_plan = String(live_md.plan || sub.plan || '');
     const cur_period = String(
-      (item.price && item.price.recurring && item.price.recurring.interval)
+      (item && item.price && item.price.recurring && item.price.recurring.interval)
       || live_md.period || sub.period || ''
     );
     const pending_cancel = !!live.cancel_at_period_end;
@@ -492,6 +530,10 @@ class __private_payment extends Entity {
     // refuses to sell to its holder, so switching plan is their only self-serve
     // move. Telling them NO_SUBSCRIPTION would send them to buy a second one.
     if (!/^(active|trialing|past_due)$/.test(String(live.status || ''))) {
+      // Gone at Stripe but still mirrored — same dead end as the 404 above.
+      try {
+        await this.yp.await_proc('subscription_remove', sub.entity_id || this.uid, subscription_id);
+      } catch (e2) { /* best effort */ }
       return this.output.data({ status: 'NO_SUBSCRIPTION' });
     }
     if (cur_plan === plan && cur_period === period && !pending_cancel) {
@@ -502,16 +544,27 @@ class __private_payment extends Entity {
     if (!plan_row || !plan_row.stripe_price_id) {
       return this.output.data({ status: 'NO_PRICE' });
     }
-    // Same rule as checkout(): the target plan must be sold to the kind of
-    // entity that holds this subscription. _subscription_row tags the tenant
-    // row entity_type='org'; a personal row means 'user'. Moving between the
-    // kinds (legacy personal pro -> an org plan) is a supersede CHECKOUT, and
-    // checkout() lets that caller through for exactly this reason — so the
-    // refusal here is a redirection, not a dead end.
+    // The target plan must be sold to the kind of entity that holds this
+    // subscription. _subscription_row tags the tenant row entity_type='org'; a
+    // personal row means 'user'. Crossing the kinds (a legacy personal 'pro'
+    // reaching for an org plan) needs a supersede checkout, which is currently
+    // unsafe — see the note in checkout(). Refuse and let the client say so.
     const holder = sub.entity_type === 'org' ? 'org' : 'user';
     if (plan_row.entity_type && plan_row.entity_type !== holder) {
       return this.output.data({
         status: 'PLAN_ENTITY_MISMATCH', plan, entity_type: holder, expected: plan_row.entity_type,
+      });
+    }
+    // Swapping items[0] blind would replace an ADD-ON line on a legacy
+    // multi-item subscription (storage_*/pro_seat), leaving the real plan line
+    // in place and billing both. Those add-ons are retired, so this should not
+    // occur — refuse rather than double-bill if it ever does. Checked AFTER the
+    // entity-kind rule: the only multi-item subscriptions left are the legacy
+    // personal ones, and PLAN_ENTITY_MISMATCH is the answer that actually tells
+    // that caller what is going on.
+    if (items.length !== 1) {
+      return this.output.data({
+        status: 'MULTI_ITEM_SUBSCRIPTION', items: items.length,
       });
     }
 

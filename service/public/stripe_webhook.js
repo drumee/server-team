@@ -329,13 +329,23 @@ class __public_stripe_webhook extends Entity {
       const pid = it && it.price && it.price.id;
       if (!pid) continue;
       let row = await this.yp.await_query(
-        `SELECT plan_code, period FROM plan
+        `SELECT plan_code, period, entity_type FROM plan
           WHERE stripe_price_id = ? AND active = 1 AND entity_type <> 'addon' LIMIT 1`,
         pid
       );
       if (Array.isArray(row)) row = row[0];
       if (row && row.plan_code) {
-        return { plan: String(row.plan_code), period: String(row.period || '') };
+        // entity_type travels with the plan. Correcting the plan while leaving
+        // the metadata's entity kind behind is worse than not correcting at
+        // all: payment_apply_entitlement looks the plan up WITH entity_type, so
+        // an org plan applied as 'user' matches no row and falls back to a bare
+        // 20 GB personal grant — the customer pays for Team and receives less
+        // than Free.
+        return {
+          plan: String(row.plan_code),
+          period: String(row.period || ''),
+          entity_type: String(row.entity_type || ''),
+        };
       }
     }
     return null;
@@ -457,14 +467,15 @@ class __public_stripe_webhook extends Entity {
             const actual = await this._planFromItems(items);
             const eff_plan = (actual && actual.plan) || plan;
             const eff_period = (actual && actual.period) || period;
-            const seat_total = await this._seatTotal(entity_type, eff_plan, eff_period, seats, extra_seats);
+            const eff_entity = (actual && actual.entity_type) || entity_type;
+            const seat_total = await this._seatTotal(eff_entity, eff_plan, eff_period, seats, extra_seats);
             // 0, not null: await_proc maps null -> '' which a strict-mode INT param rejects.
             // Mirror only with a real subscription id — the subscription.created/
             // updated events carry it when the session doesn't.
             if (subscription_id) {
               await this.yp.await_proc('subscription_update', entity_id, customer_id, subscription_id, eff_plan, eff_period, 1, price, 0, status);
             }
-            await this.yp.await_proc('payment_apply_entitlement', entity_id, eff_plan, period_end, entity_type, seat_total, extra_disk);
+            await this.yp.await_proc('payment_apply_entitlement', entity_id, eff_plan, period_end, eff_entity, seat_total, extra_disk);
             // Push the REAL status (canceled when cancel_at_period_end), not a
             // hardcoded 'active' — a pending cancel must reach the client so the
             // billing screen flips to "ends on {period_end}" in realtime. Carry
@@ -556,6 +567,7 @@ class __public_stripe_webhook extends Entity {
             const actual = await this._planFromItems(inv_items);
             const eff_plan = (actual && actual.plan) || smd.plan || 'team';
             const eff_period = (actual && actual.period) || smd.period || 'month';
+            const eff_entity = (actual && actual.entity_type) || smd.entity_type || 'user';
             if (event.type === 'invoice.paid') {
               // Recurring renewal succeeded -> re-apply entitlement (bumps period_end).
               const items = inv_items;
@@ -568,8 +580,8 @@ class __public_stripe_webhook extends Entity {
               // subscription created under the old catalog still reduces
               // correctly on renewal.
               const { seats, extra_disk, extra_seats } = await this._itemsEntitlement(items);
-              const seat_total = await this._seatTotal(smd.entity_type || 'user', eff_plan, eff_period, seats, extra_seats);
-              await this.yp.await_proc('payment_apply_entitlement', eid, eff_plan, pend, smd.entity_type || 'user', seat_total, extra_disk);
+              const seat_total = await this._seatTotal(eff_entity, eff_plan, eff_period, seats, extra_seats);
+              await this.yp.await_proc('payment_apply_entitlement', eid, eff_plan, pend, eff_entity, seat_total, extra_disk);
               await this.notify_user(eid, { service: 'payment.plan_updated', plan: eff_plan, status: 'active' });
               // Payment-receipt email (initial payment AND every renewal both
               // arrive as invoice.paid). A mail failure must never fail the
