@@ -439,9 +439,20 @@ class __public_stripe_webhook extends Entity {
             // signal — covers both the in-app Resume and the Billing Portal.
             // No new invoice is issued on resume; attach the latest one as the
             // receipt. A mail failure must never fail the webhook.
+            //
+            // payment.change_plan also clears cancel_at_period_end (switching
+            // plan implies staying), so a plan change made from the
+            // pending-cancel window trips this same signal. Its latest_invoice
+            // is the PRORATION invoice, whose own invoice.paid already sends
+            // "your plan is now X" — sending the resume receipt too would mail
+            // two differently-worded receipts for one invoice, the first
+            // announcing a plan the user never held. prev.items is present
+            // exactly when the update also swapped the price, so it separates
+            // a bare resume from a resume-by-plan-change.
             const prev = (event.data && event.data.previous_attributes) || {};
             if (event.type === 'customer.subscription.updated'
-              && prev.cancel_at_period_end === true && !obj.cancel_at_period_end) {
+              && prev.cancel_at_period_end === true && !obj.cancel_at_period_end
+              && !prev.items) {
               try {
                 const invId = typeof obj.latest_invoice === 'string'
                   ? obj.latest_invoice : (obj.latest_invoice && obj.latest_invoice.id);

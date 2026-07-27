@@ -129,12 +129,22 @@ class __private_payment extends Entity {
     //
     // Cycle changes (month <-> year) are a subscription UPDATE, not a new
     // checkout, so they get their own status rather than a generic failure.
+    //
+    // One exception: a subscription held by the OTHER kind of entity. A legacy
+    // personal 'pro' holder buying an org plan (or the reverse) cannot be
+    // served by an in-place update — change_plan refuses it with
+    // PLAN_ENTITY_MISMATCH because the plan is not sold to that entity kind.
+    // Refusing here as well left that caller in a circle with no working path,
+    // so this is exactly the supersede CHECKOUT the webhook already knows how
+    // to finish: it cancels the superseded subscription once the new one is
+    // paid (_cancelSupersededPersonalSubscription / metadata.supersede).
     const current = await this._subscription_row();
     const now = Math.floor(Date.now() / 1000);
     const status = String((current && current.status) || '');
     const pending_cancel = status === 'canceled' && ~~(current && current.period_end) > now;
     const live = /^(active|trialing)$/.test(status) || pending_cancel;
-    if (current && current.subscription_id && live) {
+    const holder = current && current.entity_type === 'org' ? 'org' : 'user';
+    if (current && current.subscription_id && live && holder === entity_type) {
       const same_plan = String(current.plan || '') === String(this.input.use('plan', 'team'));
       let refusal;
       if (pending_cancel) refusal = 'PENDING_CANCEL_RESUME_INSTEAD';
@@ -421,21 +431,47 @@ class __private_payment extends Entity {
       return this.output.data({ status: 'PERIOD_INVALID', period });
     }
 
+    // The DB mirror locates the subscription; it does NOT decide anything.
+    // yp.subscription_new is only rewritten when the customer.subscription.
+    // updated webhook lands, so between a change and its webhook (Stripe retry
+    // backoff, an endpoint restart) it still describes the PREVIOUS state.
+    // Deciding "nothing to change" or "does the interval change" from it would
+    // no-op a real switch and report success. Stripe is the truth here.
     const sub = await this._subscription_row();
     const subscription_id = sub && sub.subscription_id;
     if (!subscription_id) return this.output.data({ status: 'NO_SUBSCRIPTION' });
-    const now = Math.floor(Date.now() / 1000);
-    const pending_cancel =
-      String(sub.status) === 'canceled' && ~~sub.period_end > now;
-    if (!/^(active|trialing)$/.test(String(sub.status)) && !pending_cancel) {
-      // Lapsed/incomplete subs have nothing to update — that caller buys anew.
+
+    let live;
+    try {
+      live = await stripe.subscriptions.retrieve(subscription_id);
+    } catch (e) {
+      return this.output.data({ status: 'CHANGE_FAILED', error: e && e.message });
+    }
+    const items = (live.items && live.items.data) || [];
+    // Swapping items[0] blind would replace an ADD-ON line on a legacy
+    // multi-item subscription (storage_*/pro_seat), leaving the real plan line
+    // in place and billing both. Those add-ons are retired, so this should not
+    // occur — refuse rather than double-bill if it ever does.
+    if (items.length !== 1) {
+      return this.output.data({
+        status: 'MULTI_ITEM_SUBSCRIPTION', items: items.length,
+      });
+    }
+    const item = items[0];
+    const live_md = live.metadata || {};
+    const cur_plan = String(live_md.plan || sub.plan || '');
+    const cur_period = String(
+      (item.price && item.price.recurring && item.price.recurring.interval)
+      || live_md.period || sub.period || ''
+    );
+    const pending_cancel = !!live.cancel_at_period_end;
+    // past_due counts: the subscription still exists at Stripe and checkout()
+    // refuses to sell to its holder, so switching plan is their only self-serve
+    // move. Telling them NO_SUBSCRIPTION would send them to buy a second one.
+    if (!/^(active|trialing|past_due)$/.test(String(live.status || ''))) {
       return this.output.data({ status: 'NO_SUBSCRIPTION' });
     }
-    if (
-      String(sub.plan || '') === plan &&
-      String(sub.period || '') === period &&
-      !pending_cancel
-    ) {
+    if (cur_plan === plan && cur_period === period && !pending_cancel) {
       return this.output.data({ status: 'NOTHING_TO_CHANGE', plan, period });
     }
 
@@ -446,22 +482,15 @@ class __private_payment extends Entity {
     // Same rule as checkout(): the target plan must be sold to the kind of
     // entity that holds this subscription. _subscription_row tags the tenant
     // row entity_type='org'; a personal row means 'user'. Moving between the
-    // kinds (pro -> team) is a supersede checkout, not an in-place update.
+    // kinds (legacy personal pro -> an org plan) is a supersede CHECKOUT, and
+    // checkout() lets that caller through for exactly this reason — so the
+    // refusal here is a redirection, not a dead end.
     const holder = sub.entity_type === 'org' ? 'org' : 'user';
     if (plan_row.entity_type && plan_row.entity_type !== holder) {
       return this.output.data({
         status: 'PLAN_ENTITY_MISMATCH', plan, entity_type: holder, expected: plan_row.entity_type,
       });
     }
-
-    let live;
-    try {
-      live = await stripe.subscriptions.retrieve(subscription_id);
-    } catch (e) {
-      return this.output.data({ status: 'CHANGE_FAILED', error: e && e.message });
-    }
-    const item = live.items && live.items.data && live.items.data[0];
-    if (!item) return this.output.data({ status: 'CHANGE_FAILED', error: 'NO_SUBSCRIPTION_ITEM' });
 
     const params = {
       items: [{ id: item.id, price: plan_row.stripe_price_id, quantity: 1 }],
@@ -470,26 +499,37 @@ class __private_payment extends Entity {
       // Switching plan implies staying: a pending-cancel sub is resumed by the
       // same update instead of bouncing the caller through resume first.
       cancel_at_period_end: false,
-      metadata: { ...(live.metadata || {}), plan, period },
+      metadata: { ...live_md, plan, period },
     };
     // When the billing interval changes, restart the cycle today: the caller
     // pays the new price now (minus the unused-time credit) and renews a clean
     // month/year from today, instead of a stub period on the old anchor.
-    if (String(sub.period || '') !== period) params.billing_cycle_anchor = 'now';
+    if (cur_period !== period) params.billing_cycle_anchor = 'now';
 
     let s;
     try {
       s = await stripe.subscriptions.update(subscription_id, params);
     } catch (e) {
-      return this.output.data({ status: 'CHANGE_FAILED', error: e && e.message });
+      // error_if_incomplete keeps the switch atomic, but it also refuses
+      // outright when the prorated charge needs the cardholder — 3DS/SCA
+      // authentication, or a soft decline. Stripe returns an error instead of
+      // a requires_action PaymentIntent, so there is no invoice to finish and
+      // every retry fails identically. Say so specifically: the caller's way
+      // out is a different card / the Billing Portal, not "try again".
+      const code = String((e && (e.code || (e.raw && e.raw.code))) || '');
+      const msg = String((e && e.message) || '');
+      if (/requires_action|authentication|card_decline|card_declined|payment_intent|insufficient_funds/i.test(`${code} ${msg}`)) {
+        return this.output.data({ status: 'PAYMENT_ACTION_REQUIRED', error: msg });
+      }
+      return this.output.data({ status: 'CHANGE_FAILED', error: msg });
     }
-    const items = (s.items && s.items.data) || [];
+    const new_items = (s.items && s.items.data) || [];
     this.output.data({
       status: 'OK',
       plan,
       period,
       subscription_status: s.status || 'active',
-      period_end: s.current_period_end || (items[0] && items[0].current_period_end) || sub.period_end || 0,
+      period_end: s.current_period_end || (new_items[0] && new_items[0].current_period_end) || sub.period_end || 0,
     });
   }
 
