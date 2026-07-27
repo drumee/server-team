@@ -322,6 +322,19 @@ class __private_payment extends Entity {
     const owns_org = !!org?.id;                        // can pay for their own
     row.can_buy = is_personal || owns_org;
     if (!row.can_buy) row.buy_blocked = 'NOT_ORG_OWNER';
+    // How many members the org ACTUALLY has. `seats` on this row is the plan's
+    // member CAP copied out of quota, so a client warning about downgrades or
+    // cancellation that reads it as a headcount says things like "your team has
+    // 100000 members" — the cap compared against a cap. Only the real count can
+    // tell a caller whether a smaller plan would push anyone out.
+    if (org && org.id) {
+      let c = await this.yp.await_query(
+        `SELECT COUNT(*) AS c FROM entity WHERE dom_id = ? AND type = 'drumate'`,
+        ~~(org.domain_id || this.user.domain_id())
+      );
+      if (Array.isArray(c)) c = c[0];
+      row.member_count = ~~(c && c.c);
+    }
     this.output.data(row);
   }
 
