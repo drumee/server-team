@@ -127,6 +127,12 @@ class __private_payment extends Entity {
     // by side just as surely. That caller resumes instead. Only once the paid
     // period has actually lapsed (or the mirror row is gone) may they buy.
     //
+    // past_due is live too. Stripe keeps retrying that invoice for weeks and
+    // only then deletes the subscription, so a caller in dunning who is offered
+    // checkout ends up paying for BOTH once their card recovers. They fix the
+    // card in the Billing Portal, or switch plan in place (change_plan accepts
+    // past_due for exactly this reason) -- they do not buy a second one.
+    //
     // Cycle changes (month <-> year) are a subscription UPDATE, not a new
     // checkout, so they get their own status rather than a generic failure.
     //
@@ -142,12 +148,16 @@ class __private_payment extends Entity {
     const now = Math.floor(Date.now() / 1000);
     const status = String((current && current.status) || '');
     const pending_cancel = status === 'canceled' && ~~(current && current.period_end) > now;
-    const live = /^(active|trialing)$/.test(status) || pending_cancel;
+    const live = /^(active|trialing|past_due)$/.test(status) || pending_cancel;
     const holder = current && current.entity_type === 'org' ? 'org' : 'user';
     if (current && current.subscription_id && live && holder === entity_type) {
       const same_plan = String(current.plan || '') === String(this.input.use('plan', 'team'));
       let refusal;
       if (pending_cancel) refusal = 'PENDING_CANCEL_RESUME_INSTEAD';
+      // A caller in dunning is trying to fix a failed payment, not to shop.
+      // "You're already subscribed" is true but unhelpful there — give the
+      // state its own status so the client can point at the card instead.
+      else if (status === 'past_due') refusal = 'SUBSCRIPTION_PAST_DUE';
       else if (same_plan && String(current.period || '') === period) refusal = 'ALREADY_SUBSCRIBED';
       else refusal = 'USE_SUBSCRIPTION_UPDATE';
       return this.output.data({
