@@ -88,6 +88,23 @@
       },
       "params": {}
     },
+    "change_plan": {
+      "doc": "Plan/cycle switch on the caller's existing subscription (Team <-> Business). Price swap + metadata rewrite on the live Stripe subscription; never a second checkout.",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "params": {
+        "plan": {
+          "type": "string",
+          "required": true
+        },
+        "period": {
+          "type": "string",
+          "required": true
+        }
+      }
+    },
     "checkout_result": {
       "scope": "hub",
       "permission": {

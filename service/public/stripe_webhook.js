@@ -6,20 +6,27 @@ const { stripeClient, endpointSecret } = require('../lib/stripe');
 const { sendButlerMail } = require('../lib/butler-mail');
 
 // "What's unlocked" checklist per plan (payment-receipt email, Figma 2803-1288).
-// Static marketing copy matching the billing plans page; unknown plans get none.
+// Static marketing copy matching the billing plans page (the July 2026 FINAL
+// pricing table: flat plans, Business self-serve); unknown plans get none.
+// 'pro' is the retired B2C tier — kept so receipts for its remaining renewals
+// still describe what the subscriber actually has.
 const PLAN_FEATURES = {
   pro: ['50 GB storage', '5 editor seats included', '7-day version history', 'Permissions & roles', 'Guest access'],
-  team: ['50 GB storage per seat', 'Org-wide entitlement', '30-day version history', 'Admin-managed billing'],
+  team: ['100 GB storage', 'Up to 10 members', '30-day version history', 'Granular permissions (role-based)', 'Guest access', 'Admin panel'],
+  business: ['Multiple workspaces', 'Unlimited members', '1 TB storage', '1-year version history', 'Granular permissions + audit', 'Admin panel + audit logs', 'API access', 'SSO / SAML', 'Priority support + SLA'],
 };
 
 const CURRENCY_SYMBOL = { eur: '€', usd: '$', gbp: '£' };
 
 class __public_stripe_webhook extends Entity {
-  // "€169.90" from Stripe minor units; falls back to "<CODE> 12.34".
+  // "€169.90" from Stripe minor units; falls back to "<CODE> 12.34". Negative
+  // amounts (downgrade proration credits) render as "-$58.00", not "$-58.00".
   _money(minor, currency) {
     const n = (Number(minor) || 0) / 100;
+    const sign = n < 0 ? '-' : '';
+    const abs = Math.abs(n);
     const sym = CURRENCY_SYMBOL[(currency || 'usd').toLowerCase()];
-    return sym ? `${sym}${n.toFixed(2)}` : `${(currency || '').toUpperCase()} ${n.toFixed(2)}`;
+    return sym ? `${sign}${sym}${abs.toFixed(2)}` : `${sign}${(currency || '').toUpperCase()} ${abs.toFixed(2)}`;
   }
 
   // "January 7, 2026" (en-US, UTC) from a unix timestamp.
@@ -513,8 +520,24 @@ class __public_stripe_webhook extends Entity {
               // arrive as invoice.paid). A mail failure must never fail the
               // webhook — the entitlement above is already applied and Stripe
               // would re-deliver the whole event on a 500.
+              //
+              // A proration invoice (billing_reason 'subscription_update' —
+              // payment.change_plan swapping Team <-> Business) is a plan
+              // CHANGE, not a renewal: say so. The metadata is rewritten in
+              // the same subscriptions.update, so plan_label already names
+              // the NEW plan here.
               try {
-                await this._sendReceiptEmail(obj, sub, smd, { seat_total });
+                const changed = obj.billing_reason === 'subscription_update';
+                const plan_label = String(smd.plan || 'team')
+                  .replace(/^\w/, (c) => c.toUpperCase());
+                await this._sendReceiptEmail(obj, sub, smd, {
+                  seat_total,
+                  ...(changed ? {
+                    heading: `Your Drumee plan is now ${plan_label}`,
+                    subject: `Your Drumee plan is now ${plan_label}`,
+                    intro: "Your plan change is confirmed. Here's your receipt, and what's included.",
+                  } : {}),
+                });
               } catch (e4) {
                 this.error(`receipt email failed for ${event.id}: ${e4.message}`);
               }

@@ -390,6 +390,109 @@ class __private_payment extends Entity {
     });
   }
 
+  // Self-serve plan/cycle switch on the EXISTING subscription — the path the
+  // checkout() guard points at with USE_SUBSCRIPTION_UPDATE. Team <-> Business
+  // are both org plans, so the switch is a price swap on the live Stripe
+  // subscription, never a second checkout (which would double-bill — see the
+  // guard in checkout()).
+  //
+  // Two things make the swap safe:
+  // - metadata.plan/period are rewritten IN THE SAME update. The webhook
+  //   derives entitlement from subscription metadata (stripe_webhook.js reads
+  //   md.plan; there is no reverse price_id -> plan_code mapping), so a price
+  //   swap that left the old metadata in place would keep applying the OLD
+  //   plan's quota on every subsequent event.
+  // - proration_behavior 'always_invoice' + payment_behavior
+  //   'error_if_incomplete': an upgrade charges the prorated difference NOW
+  //   and the whole update is rejected if that payment fails, so the
+  //   subscription never half-switches. A downgrade's negative proration lands
+  //   as a credit on the customer balance and offsets the next renewal.
+  //
+  // The webhook (customer.subscription.updated + the proration invoice.paid)
+  // then re-mirrors yp.subscription_new and re-applies quota with the new
+  // plan; the response carries the new state so the FE can flip immediately.
+  async change_plan() {
+    let stripe;
+    try { stripe = this._stripe(); }
+    catch (e) { return this.output.data({ status: 'STRIPE_NOT_CONFIGURED' }); }
+    const plan = this.input.need('plan');
+    const period = this.input.need('period');
+    if (!/^(month|year)$/.test(period)) {
+      return this.output.data({ status: 'PERIOD_INVALID', period });
+    }
+
+    const sub = await this._subscription_row();
+    const subscription_id = sub && sub.subscription_id;
+    if (!subscription_id) return this.output.data({ status: 'NO_SUBSCRIPTION' });
+    const now = Math.floor(Date.now() / 1000);
+    const pending_cancel =
+      String(sub.status) === 'canceled' && ~~sub.period_end > now;
+    if (!/^(active|trialing)$/.test(String(sub.status)) && !pending_cancel) {
+      // Lapsed/incomplete subs have nothing to update — that caller buys anew.
+      return this.output.data({ status: 'NO_SUBSCRIPTION' });
+    }
+    if (
+      String(sub.plan || '') === plan &&
+      String(sub.period || '') === period &&
+      !pending_cancel
+    ) {
+      return this.output.data({ status: 'NOTHING_TO_CHANGE', plan, period });
+    }
+
+    const plan_row = await this.yp.await_proc('payment_get_plan', plan, period, CURRENCY);
+    if (!plan_row || !plan_row.stripe_price_id) {
+      return this.output.data({ status: 'NO_PRICE' });
+    }
+    // Same rule as checkout(): the target plan must be sold to the kind of
+    // entity that holds this subscription. _subscription_row tags the tenant
+    // row entity_type='org'; a personal row means 'user'. Moving between the
+    // kinds (pro -> team) is a supersede checkout, not an in-place update.
+    const holder = sub.entity_type === 'org' ? 'org' : 'user';
+    if (plan_row.entity_type && plan_row.entity_type !== holder) {
+      return this.output.data({
+        status: 'PLAN_ENTITY_MISMATCH', plan, entity_type: holder, expected: plan_row.entity_type,
+      });
+    }
+
+    let live;
+    try {
+      live = await stripe.subscriptions.retrieve(subscription_id);
+    } catch (e) {
+      return this.output.data({ status: 'CHANGE_FAILED', error: e && e.message });
+    }
+    const item = live.items && live.items.data && live.items.data[0];
+    if (!item) return this.output.data({ status: 'CHANGE_FAILED', error: 'NO_SUBSCRIPTION_ITEM' });
+
+    const params = {
+      items: [{ id: item.id, price: plan_row.stripe_price_id, quantity: 1 }],
+      proration_behavior: 'always_invoice',
+      payment_behavior: 'error_if_incomplete',
+      // Switching plan implies staying: a pending-cancel sub is resumed by the
+      // same update instead of bouncing the caller through resume first.
+      cancel_at_period_end: false,
+      metadata: { ...(live.metadata || {}), plan, period },
+    };
+    // When the billing interval changes, restart the cycle today: the caller
+    // pays the new price now (minus the unused-time credit) and renews a clean
+    // month/year from today, instead of a stub period on the old anchor.
+    if (String(sub.period || '') !== period) params.billing_cycle_anchor = 'now';
+
+    let s;
+    try {
+      s = await stripe.subscriptions.update(subscription_id, params);
+    } catch (e) {
+      return this.output.data({ status: 'CHANGE_FAILED', error: e && e.message });
+    }
+    const items = (s.items && s.items.data) || [];
+    this.output.data({
+      status: 'OK',
+      plan,
+      period,
+      subscription_status: s.status || 'active',
+      period_end: s.current_period_end || (items[0] && items[0].current_period_end) || sub.period_end || 0,
+    });
+  }
+
   // Post-Checkout receipt details for the success/failure modal: total paid,
   // invoice number, payment date and card brand/last4, straight from the
   // Checkout Session the browser was redirected back with.
