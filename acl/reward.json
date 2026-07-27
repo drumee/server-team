@@ -1,0 +1,18 @@
+{
+  "modules": {
+    "private": "service/private/reward"
+  },
+  "services": {
+    "track": {
+      "doc": "Record how far the caller got in the claim-reward flow (ui-team builtins/widget/reward-flow). One row per user in yp.reward_claim; status and step only ever advance, so a re-post can never undo a completion. Fire-and-forget from the widget.",
+      "scope": "hub",
+      "permission": { "src": "owner" },
+      "params": {
+        "status": { "type": "string", "required": true, "description": "started | dropped | done" },
+        "step": { "type": "string", "required": false, "description": "step1 | step2 | step3 — the card step the user is on" },
+        "campaign": { "type": "string", "required": false, "description": "utm_campaign, defaults to free-storage" }
+      },
+      "returns": { "type": "object", "properties": { "ok": { "type": "boolean" }, "status": { "type": "string" }, "step": { "type": "string" } } }
+    }
+  }
+}
