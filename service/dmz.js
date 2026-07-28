@@ -391,9 +391,15 @@ class __dmz extends Mfs {
       }
     }
 
-    // Both gates are behind us, so nothing downstream needs the deny list — and the
-    // success response below spreads `info` straight to the viewer. Drop it here so
-    // a recipient who passes the gate can never enumerate who the sender revoked.
+    // Both gates are behind us, so nothing downstream needs the recipient lists —
+    // and the success response below spreads `info` straight to the viewer. Drop
+    // them here so a recipient who passes the gate can enumerate neither who else
+    // was invited nor who the sender revoked.
+    //
+    // allowed_emails was already stripped from the gate responses (safeInfo) and
+    // from the unauthenticated info() probe, but NOT from this success path, so
+    // every recipient of a multi-address link received the whole invite list.
+    delete info.allowed_emails;
     delete info.denied_emails;
 
     // Valid access — log it and notify sender in real time.
