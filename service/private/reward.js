@@ -27,12 +27,12 @@ const CAMPAIGN = 'free-storage';
  * Terminal states (done, dropped) are excluded; a later send re-arms the row to
  * 'emailed', so a returning user has to click again before they are eligible.
  */
-const OPEN = ['clicked', 'started'];
+const OPEN = new Set(['clicked', 'started']);
 /** States the client may report. 'clicked' is posted by the desk when it finds
  *  campaign-arrival evidence relayed through login; the rest come from the
  *  widget. 'emailed' is NOT here: it is seeded at send time by analytics-server
  *  and must never be claimable by a browser, or anyone could invite themselves. */
-const STATUS = ['clicked', 'started', 'dropped', 'done'];
+const STATUS = new Set(['clicked', 'started', 'dropped', 'done']);
 const STEPS = ['step1', 'step2', 'step3'];
 
 class __reward extends Entity {
@@ -57,7 +57,7 @@ class __reward extends Entity {
     const row = toArray(await this.yp.await_query(
       `SELECT status, step FROM reward_claim WHERE uid=?`, this.uid
     ))[0];
-    const eligible = !!(row && OPEN.includes(row.status));
+    const eligible = !!(row && OPEN.has(row.status));
     this.output.data({
       eligible: eligible ? 1 : 0,
       step: (eligible && row.step) || '',
@@ -73,7 +73,7 @@ class __reward extends Entity {
    */
   async track() {
     const status = String(this.input.need('status') || '').trim();
-    if (!STATUS.includes(status)) {
+    if (!STATUS.has(status)) {
       return this.output.data({ ok: false, error: 'invalid status' });
     }
     // Step is optional — 'dropped' is posted without one when the user quits
