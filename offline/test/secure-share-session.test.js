@@ -188,9 +188,10 @@ const invariants = [
   ['#4 dmz.js: FILE shares are NOT excluded from the recipient rebind', async () => {
     const dmz = src('service/dmz.js');
     // Anchor precisely to the BINDING block — the one that issues the secure-share
-    // node grant + rebinds bindUid. (An unrelated earlier block computes
-    // ownShareGrant/hasStanding and is intentionally scoped to non-file shares; we
-    // must not false-flag that one.) Walk back from the grant to its controlling
+    // node grant + rebinds bindUid. (An earlier block computes ownShareGrant/
+    // hasStanding; it covers BOTH share kinds — see the standing canary below — so
+    // walking back from the grant must not stop at it.) Walk back from the grant to
+    // its controlling
     // `if (isAuthenticated && user.id ...` and assert that condition does NOT exclude
     // file shares — re-adding `!info.file_nid` here is what re-opened chat-as-creator.
     // Anchor to the grant CALL's unique signature (not the earlier message-check
@@ -227,6 +228,54 @@ const invariants = [
     assert.ok(
       /info\.nid,\s*user\.id,\s*0,\s*\(grantTarget\s*&\s*0b0000011\),\s*'root',\s*'Secure share access'/.test(after),
       "parent-traversal grant must be READ-ONLY (grantTarget & 0b0000011) and NON-INHERITING (assign_via='root')"
+    );
+  }],
+
+  ['standing check covers FILE shares and reads the node memberPriv was measured on', async () => {
+    const dmz = src('service/dmz.js');
+    // memberPriv comes from mfs_access_node(user.id, info.nid) — the shared node for a
+    // folder share, the PARENT for a file share. The standing check must read the
+    // direct grant on THAT SAME node, because the parent-traversal grant above leaves
+    // a file-share recipient a PERSISTENT 'root' grant on the parent. Skipping file
+    // shares here (or reading info.node_id instead of info.nid) makes every LATER file
+    // share in the same folder look like a standing membership → the node grant is
+    // never issued → user_permission on the file stays 0 → mfs_show_node_by's
+    // `privilege > 0` filter drops it → BLANK share (Lexis/Tina prod, 2026-07-28).
+    const standIdx = dmz.indexOf('let hasStanding = memberPriv > 0;');
+    assert.ok(standIdx > 0, 'hasStanding computation not found');
+    const cond = dmz.slice(standIdx, dmz.indexOf('{', standIdx) + 1);
+    assert.ok(
+      !/!info\.file_nid/.test(cond),
+      'the standing check must NOT exclude file shares (re-blanks every later file share in a folder)'
+    );
+    const body = dmz.slice(standIdx, standIdx + 2200);
+    assert.ok(
+      /readDirectGrant\(info\.nid\)/.test(body),
+      'standing must be read on info.nid — the node memberPriv was measured on'
+    );
+    assert.ok(
+      /memberPriv > \(standingIsOwn \? rowPriv\(standing\) : 0\)/.test(body),
+      "standing must discount the recipient's OWN secure-share grant on that node"
+    );
+  }],
+
+  ['permission_get_direct is called (resource, entity) — swapping them makes it inert', async () => {
+    const dmz = src('service/dmz.js');
+    // SP signature is permission_get_direct(_rid /*resource_id*/, _eid /*entity_id*/).
+    // Passing (user.id, node) silently matches NO row (resource_id is never a uid), so
+    // ownShareGrant collapses to 0 and the whole grant-clobber protection turns into a
+    // no-op. Verified against the prod DB: correct order returns the grant row, the
+    // reversed order returns an empty set.
+    const callIdx = dmz.indexOf("'permission_get_direct'");
+    assert.ok(callIdx > 0, 'permission_get_direct call not found');
+    const args = dmz.slice(callIdx, callIdx + 200);
+    assert.ok(
+      /'permission_get_direct',\s*`'\$\{resource_id\}','\$\{user\.id\}'`/.test(args),
+      'permission_get_direct must receive (resource_id, user.id) in that order'
+    );
+    assert.ok(
+      !/`'\$\{user\.id\}','\$\{info\./.test(args),
+      'arguments are reversed — permission_get_direct would match nothing'
     );
   }],
 

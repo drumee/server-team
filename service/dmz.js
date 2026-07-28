@@ -621,30 +621,49 @@ class __dmz extends Mfs {
     // user_permission() returns a '*' membership BEFORE any node grant, so for a
     // non-member memberPriv EQUALS their own node-grant priv, while a real member's
     // memberPriv EXCEEDS it. Read the directly-stored grant row to compare.
-    // FOLDER shares only (here info.nid === info.node_id); a file share remaps
-    // info.nid to the parent, so this comparison would be cross-node — left to the
-    // existing file-share clamp below. Fail-safe: on any error treat as no direct
-    // grant, which collapses hasStanding to the prior memberPriv>0 behaviour.
+    // The comparison must read the grant on the SAME node memberPriv was measured
+    // on (info.nid above): the shared node itself for a folder share, its PARENT for
+    // a file share (info.nid is remapped to the parent at ~L497). Reading node_id for
+    // a file share would compare cross-node and mis-read a file-share recipient as a
+    // member, because the file-share fix below leaves them a PERSISTENT read-only
+    // 'root' grant on that parent — so every LATER file share in the same folder was
+    // treated as standing, skipped the node grant, and rendered blank (Lexis/Tina
+    // prod report 2026-07-28). Fail-safe: on any error treat as no direct grant,
+    // which collapses hasStanding to the prior memberPriv>0 behaviour.
+    // NOTE permission_get_direct's signature is (resource, entity) — passing them
+    // the other way round silently matches nothing and makes this check inert.
     let ownShareGrant = 0;
     let hasStanding = memberPriv > 0;
-    if (isAuthenticated && user.id && !info.file_nid && info.node_id) {
-      let direct = null;
-      try {
-        direct = toArray(await this.yp.await_proc(
-          'forward_proc', info.hub_id, 'permission_get_direct', `'${user.id}','${info.node_id}'`
-        ))[0] || null;
-      } catch (e) {
-        this.warn('[dmz.login] secure_share permission_get_direct failed:', e && e.message);
-      }
-      const directPriv = direct ? (parseInt(direct.permission, 10) || 0) : 0;
-      const isOwnShareGrant = !!direct &&
-        String(direct.message || '').indexOf('Secure share access') === 0;
-      ownShareGrant = isOwnShareGrant ? directPriv : 0;
+    if (isAuthenticated && user.id && info.nid && info.node_id) {
+      const readDirectGrant = async (resource_id) => {
+        try {
+          return toArray(await this.yp.await_proc(
+            'forward_proc', info.hub_id, 'permission_get_direct', `'${resource_id}','${user.id}'`
+          ))[0] || null;
+        } catch (e) {
+          this.warn('[dmz.login] secure_share permission_get_direct failed:', e && e.message);
+          return null;
+        }
+      };
+      const isShareGrant = (row) => !!row &&
+        String(row.message || '').indexOf('Secure share access') === 0;
+      const rowPriv = (row) => (row ? (parseInt(row.permission, 10) || 0) : 0);
+
       // standing = access from anything OTHER than their own secure-share grant:
       //  - memberPriv exceeds their own grant (a '*' membership wins in user_permission), OR
       //  - a non-secure-share direct row exists (a manual collaborator grant — never touch it).
-      hasStanding = (memberPriv > ownShareGrant) ||
-        (!!direct && !isOwnShareGrant && directPriv > 0);
+      const standing = await readDirectGrant(info.nid);
+      const standingIsOwn = isShareGrant(standing);
+      hasStanding = (memberPriv > (standingIsOwn ? rowPriv(standing) : 0)) ||
+        (!!standing && !standingIsOwn && rowPriv(standing) > 0);
+
+      // UPGRADE-ONLY baseline: the recipient's own prior secure-share privilege on
+      // the SHARED node (=== info.nid for a folder share; the file for a file share),
+      // so opening a lower link after a higher one never downgrades them.
+      const own = String(info.node_id) === String(info.nid)
+        ? standing
+        : await readDirectGrant(info.node_id);
+      if (isShareGrant(own)) ownShareGrant = rowPriv(own);
     }
 
     // Translate the capability set to the privilege bitmask the UI uses for
