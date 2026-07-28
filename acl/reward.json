@@ -4,7 +4,7 @@
   },
   "services": {
     "get_state": {
-      "doc": "Claim-reward gate for the desk. Returns { eligible, step } for the CALLER, read from yp.reward_claim: eligible=1 when the row's status is 'emailed' or 'started'. This replaces the browser's localStorage latch, so the answer follows the user across devices and a re-send re-arms them.",
+      "doc": "Claim-reward gate for the desk. Returns { eligible, step } for the CALLER, read from yp.reward_claim: eligible=1 when the row's status is 'clicked' or 'started' — being MAILED is an invitation, not an entitlement, so the user must have followed the campaign link. This replaces the browser's localStorage latch, so the answer follows the user across devices and a re-send re-arms them.",
       "scope": "hub",
       "permission": { "src": "owner" },
       "returns": { "type": "object", "properties": { "eligible": { "type": "integer" }, "step": { "type": "string" } } }
@@ -14,7 +14,7 @@
       "scope": "hub",
       "permission": { "src": "owner" },
       "params": {
-        "status": { "type": "string", "required": true, "description": "started | dropped | done" },
+        "status": { "type": "string", "required": true, "description": "clicked | started | dropped | done" },
         "step": { "type": "string", "required": false, "description": "step1 | step2 | step3 — the card step the user is on" },
         "campaign": { "type": "string", "required": false, "description": "utm_campaign, defaults to free-storage" }
       },

@@ -16,13 +16,23 @@ const { Entity } = require('@drumee/server-core');
 const { toArray } = require('@drumee/server-essentials');
 
 const CAMPAIGN = 'free-storage';
-/** Statuses that mean "this user still owes us a run". Terminal states (done,
- *  dropped) are excluded; a later send re-arms the row back to 'emailed'
- *  (see yp.reward_claim_emailed), which is what makes a re-send a real reset. */
-const OPEN = ['emailed', 'started'];
-/** Terminal and in-flight states the client may report. 'emailed' is NOT here:
- *  it is seeded at send time by analytics-server, never claimed by a browser. */
-const STATUS = ['started', 'dropped', 'done'];
+/**
+ * Statuses that open the flow.
+ *
+ * 'emailed' is deliberately NOT here. Being on the recipient list is an
+ * invitation, not an entitlement — the user has to follow the campaign link.
+ * Without that distinction anyone who was mailed got the walkthrough on their
+ * next login whether or not they ever clicked, which is the step this closes.
+ *
+ * Terminal states (done, dropped) are excluded; a later send re-arms the row to
+ * 'emailed', so a returning user has to click again before they are eligible.
+ */
+const OPEN = ['clicked', 'started'];
+/** States the client may report. 'clicked' is posted by the desk when it finds
+ *  campaign-arrival evidence relayed through login; the rest come from the
+ *  widget. 'emailed' is NOT here: it is seeded at send time by analytics-server
+ *  and must never be claimable by a browser, or anyone could invite themselves. */
+const STATUS = ['clicked', 'started', 'dropped', 'done'];
 const STEPS = ['step1', 'step2', 'step3'];
 
 class __reward extends Entity {
