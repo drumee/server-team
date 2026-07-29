@@ -647,9 +647,26 @@ class __media extends Mfs {
       }
     }
 
-    let { storage, domain_id } = quotaInfo || {};
+    let { storage, domain_id, unlimited } = quotaInfo || {};
 
-    // No storage limit or infinite
+    // UNLIMITED ENTITLEMENT — the claim-reward prize (5 years, source='reward'
+    // in yp.quota). $.unlimited is the explicit signal, surfaced by the
+    // get_quota PROCEDURE as this column.
+    //
+    // Checked BEFORE `storage`, and not left to the sentinel test below, which
+    // is a strict STRING compare: the driver hands numeric columns back as
+    // Numbers on some paths, and `9223372036854775807 === '9223372036854775807'`
+    // is false. A rewarded user would then be measured against a limit of
+    // 9.2 EB, which happens to pass — until anything downstream does arithmetic
+    // on it. Reading the flag says what we mean.
+    if (unlimited === true || unlimited === 1 || unlimited === '1') {
+      this.debug('[QUOTA] unlimited entitlement — upload allowed');
+      return true;
+    }
+
+    // No storage limit or infinite. The sentinel stays as a floor: a reward row
+    // always carries $.disk at BIGINT max too, so a half-deployed rollout (SQL
+    // patched, this file not yet) still enforces "unlimited" correctly.
     if (!storage || storage == Infinity || storage === '9223372036854775807') {
       return true;
     }

@@ -103,6 +103,37 @@ class __reward extends Entity {
   }
 
   /**
+   * Can the caller actually HOLD the prize?
+   *
+   * The reward is 5 years of unlimited storage written as a personal yp.quota
+   * row. Every entitlement resolver is tenant-first: for a user covered by an
+   * organisation's entitlement the org row wins and a personal row is never
+   * read, so the grant would not be a smaller prize — it would be no prize,
+   * silently.
+   *
+   * Answered by yp.reward_personal_eligible rather than reimplemented here.
+   * The same function backs reward_claim_track's award decision and
+   * reward_grant_storage's write, so the gate cannot promise something the
+   * completion then refuses. When the rule lived in two places it immediately
+   * drifted: the grant refused while the award went through, and org members
+   * consumed one of the campaign's limited places for nothing.
+   *
+   * A DB failure answers NO, matching _slotsFull below — offering a flow whose
+   * prize may not exist is the outcome worth avoiding.
+   */
+  async _canHoldReward() {
+    try {
+      const row = toArray(await this.yp.await_query(
+        `SELECT reward_personal_eligible(?) AS ok`, this.uid
+      ))[0];
+      return Number(row && row.ok) === 1;
+    } catch (e) {
+      this.warn('[reward] eligibility check failed', e && e.message);
+      return false;
+    }
+  }
+
+  /**
    * Should the desk open the claim-reward flow for the caller, and where.
    *
    * This is the gate. It used to be `reward_flow_done` in localStorage, which
@@ -113,6 +144,12 @@ class __reward extends Entity {
    * A missing row means this user was never mailed, so they are not eligible —
    * that alone is what stops a second person on a shared browser from being
    * handed someone else's campaign.
+   *
+   * Being invited is not enough: the caller also has to be able to HOLD the
+   * prize. It is a personal yp.quota entitlement, and a user covered by an
+   * organisation's entitlement would have it written and never read
+   * (_canHoldReward). Those users are turned away here, not walked through the
+   * flow and quietly given nothing.
    *
    * `step` is the furthest card step reached, so a user who wandered off
    * resumes where they were, on any device. Only sent when eligible; a
@@ -135,7 +172,12 @@ class __reward extends Entity {
     const row = toArray(await this.yp.await_query(
       `SELECT status, step FROM reward_claim WHERE uid=?`, this.uid
     ))[0];
-    const eligible = !!(row && OPEN.has(row.status));
+    // Invited AND able to hold the prize. The second half turns away users
+    // already covered by an org entitlement, before Step 1 rather than at the
+    // end — the same reason `capped` is decided here: nobody should walk a
+    // three-step walkthrough to be handed nothing.
+    const invited = !!(row && OPEN.has(row.status));
+    const eligible = invited && await this._canHoldReward();
     const capped = eligible && await this._slotsFull();
     this.output.data({
       eligible: eligible ? 1 : 0,
