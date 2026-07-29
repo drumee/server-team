@@ -56,7 +56,13 @@ const STEPS = ['step1', 'step2', 'step3'];
 class __reward extends Entity {
 
   /**
-   * How many users this campaign may reward.
+   * How many users this campaign may reward, for the GATE's purposes.
+   *
+   * The award itself does not go through here: reward_claim_track reads the
+   * same `reward_conf` key in SQL, so the cap holds whatever this service
+   * believes. This copy only decides whether to offer the flow, and the worst a
+   * disagreement can do is offer a walkthrough that the completion then
+   * refuses — which is the case the sold-out screen already exists to handle.
    *
    * Read per call rather than cached on the instance: sysconf can change under
    * a running server, and this is one JSON parse on a path that runs at most
@@ -166,13 +172,17 @@ class __reward extends Entity {
     const step = String(this.input.use('step', '') || '').trim();
     const campaign = String(this.input.use('campaign', CAMPAIGN) || CAMPAIGN).trim();
 
+    // No limit argument: the proc reads sys_conf.reward_conf itself, so this
+    // signature never changes and a schema patch can land without waiting for a
+    // server deploy. Passing it made the two repos deploy in lockstep — the
+    // moment the proc required the extra argument, every runtime still on the
+    // previous build failed with "Incorrect number of arguments".
     await this.yp.await_proc(
       'reward_claim_track',
       this.uid,
       campaign || CAMPAIGN,
       status,
-      STEPS.includes(step) ? step : '',
-      this._slotLimit()
+      STEPS.includes(step) ? step : ''
     );
 
     // Only a completion can be refused, so only a completion pays for the
