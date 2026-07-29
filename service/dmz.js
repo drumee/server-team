@@ -666,6 +666,22 @@ class __dmz extends Mfs {
       if (isShareGrant(own)) ownShareGrant = rowPriv(own);
     }
 
+    // is_member must mean "a TRUE standing principal", which is exactly hasStanding —
+    // NOT the raw memberPriv > 0 it was first derived from above. memberPriv is the
+    // EFFECTIVE privilege, so for a non-member it resolves to the recipient's OWN prior
+    // secure-share grant: anyone who had ever opened any share in this workspace was
+    // reported as a member, and the recipient UI therefore suppressed the "limited
+    // access / Request access" banner for them permanently (Duy, prod 2026-07-29 —
+    // duinguyen88 had zero '*' membership rows yet three leftover 'Secure share access'
+    // grants, so user_permission returned 7 and is_member came back 1).
+    // Same defect class the hasStanding block above was introduced to fix; is_member
+    // simply never moved over to it. Real members keep is_member=1 (a '*' row makes
+    // memberPriv exceed their own grant) and so do manual collaborators (a non-share
+    // direct row); the creator is excluded separately via is_owner. is_member has a
+    // single consumer — the banner condition in the recipient UI — and can only ever
+    // become MORE restrictive here, so it cannot grant capability or affect any gate.
+    is_member = hasStanding ? 1 : 0;
+
     // Translate the capability set to the privilege bitmask the UI uses for
     // show/hide decisions (_K.privilege in lex/constants.js: read=3, download=7,
     // write=15 — CUMULATIVE masks). We OR each capability's cumulative mask onto

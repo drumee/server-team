@@ -302,6 +302,28 @@ const invariants = [
     );
   }],
 
+  ['dmz.js: is_member is derived from hasStanding, never from raw memberPriv', async () => {
+    const dmz = src('service/dmz.js');
+    // is_member drives the recipient UI's "limited access / Request access" banner.
+    // Deriving it from the raw memberPriv (the EFFECTIVE privilege) reports any
+    // recipient holding their OWN prior 'Secure share access' grant as a workspace
+    // member, which suppressed that banner permanently for them (prod 2026-07-29).
+    // The authoritative notion is hasStanding, which discounts the recipient's own
+    // grant. Assert the final assignment reads hasStanding and that it comes AFTER
+    // hasStanding has been resolved, so a reorder can't silently restore the bug.
+    assert.ok(
+      /is_member\s*=\s*hasStanding\s*\?\s*1\s*:\s*0/.test(dmz),
+      'is_member must be derived from hasStanding'
+    );
+    const standingIdx = dmz.indexOf('hasStanding = (memberPriv >');
+    const assignIdx = dmz.search(/is_member\s*=\s*hasStanding/);
+    assert.ok(standingIdx > 0, 'hasStanding resolution not found');
+    assert.ok(
+      assignIdx > standingIdx,
+      'is_member must be assigned AFTER hasStanding is resolved'
+    );
+  }],
+
   ['neutral host: page.js isolates share.<main_domain> onto a host-scoped cookie', async () => {
     const page = src('client/page.js');
     assert.ok(/isNeutralShareHost/.test(page), 'neutral-host detection missing');
