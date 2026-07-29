@@ -422,6 +422,9 @@ class MfsActivity extends Entity {
             'contact_task_assigned_unread',
             'contact_task_mention_unread',
             'contact_storage_alert_unread',
+            // Claim-reward term ending (offline/workers/rewardExpiryWorker.js).
+            // Added with the event, not after it, per the note above.
+            'contact_reward_expiry_unread',
           ]) {
             try {
               const rows = toArray(await this.yp.await_proc(proc, this.uid));

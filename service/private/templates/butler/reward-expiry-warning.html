@@ -1,0 +1,133 @@
+<%
+// Claim-reward expiry warning. Structure and palette copied from
+// payment-final-warning.html so the two read as the same product.
+//
+// Sent ONLY to users who are over the free allowance -- someone under it loses
+// nothing when the term ends, so they hear nothing at all.
+//
+// Vars: recipient_name, used_label, free_label, excess_label, end_date,
+//       stage (30 | 7 | 0), storage_link, team_link, support_email.
+//
+// The copy leads with "nothing will be deleted" because that is the question
+// the reader actually has, and because it is true: expiry lowers the allowance
+// and pauses uploads, and nothing in the system ever removes their files.
+//
+// There is no individual paid plan -- every paid tier is entity_type='org' --
+// so the primary action is freeing space and Team is mentioned second, as a
+// workspace they would create. Leading with Team would ask a solo user to form
+// an organisation to solve a personal storage problem, right after a free gift.
+var FONT = "'Geist','SF Pro Display',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif";
+var FINAL = (stage === 0 || stage === '0');
+%><!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="x-apple-disable-message-reformatting">
+  <title><% if (FINAL) { %>Your free storage boost has ended<% } else { %>Your free storage boost ends on <%= end_date %><% } %></title>
+</head>
+<body style="margin:0;padding:0;background:#fff;-webkit-font-smoothing:antialiased;font-family:'Geist','SF Pro Display',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#fff;">
+    <tr>
+      <td align="center" style="padding:0;">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;max-width:600px;background:#fff;border:1px solid #d1d1d6;border-radius:8px;overflow:hidden;">
+
+          <!-- Header -->
+          <tr>
+            <td bgcolor="#433cc5" align="center" style="padding:24px;background:#433cc5;">
+              <table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr><td align="center" style="line-height:0;">
+                <img src="https://content.app.drumee.com/icons/logo.png" width="170" height="36" alt="Drumee" style="display:block;border:0;outline:0;text-decoration:none;-ms-interpolation-mode:bicubic;">
+              </td></tr></table>
+            </td>
+          </tr>
+
+          <!-- Main -->
+          <tr>
+            <td style="padding:32px;">
+
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+                <tr><td align="center" style="padding:8px 0 16px 0;">
+                  <table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr>
+                    <td align="center" valign="middle" width="56" height="56" style="width:56px;height:56px;border-radius:28px;background:#fdf3e3;font-family:<%= FONT %>;font-size:26px;line-height:56px;color:#e8a13c;">&#9888;</td>
+                  </tr></table>
+                </td></tr>
+                <tr><td align="center">
+                  <h1 style="margin:0 0 8px 0;padding:0;font-family:<%= FONT %>;font-weight:600;font-size:24px;line-height:1.2;color:#0b0a21;"><% if (FINAL) { %>Your free storage boost has ended<% } else { %>Your free storage boost ends on <%= end_date %><% } %></h1>
+                  <p style="margin:0;padding:0;font-family:<%= FONT %>;font-weight:400;font-size:14px;line-height:1.5;color:#65656c;">Hello <%= recipient_name %> &mdash; five years ago you claimed unlimited storage, and that term <% if (FINAL) { %>has now finished<% } else { %>finishes on <%= end_date %><% } %>.</p>
+                </td></tr>
+              </table>
+
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td style="height:24px;line-height:24px;font-size:0;">&nbsp;</td></tr></table>
+
+              <!-- The numbers -->
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#fdf6e8;border-radius:8px;">
+                <tr><td style="padding:16px 20px;font-family:<%= FONT %>;font-size:13px;line-height:1.6;color:#0b0a21;">
+                  You are storing <strong><%= used_label %></strong>. Your allowance <% if (FINAL) { %>is now<% } else { %>returns to<% } %> <strong><%= free_label %></strong>,
+                  so you are <strong><%= excess_label %></strong> over.
+                </td></tr>
+              </table>
+
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td style="height:24px;line-height:24px;font-size:0;">&nbsp;</td></tr></table>
+
+              <!-- What this does and does not mean. The reader's real question. -->
+              <p style="margin:0 0 10px 0;padding:0;font-family:<%= FONT %>;font-size:14px;font-weight:600;color:#0b0a21;">Nothing will be deleted</p>
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+                <tr>
+                  <td width="22" valign="top" style="padding:3px 0;font-family:<%= FONT %>;font-size:13px;color:#2f9e5f;">&#10003;</td>
+                  <td style="padding:3px 0;font-family:<%= FONT %>;font-size:13px;color:#0b0a21;">Every file you have stays exactly where it is.</td>
+                </tr>
+                <tr>
+                  <td width="22" valign="top" style="padding:3px 0;font-family:<%= FONT %>;font-size:13px;color:#2f9e5f;">&#10003;</td>
+                  <td style="padding:3px 0;font-family:<%= FONT %>;font-size:13px;color:#0b0a21;">You can still open, download and share all of it.</td>
+                </tr>
+                <tr>
+                  <td width="22" valign="top" style="padding:3px 0;font-family:<%= FONT %>;font-size:13px;color:#d64e49;">&#10005;</td>
+                  <td style="padding:3px 0;font-family:<%= FONT %>;font-size:13px;color:#0b0a21;">New uploads <% if (FINAL) { %>are paused<% } else { %>will pause<% } %> until you are back under <%= free_label %>.</td>
+                </tr>
+              </table>
+
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td style="height:24px;line-height:24px;font-size:0;">&nbsp;</td></tr></table>
+
+              <!-- Primary CTA: the free path -->
+              <% if (storage_link) { %>
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+                <tr><td align="center" bgcolor="#433cc5" style="border-radius:6px;background:#433cc5;">
+                  <a href="<%= storage_link %>" style="display:block;padding:13px 24px;font-family:<%= FONT %>;font-size:14px;font-weight:600;color:#ffffff;text-decoration:none;">Review your largest files</a>
+                </td></tr>
+              </table>
+              <% } %>
+
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td style="height:16px;line-height:16px;font-size:0;">&nbsp;</td></tr></table>
+
+              <!-- Secondary: Team, stated plainly as a workspace, not pushed -->
+              <p style="margin:0;padding:0;font-family:<%= FONT %>;font-size:13px;line-height:1.6;color:#65656c;">
+                Need more than <%= free_label %> permanently? You can create a workspace on Team, which includes 100&nbsp;GB<% if (team_link) { %> &mdash; <a href="<%= team_link %>" style="color:#433cc5;text-decoration:underline;">see the plans</a><% } %>.
+              </p>
+
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td style="height:28px;line-height:28px;font-size:0;">&nbsp;</td></tr></table>
+
+              <p style="margin:0 0 6px 0;padding:0;font-family:<%= FONT %>;font-size:14px;font-weight:600;color:#0b0a21;">Need help?</p>
+              <p style="margin:0;padding:0;font-family:<%= FONT %>;font-size:13px;color:#65656c;">Our team can help you sort this out:<br>
+                <a href="mailto:<%= support_email %>" style="color:#433cc5;text-decoration:underline;"><%= support_email %></a>
+              </p>
+
+            </td>
+          </tr>
+
+          <!-- Footer -->
+          <tr>
+            <td bgcolor="#f2f2f7" align="center" style="padding:20px;background:#f2f2f7;">
+              <p style="margin:0;padding:0;font-family:<%= FONT %>;font-size:12px;color:#65656c;">
+                <a href="https://drumee.org" style="color:#65656c;text-decoration:none;">drumee.org</a>
+                &nbsp;|&nbsp;
+                <a href="https://drumee.com/privacy/" style="color:#65656c;text-decoration:underline;">Privacy Policy</a>
+              </p>
+            </td>
+          </tr>
+
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
