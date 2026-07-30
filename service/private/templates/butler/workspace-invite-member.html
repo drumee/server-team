@@ -1,12 +1,17 @@
 <%
 var _avatar = (inviter_name || '?').replace(/\s+/g, ' ').split(' ').filter(Boolean).map(function (s) { return s.charAt(0).toUpperCase(); }).slice(0, 2).join('') || '?';
+// The one axis this email varies on: an EXTERNAL (shared) workspace shows its
+// real contents, an INTERNAL (private) one is redacted behind an "Access
+// Restricted" badge. Absent/false => internal, so a missing flag can never
+// expose filenames.
+var _external = (typeof workspace_external !== 'undefined') && workspace_external;
 %><!DOCTYPE html>
 <html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="x-apple-disable-message-reformatting">
-  <title><%= inviter_name %> invited you to <%= workspace_name %></title>
+  <title><% if (_external) { %><%= inviter_name %> shared <%= workspace_name %> with you<% } else { %><%= inviter_name %> added you to <%= workspace_name %><% } %></title>
 </head>
 <body style="margin:0;padding:0;background:#fff;-webkit-font-smoothing:antialiased;font-family:'Geist','SF Pro Display',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;">
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#fff;">
@@ -29,16 +34,24 @@ var _avatar = (inviter_name || '?').replace(/\s+/g, ' ').split(' ').filter(Boole
 
               <!-- Headline -->
               <h1 style="margin:0 0 8px 0;padding:0;font-family:'Geist','SF Pro Display',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;font-weight:600;font-size:24px;line-height:1.1;color:#282538;">
-                <%= inviter_name %> shared a workspace with you
+                <% if (_external) { %>
+                <%= inviter_name %> shared <%= workspace_name %> with you
+                <% } else { %>
+                <%= inviter_name %> added you to <%= workspace_name %>
+                <% } %>
               </h1>
               <p style="margin:0;padding:0;font-family:'Geist','SF Pro Display',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;font-weight:400;font-size:16px;line-height:1.4;color:#282538;">
-                You've been invited to collaborate on the <strong style="color:#433cc5;font-weight:700;"><%= workspace_name %></strong> workspace. Accept the invitation to view shared files and join the conversation.
+                <% if (_external) { %>
+                You've been given access to the <strong style="color:#433cc5;font-weight:700;"><%= workspace_name %></strong> shared workspace on Drumee. Open it to view the shared files and join the conversation.
+                <% } else { %>
+                You now have access to the <strong style="color:#433cc5;font-weight:700;"><%= workspace_name %></strong> internal workspace on Drumee. It stays private to its members &mdash; open it to view the files and join the conversation.
+                <% } %>
               </p>
 
               <!-- 40px gap -->
               <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td style="height:40px;line-height:40px;font-size:0;">&nbsp;</td></tr></table>
 
-              <!-- Workspace preview card (shared: no blur, no Access Restricted badge) -->
+              <!-- Workspace preview card: external => real contents, internal => redacted -->
               <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f2f2f7;border:1px solid rgba(71,69,84,0.1);border-radius:8px;">
                 <tr><td style="padding:25px;">
 
@@ -48,7 +61,7 @@ var _avatar = (inviter_name || '?').replace(/\s+/g, ' ').split(' ').filter(Boole
                       <td align="left" valign="middle">
                         <table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr>
                           <td valign="middle" style="padding-right:12px;line-height:0;width:17px;">
-                            <% if (typeof workspace_restricted !== 'undefined' && !workspace_restricted) { %>
+                            <% if (_external) { %>
                             <img src="https://content.app.drumee.com/icons/shared.png" width="20" height="16" alt="" style="display:block;border:0;outline:0;text-decoration:none;-ms-interpolation-mode:bicubic;">
                             <% } else { %>
                             <img src="https://content.app.drumee.com/icons/restricted.png" width="20" height="16" alt="" style="display:block;border:0;outline:0;text-decoration:none;-ms-interpolation-mode:bicubic;">
@@ -70,7 +83,7 @@ var _avatar = (inviter_name || '?').replace(/\s+/g, ' ').split(' ').filter(Boole
                   <!-- 24px gap -->
                   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td style="height:24px;line-height:24px;font-size:0;">&nbsp;</td></tr></table>
 
-                  <!-- Top 3 items — shared rows show name+date; restricted rows are
+                  <!-- Top 3 items — external rows show name+date; internal rows are
                        redacted (names/dates hidden) with the badge centered over them -->
                   <div style="position:relative;">
                   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
@@ -103,8 +116,8 @@ var _avatar = (inviter_name || '?').replace(/\s+/g, ' ').split(' ').filter(Boole
                     <% }); %>
                   </table>
 
-                  <!-- Access Restricted badge — centered over the items (restricted workspaces only) -->
-                  <% if (typeof workspace_restricted === 'undefined' || workspace_restricted) { %>
+                  <!-- Access Restricted badge — centered over the items (internal workspaces only) -->
+                  <% if (!_external) { %>
                   <div style="position:absolute;top:50%;left:0;right:0;text-align:center;transform:translateY(-50%);line-height:0;">
                   <table role="presentation" cellpadding="0" cellspacing="0" border="0" align="center" style="display:inline-block;background:#ffffff;border:1px solid #d65f59;border-radius:12px;">
                     <tr>
@@ -130,8 +143,8 @@ var _avatar = (inviter_name || '?').replace(/\s+/g, ' ').split(' ').filter(Boole
                   <!-- Recent Activity label -->
                   <p style="margin:0 0 12px 0;padding:0;font-family:'Geist Mono','SF Mono',Menlo,Consolas,monospace;font-weight:600;font-size:12px;line-height:1.4;letter-spacing:4px;text-transform:uppercase;color:rgba(67,60,197,0.6);">Recent Activity</p>
 
-                  <!-- Chat snippets: shared shows the latest 2 messages; restricted keeps redacted bars -->
-                  <% if (typeof workspace_restricted !== 'undefined' && !workspace_restricted) { %>
+                  <!-- Chat snippets: external shows the latest 2 messages; internal keeps redacted bars -->
+                  <% if (_external) { %>
                   <% (typeof recent_messages !== 'undefined' && recent_messages ? recent_messages : []).forEach(function (m, i) { %>
                   <% if (i % 2 === 0) { %>
                   <!-- left bubble (real message) -->
@@ -230,17 +243,11 @@ var _avatar = (inviter_name || '?').replace(/\s+/g, ' ').split(' ').filter(Boole
                 <tr>
                   <td align="center" bgcolor="#433cc5" style="background:#433cc5;border-radius:4px;">
                     <a href="<%= link %>" style="display:block;width:100%;background:#433cc5;color:#ffffff;text-decoration:none;font-family:'Geist','SF Pro Display',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;font-weight:600;font-size:16px;line-height:24px;text-align:center;padding:16px 24px;border-radius:4px;box-sizing:border-box;">
-                      Accept Invitation &rarr;
+                      Open workspace &rarr;
                     </a>
                   </td>
                 </tr>
               </table>
-
-              <!-- Tagline -->
-              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td style="height:24px;line-height:24px;font-size:0;">&nbsp;</td></tr></table>
-              <p style="margin:0;padding:0;text-align:center;font-family:'Geist Mono','SF Mono',Menlo,Consolas,monospace;font-weight:600;font-size:10px;line-height:1;letter-spacing:4px;text-transform:uppercase;color:#433cc5;">
-                This invitation expires in <%= expiry_days %> days
-              </p>
 
             </td>
           </tr>
@@ -267,7 +274,7 @@ var _avatar = (inviter_name || '?').replace(/\s+/g, ' ').split(' ').filter(Boole
               <p style="margin:0 0 7px 0;padding:0;text-align:center;font-family:'Geist','SF Pro Display',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;font-weight:700;font-size:12px;line-height:1.4;color:#84848c;">DRUMEE WORKSPACE</p>
               <table role="presentation" cellpadding="0" cellspacing="0" border="0" align="center" style="max-width:320px;">
                 <tr><td style="text-align:center;font-family:'Geist','SF Pro Display',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;font-weight:400;font-size:10px;line-height:1.4;color:#84848c;">
-                  You received this because <%= inviter_name %> invited you to <%= workspace_name %>. If you did not expect this invitation, you can safely ignore this email.
+<% if (_external) { %>You received this because <%= inviter_name %> shared <%= workspace_name %> with you. Manage your email preferences in your account settings.<% } else { %>You received this because <%= inviter_name %> added you to <%= workspace_name %>, an internal workspace. Manage your email preferences in your account settings.<% } %>
                 </td></tr>
               </table>
 
