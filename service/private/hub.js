@@ -324,26 +324,62 @@ class __private_hub extends Hub {
   }
 
   /**
-   * Anonymous guest landing page for an INTERNAL workspace — the signin plugin's
-   * signin_guest widget (Figma 1602:76946 "Guest Landing Page (Viral) Restricted"):
-   * the workspace shown as redacted placeholders behind a "Content Restricted"
-   * card, with Login / Join Workspace CTAs.
+   * Anonymous guest landing page — the signin plugin's signin_guest widget. BOTH
+   * halves of the invite CTA land here; `scope` picks which layout it renders:
    *
-   * Used instead of the #/dmz/share/<token> view because an internal workspace has
-   * nothing a guest may browse — the share view would render an empty or view-only
-   * folder. An EXTERNAL workspace keeps the share link, which is the page in Figma
-   * 1602:77081 ("Link shared") and is already implemented by ui-team's dmz_sharebox.
+   *   internal  Figma 1602:76946 "Guest Landing Page (Viral) Restricted" —
+   *             redacted placeholders behind a "Content Restricted" card
+   *   external  Figma 1602:77081 "Guest Landing Page (Viral) Link shared" —
+   *             the shared folder's contents, no gate
    *
-   * `name` rides along so the landing page's header shows the real workspace name
-   * instead of its generic localized fallback; the page itself stays API-free.
+   * Preferred over linking straight at #/dmz/share/<token>: the landing page is the
+   * page these two designs specify, it works for recipients with and without an
+   * account, and it carries the Login / Join Workspace conversion CTAs.
+   *
+   * `name` rides along so the header shows the real workspace name instead of its
+   * generic localized fallback.
+   *
+   * `token` is the hub's anonymous share token, and it is sent ONLY for an external
+   * workspace — the external layout browses the real shared folder (show_node_by)
+   * and reads the conversation, and the token is what authorises that for a visitor
+   * with no session (dmz.login consumes it; the granted privilege stays server-side
+   * in _publicSharePermission — VIEW for internal, DOWNLOAD for external).
+   *
+   * An internal workspace gets NO token: its layout is the redacted gate, so there
+   * is nothing for a guest to fetch and no reason to hand out access.
    *
    * @param {string} hubname workspace display name
+   * @param {boolean} [external] true for a shared workspace, false/omitted for internal
+   * @param {string} [token] anonymous share token, external only
    * @returns {string} absolute URL
    */
-  _guestLandingLink(hubname) {
-    const base = this.input.homepath(this.hub.get(Attr.hostname));
-    const q = `view=guest&name=${encodeURIComponent(hubname || "")}`;
-    return `${base}#/welcome/signin?${q}`;
+  _guestLandingLink(hubname, external, token) {
+    const q = [
+      "view=guest",
+      `scope=${external ? "external" : "internal"}`,
+      `name=${encodeURIComponent(hubname || "")}`,
+    ];
+    if (external && token) q.push(`token=${encodeURIComponent(token)}`);
+    return `${this._endpointBase()}/#/welcome/signin?${q.join("&")}`;
+  }
+
+  /**
+   * Canonical app base for links mailed to people who are NOT yet in a workspace:
+   * `https://<main_domain><endpoint_path>`, the same shape analytics-server's
+   * _endpointBase() uses for the reward campaign's desk link.
+   *
+   * Deliberately NOT input.homepath(hub.hostname), which the share links use. That
+   * builds a per-hub host from the request's own path, which is right for opening a
+   * specific workspace but wrong for a generic app route: the guest landing page is
+   * served by the app at its endpoint, not per workspace. `endpoint_path` already
+   * carries the endpoint name on a non-main install (sysEnv joins it onto
+   * app_routing_mark), so this stays correct on multi-endpoint deployments.
+   *
+   * @returns {string} e.g. "https://drumee.com/-"
+   */
+  _endpointBase() {
+    const { main_domain, endpoint_path } = sysEnv();
+    return `https://${main_domain}${endpoint_path || "/-"}`;
   }
 
   /**
@@ -369,8 +405,15 @@ class __private_hub extends Hub {
    * On an existing room the area-based permission is re-applied via
    * dmz_update_permission_next so the share token is preserved (not regenerated)
    * for previously-sent links.
+   *
+   * Returns the raw TOKEN, not a URL: the invite email's CTA is the guest landing
+   * page (_guestLandingLink), which needs the token as a query param rather than a
+   * #/dmz/share/<token> path. Called on every invite for its side effects too — it
+   * creates the external room on first use and re-applies the guest permission.
+   *
+   * @returns {string} the share token, or "" when the room has none
    */
-  async _ensurePublicShareLink() {
+  async _ensurePublicShareToken() {
     const nid = this.home_id;
     const hub_id = this.hub.get(Attr.id);
     let rows = await this.db.await_proc("dmz_settings") || [];
@@ -382,7 +425,7 @@ class __private_hub extends Hub {
     } else {
       await this.yp.await_proc("dmz_update_permission_next", hub_id, nid, this._publicSharePermission());
     }
-    return this._getShareLink(res && res.link);
+    return (res && res.link) || "";
   }
 
   /**
@@ -1092,18 +1135,16 @@ class __private_hub extends Hub {
     // Latest 2 non-meeting messages for the "Recent Activity" preview; shown
     // (clear) for external workspaces, kept redacted for internal ones.
     const recent_messages = await this._recentMessages();
-    // Anonymous public share link for the hub. Still resolved unconditionally —
-    // it creates the external room on first use and re-applies the area-based guest
-    // permission, both of which must happen whatever the email links to. Computed
-    // once (one shared token per hub).
-    const publicLink = await this._ensurePublicShareLink();
-    // Where the email's CTA goes, per workspace scope:
-    //   external -> the share view itself (Figma 1602:77081, ui-team dmz_sharebox)
-    //   internal -> the guest landing gate (Figma 1602:76946, signin_guest)
-    // Both open with no login; neither exposes content the scope doesn't allow.
-    const ctaLink = workspace_external
-      ? publicLink
-      : this._guestLandingLink(hubname);
+    // Anonymous share token for the hub. Resolved unconditionally — it creates the
+    // external room on first use and re-applies the area-based guest permission,
+    // both of which must happen whatever the email links to. Computed once (one
+    // shared token per hub).
+    const shareToken = await this._ensurePublicShareToken();
+    // Both CTA halves open the guest landing page; `scope` selects its layout —
+    // external => Figma 1602:77081 (shared contents), internal => 1602:76946
+    // (redacted behind the Content Restricted gate). The token travels only on the
+    // external link, which is the one whose page reads real content.
+    const ctaLink = this._guestLandingLink(hubname, workspace_external, shareToken);
     // Address-book context resolved once for the whole call (see
     // _rememberInvitee). Null when the inviter has no drumate DB — the invite
     // still goes through, it just isn't remembered.
