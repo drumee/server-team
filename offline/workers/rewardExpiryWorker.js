@@ -297,7 +297,7 @@ async function startWorker() {
   await initialize();
 
   const job = new CronJob(SCHEDULE, runJob, null, true, 'UTC');
-  console.log(`[RewardExpiry] Next run:`, job.nextDate().toISOString());
+  console.log(`[RewardExpiry] Next run:`, job.nextDate().toISO());
 
   process.on('SIGUSR2', async () => {
     console.log(`[RewardExpiry] SIGUSR2 received - manual run`);
@@ -306,7 +306,7 @@ async function startWorker() {
   console.log(`[RewardExpiry] Send SIGUSR2 to trigger a manual run: kill -USR2`, process.pid);
 
   setInterval(() => {
-    console.log(`[RewardExpiry] Heartbeat - next run:`, job.nextDate().toISOString());
+    console.log(`[RewardExpiry] Heartbeat - next run:`, job.nextDate().toISO());
   }, 3600000);
 }
 

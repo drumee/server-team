@@ -278,7 +278,7 @@ async function startWorker() {
   );
 
   console.log('[ExpiryWorker] Cron job created');
-  console.log('[ExpiryWorker] Next run:', job.nextDate().toISOString());
+  console.log('[ExpiryWorker] Next run:', job.nextDate().toISO());
 
   // Allow manual trigger via SIGUSR2
   process.on('SIGUSR2', async () => {
@@ -291,7 +291,7 @@ async function startWorker() {
 
   // Keep process alive
   setInterval(() => {
-    console.log('[ExpiryWorker] Heartbeat - next run:', job.nextDate().toISOString());
+    console.log('[ExpiryWorker] Heartbeat - next run:', job.nextDate().toISO());
   }, 3600000); // Every hour
 }
 
