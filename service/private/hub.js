@@ -353,13 +353,23 @@ class __private_hub extends Hub {
    * @param {string} [token] anonymous share token, external only
    * @returns {string} absolute URL
    */
-  _guestLandingLink(hubname, external, token) {
+  _guestLandingLink(hubname, external, token, hub_id) {
     const q = [
       "view=guest",
       `scope=${external ? "external" : "internal"}`,
       `name=${encodeURIComponent(hubname || "")}`,
     ];
     if (external && token) q.push(`token=${encodeURIComponent(token)}`);
+    // Which workspace this invite is for. Carried on BOTH scopes so the landing
+    // page can remember it across sign-in and offer to open it afterwards.
+    //
+    // External could infer it from the token (dmz.list_by_token returns hub_id),
+    // internal has no token and could not — so the id travels on the link and
+    // both scopes work the same way.
+    //
+    // It grants nothing on its own: every service behind it still authorises the
+    // caller's session, and the recipient is being invited to this workspace.
+    if (hub_id) q.push(`hub=${encodeURIComponent(hub_id)}`);
     return `${this._endpointBase()}/#/welcome/signin?${q.join("&")}`;
   }
 
@@ -1144,7 +1154,9 @@ class __private_hub extends Hub {
     // external => Figma 1602:77081 (shared contents), internal => 1602:76946
     // (redacted behind the Content Restricted gate). The token travels only on the
     // external link, which is the one whose page reads real content.
-    const ctaLink = this._guestLandingLink(hubname, workspace_external, shareToken);
+    const ctaLink = this._guestLandingLink(
+      hubname, workspace_external, shareToken, this.hub.get(Attr.id)
+    );
     // Address-book context resolved once for the whole call (see
     // _rememberInvitee). Null when the inviter has no drumate DB — the invite
     // still goes through, it just isn't remembered.
