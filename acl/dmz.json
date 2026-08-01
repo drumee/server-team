@@ -289,6 +289,42 @@
           "doc": "Per-item: the file's ALREADY-RENDERED preview inlined as a data URI (vignette, or thumb for pdf/office, or the source for a vector). Inline rather than a URL because media.<format> authorises against the caller's session, which an anonymous main-domain visitor cannot satisfy; sending the bytes through this token-gated call opens no second anonymous route. Never generated on demand, so an anonymous caller cannot spend server CPU. Capped at 192KB per file and 768KB per response; absent when the file has no rendered preview, is over budget, or the share does not grant read."
         }
       }
+    },
+    "chat_by_token": {
+      "doc": "Read-only workspace chat for a share, authorised by the TOKEN alone. Companion to list_by_token and exists for the same reason: channel.messages is scope hub / src read, so its ACL resolves an acl_check grant against the caller's session, which an anonymous main-domain visitor cannot hold. Never touches the caller's session. Messages are filtered to the SHARED node via metadata._scope_nid, because a hub's channel table holds every folder's conversation and an unfiltered read would leak the chat of folders that were never shared. Legacy rows with no _scope_nid are DROPPED here, unlike in-app where they fall back to appearing everywhere. Refuses any share that is not plainly open. Author email and the delivery/seen maps are never echoed.",
+      "scope": "hub",
+      "permission": {
+        "src": "anonymous",
+        "fast_check": "public-api"
+      },
+      "params": {
+        "token": {
+          "type": "string",
+          "required": true,
+          "doc": "Secure-share token; the sole authority for what may be read"
+        },
+        "page": {
+          "type": "number",
+          "required": false,
+          "default": 1,
+          "min": 1,
+          "doc": "Page number"
+        }
+      },
+      "returns": {
+        "status": {
+          "type": "string",
+          "doc": "TICKET_OK, or TICKET_INVALID / TICKET_REVOKED / TICKET_EXPIRED / TICKET_LOCKED / REQUIRED_PASSWORD / REQUIRED_EMAIL when refused"
+        },
+        "nid": {
+          "type": "string",
+          "doc": "Node the conversation is scoped to"
+        },
+        "messages": {
+          "type": "array",
+          "doc": "message_id, author_id, author (display name only), message, ctime, is_reply"
+        }
+      }
     }
   },
   "modules": {

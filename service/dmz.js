@@ -1330,14 +1330,23 @@ class __dmz extends Mfs {
    * Input:  token {String} required, page {Number} optional
    * Output: { status, title, nid, hub_id, items[] }
    */
-  async list_by_token() {
-    const token = this.input.need(Attr.token);
-    const page = parseInt(this.input.use(Attr.page, 1), 10) || 1;
-    const deny = (status) => this.output.data({ status, items: [] });
-
-    // Two kinds of share token exist and the caller cannot be expected to know
-    // which it holds, so resolve exactly as dmz.login does: secure share first,
-    // legacy dmz token second. Both are normalised to one shape.
+  /**
+   * Resolve a share from its token alone, refusing anything not plainly open.
+   *
+   * Shared by every *_by_token endpoint so they can never drift apart on what
+   * counts as an acceptable share — a gate relaxed in one place but not the
+   * other is exactly the bug this prevents.
+   *
+   * Two kinds of token exist and the caller cannot be expected to know which it
+   * holds, so it resolves as dmz.login does: secure share first, legacy dmz
+   * token second, both normalised to one shape.
+   *
+   * @param {string} token
+   * @param {string} tag caller name, for log lines
+   * @returns {Promise<{info: object, viewerUid: ?string, legacyPrivilege: ?number}
+   *                  |{status: string}>} `status` set means REFUSED, no data.
+   */
+  async _shareByToken(token, tag) {
     let info = null;
     let viewerUid = null;
     let legacyPrivilege = null;
@@ -1345,7 +1354,7 @@ class __dmz extends Mfs {
       const secure = toArray(await this.yp.await_proc('secure_share_info', token))[0];
       if (secure && !secure.failed && secure.creator_id) info = secure;
     } catch (e) {
-      this.warn('[dmz.list_by_token] secure_share_info failed:', e && e.message);
+      this.warn(`[${tag}] secure_share_info failed:`, e && e.message);
     }
     if (!info) {
       try {
@@ -1358,19 +1367,30 @@ class __dmz extends Mfs {
           legacyPrivilege = legacy.privilege == null ? null : Number(legacy.privilege);
         }
       } catch (e) {
-        this.warn('[dmz.list_by_token] dmz_info_next failed:', e && e.message);
+        this.warn(`[${tag}] dmz_info_next failed:`, e && e.message);
       }
     }
     if (!info || !info.hub_id || !(info.node_id || info.nid)) {
-      return deny('TICKET_INVALID');
+      return { status: 'TICKET_INVALID' };
     }
     if (info.validity && info.validity !== 'TICKET_OK') {
-      return deny(info.validity);
+      return { status: info.validity };
     }
-    // Gated shares are the gate's business, not this endpoint's.
-    if (info.is_locked) return deny('TICKET_LOCKED');
-    if (info.require_password) return deny('REQUIRED_PASSWORD');
-    if (info.require_email) return deny('REQUIRED_EMAIL');
+    // Gated shares are the gate's business, not these endpoints'.
+    if (info.is_locked) return { status: 'TICKET_LOCKED' };
+    if (info.require_password) return { status: 'REQUIRED_PASSWORD' };
+    if (info.require_email) return { status: 'REQUIRED_EMAIL' };
+    return { info, viewerUid, legacyPrivilege };
+  }
+
+  async list_by_token() {
+    const token = this.input.need(Attr.token);
+    const page = parseInt(this.input.use(Attr.page, 1), 10) || 1;
+    const deny = (status) => this.output.data({ status, items: [] });
+
+    const share = await this._shareByToken(token, 'dmz.list_by_token');
+    if (share.status) return deny(share.status);
+    const { info, viewerUid, legacyPrivilege } = share;
 
     // Listing target from the token. A real file → list its parent, filtered to
     // the file itself; a folder / hub / root → list it directly.
@@ -1457,6 +1477,120 @@ class __dmz extends Mfs {
       hub_id: info.hub_id,
       items,
     });
+  }
+
+  /**
+   * Read-only workspace chat for a share, authorised BY THE TOKEN ALONE.
+   *
+   * The companion to list_by_token, and it exists for the same reason:
+   * channel.messages is scope hub / src read, so its ACL resolves an acl_check
+   * grant against the caller's session, which a main-domain anonymous visitor
+   * cannot hold. This answers from the token and never touches the session.
+   *
+   * Scoped the same way the folder window scopes its team chat: messages carry
+   * a metadata._scope_nid, and only those matching the SHARED node are
+   * returned. That matters — a hub's channel table holds every folder's
+   * conversation, so without the filter a share of one folder would leak the
+   * chat of all the others.
+   *
+   * Legacy rows (written before _scope_nid existed) appear in every folder
+   * context in the app. Here they are DROPPED instead: in-app that fallback
+   * shows an old message to someone who already has hub access, whereas here it
+   * would hand an unscoped message to an anonymous visitor.
+   *
+   * The reply carries what it takes to render a bubble — author display name,
+   * text, time — and deliberately not the author's email or the delivery and
+   * seen maps in metadata.
+   *
+   * Input:  token {String} required, page {Number} optional
+   * Output: { status, nid, messages[] }
+   */
+  async chat_by_token() {
+    const token = this.input.need(Attr.token);
+    const page = parseInt(this.input.use(Attr.page, 1), 10) || 1;
+    const deny = (status) => this.output.data({ status, messages: [] });
+
+    const share = await this._shareByToken(token, 'dmz.chat_by_token');
+    if (share.status) return deny(share.status);
+    const { info, viewerUid } = share;
+
+    // Chat belongs to the shared container. A file share shows the chat of the
+    // folder it sits in, which is the same conversation the app shows there.
+    let nid = info.node_id || info.nid;
+    try {
+      const attr = toArray(
+        await this.yp.await_proc('forward_proc', info.hub_id, 'mfs_node_attr', `'${nid}'`)
+      )[0] || {};
+      if (attr.filetype && !['folder', 'hub', 'root'].includes(attr.filetype) && attr.pid) {
+        nid = attr.pid;
+      }
+    } catch (e) {
+      // Probe failed → treat the shared node as the container.
+    }
+
+    const guest_id = viewerUid || Cache.getSysConf('guest_id');
+    let rows;
+    try {
+      rows = toArray(await this.yp.await_proc(
+        'forward_proc', info.hub_id, 'channel_list_messages',
+        `'${guest_id}', 'date', 'asc', ${page}`
+      ));
+    } catch (e) {
+      this.warn('[dmz.chat_by_token] channel_list_messages failed:', e && e.message);
+      return deny('TICKET_INVALID');
+    }
+
+    // Scope filter — see above on why an absent _scope_nid is dropped here.
+    rows = rows.filter((r) => {
+      if (!r || r.status !== 'active') return false;
+      let meta = r.metadata;
+      try {
+        if (typeof meta === 'string') meta = JSON.parse(meta);
+      } catch (e) {
+        return false;
+      }
+      return meta && `${meta._scope_nid}` === `${nid}`;
+    });
+
+    // One contact lookup per distinct author, not per message.
+    //
+    // channel.messages forwards this proc to the VIEWER's own db, resolving the
+    // author out of the viewer's contacts. A guest has no db, so it runs in the
+    // AUTHOR's db instead — every drumate has the proc, and asked about itself
+    // it returns that person's own profile.
+    const authors = {};
+    for (const r of rows) {
+      const id = r.author_id;
+      if (!id || authors[id] !== undefined) continue;
+      authors[id] = '';
+      try {
+        const row = toArray(await this.yp.await_proc(
+          'forward_proc', id, 'shareroom_contact_get', `'${id}'`
+        ))[0] || {};
+        // Names only. The proc's `surname` column carries the account's EMAIL
+        // when no name is set, and in-app that is what the bubble ends up
+        // showing — acceptable between hub members, not to an anonymous
+        // visitor. An author with no name stays anonymous here instead.
+        authors[id] = [row.firstname, row.lastname].filter(Boolean).join(' ').trim();
+      } catch (e) {
+        this.debug('[dmz.chat_by_token] contact lookup failed for', id, e && e.message);
+      }
+    }
+
+    // channel_list_messages answers newest-first whatever order is asked for,
+    // and a conversation reads oldest-first.
+    rows.sort((a, b) => Number(a.ctime || 0) - Number(b.ctime || 0));
+
+    const messages = rows.map((r) => ({
+      message_id: r.message_id,
+      author_id: r.author_id,
+      author: authors[r.author_id] || '',
+      message: r.message,
+      ctime: r.ctime,
+      is_reply: r.thread_id ? 1 : 0,
+    }));
+
+    this.output.data({ status: 'TICKET_OK', nid, messages });
   }
 
 }
