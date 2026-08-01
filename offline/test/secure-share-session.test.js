@@ -332,6 +332,58 @@ const invariants = [
     // than the apex) — the property that makes it un-usable as the apex auth session.
     assert.ok(/host\s*=\s*this\.input\.host\(\)/.test(page), 'host-scoping of the isolated cookie missing');
   }],
+
+  ['set_notify_on_open is creator-scoped and never takes an owner id from the client', async () => {
+    const ss = src('service/private/secure_share.js');
+    const idx = ss.indexOf('async set_notify_on_open()');
+    assert.ok(idx > 0, 'set_notify_on_open method not found');
+    const body = ss.slice(idx, idx + 1200);
+    // The ONLY thing standing between this setter and "edit anyone's link" is that
+    // the creator scope comes from the session (this.uid), never from the request.
+    assert.ok(
+      /await_proc\(\s*'secure_share_set_notify_on_open'\s*,\s*token\s*,\s*this\.uid\s*,/.test(body),
+      'creator scope must be this.uid, passed as the 2nd arg of the SP'
+    );
+    assert.ok(
+      !/creator_id/.test(body),
+      'must never read a creator/owner id from the request'
+    );
+    // An unknown token and someone else's token must be indistinguishable, else the
+    // endpoint becomes a probe for other people's tokens.
+    assert.ok(
+      /isEmpty\(row\)\)\s*\{?\s*\n?\s*return this\.output\.data\(\{\s*status:\s*'NOT_FOUND'/.test(body),
+      'empty SP result must answer NOT_FOUND'
+    );
+    // Explicit setter: only a recognised truthy form may turn notifications ON.
+    assert.ok(
+      /raw === 1 \|\| raw === '1' \|\| raw === true\) \? 1 : 0/.test(body),
+      'notify_on_open must be coerced strictly from an explicit value'
+    );
+    // Echo the STORED value so the panel can revert a toggle that did not persist.
+    assert.ok(
+      /notify_on_open:\s*Number\(row\.notify_on_open\)/.test(body),
+      'response must echo the stored value, not the requested one'
+    );
+  }],
+
+  ['the two open-notification paths still honour notify_on_open', async () => {
+    // The whole point of the setter is that these gates exist. If either one is
+    // removed, turning the toggle off goes silently back to notifying the sender.
+    const dmz = src('service/dmz.js');
+    assert.ok(
+      /info\.notify_on_open\s*!=\s*0/.test(dmz),
+      'dmz.js must still gate the real-time secure_share_opened push on notify_on_open'
+    );
+    const gateIdx = dmz.search(/info\.notify_on_open\s*!=\s*0/);
+    const pushIdx = dmz.indexOf("event           : 'secure_share_opened'");
+    assert.ok(pushIdx > 0, 'secure_share_opened push not found');
+    assert.ok(gateIdx > 0 && gateIdx < pushIdx, 'the gate must precede the push');
+    // The access log / access-event write must NOT be inside that gate: turning
+    // notifications off still records the open in the access list.
+    const logIdx = dmz.indexOf("'secure_share_log_access_event'");
+    assert.ok(logIdx > 0, 'access-event log not found');
+    assert.ok(logIdx < gateIdx, 'the access list must be recorded BEFORE/outside the notify gate');
+  }],
 ];
 
 // Behavioural tests only when their (private) dep loaded; canaries always.

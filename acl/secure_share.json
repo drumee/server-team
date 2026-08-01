@@ -169,6 +169,26 @@
         }
       }
     },
+    "set_notify_on_open": {
+      "doc": "Turn the sender's open-notification preference on or off for one of their own links, after the link has been created. notify_on_open was create-time only, so the panel's toggle could not persist. Scoped server-side to the caller's own shares; answers NOT_FOUND identically for an unknown token and someone else's token.",
+      "scope": "hub",
+      "permission": {
+        "src": "write"
+      },
+      "log": true,
+      "params": {
+        "token": {
+          "type": "string",
+          "required": true,
+          "doc": "Secure share token whose notification preference to change"
+        },
+        "notify_on_open": {
+          "type": "integer",
+          "required": true,
+          "doc": "1 to notify the sender each time a recipient opens the share, 0 to stop notifying. The access list keeps recording opens either way."
+        }
+      }
+    },
     "revoke": {
       "doc": "Revoke a secure share token (soft delete — sets revoked_at timestamp). Broadcasts a secure_share_revoked event via Redis to all hub socket connections so the recipient loses access instantly.",
       "scope": "hub",

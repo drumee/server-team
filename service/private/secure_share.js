@@ -228,6 +228,43 @@ class __secure_share extends Mfs {
   }
 
   /**
+   * Turn the sender's "notify me when someone opens this" preference on or off
+   * for one of their OWN links, after the link has been created.
+   *
+   * notify_on_open was writable only at create time, but the panel's toggle sits
+   * below the Get-link button, so turning it off once the link existed persisted
+   * nothing and the sender kept receiving open notifications with the toggle
+   * visibly off. Both notification paths already honour the stored flag (the
+   * real-time secure_share_opened push in dmz.js, and the share_open feed row
+   * via secure_share_open_feed), so persisting it is all that was missing.
+   *
+   * The SP is scoped to creator_id, so a user can only ever change their own
+   * link, and returns nothing when the token is not theirs — which is also why
+   * "no such token" and "not yours" are answered identically here.
+   * Endpoint: POST /secure_share.set_notify_on_open
+   */
+  async set_notify_on_open() {
+    const token = this.input.need(Attr.token);
+    const raw   = this.input.need('notify_on_open');
+    // Explicit setter, so read the caller's intent strictly rather than reusing
+    // create()'s "absent means ON" default: only a recognised truthy form turns
+    // notifications on. The value is required above, so this never has to guess
+    // for a missing field. The SP's own IF(... = 0, 0, 1) is the last-resort net.
+    const notify_on_open = (raw === 1 || raw === '1' || raw === true) ? 1 : 0;
+
+    const row = toArray(
+      await this.yp.await_proc('secure_share_set_notify_on_open', token, this.uid, notify_on_open)
+    )[0] || {};
+
+    if (isEmpty(row)) {
+      return this.output.data({ status: 'NOT_FOUND' });
+    }
+    // Echo what was actually STORED, not what was asked for, so the panel can
+    // revert its toggle if the two ever disagree.
+    this.output.data({ status: 'OK', notify_on_open: Number(row.notify_on_open) ? 1 : 0 });
+  }
+
+  /**
    * Revoke a secure share token (soft delete).
    * Broadcasts a real-time event so the recipient loses access immediately.
    */
