@@ -1567,11 +1567,12 @@ class __dmz extends Mfs {
         const row = toArray(await this.yp.await_proc(
           'forward_proc', id, 'shareroom_contact_get', `'${id}'`
         ))[0] || {};
-        // Names only. The proc's `surname` column carries the account's EMAIL
-        // when no name is set, and in-app that is what the bubble ends up
-        // showing — acceptable between hub members, not to an anonymous
-        // visitor. An author with no name stays anonymous here instead.
-        authors[id] = [row.firstname, row.lastname].filter(Boolean).join(' ').trim();
+        // A real name when the account has one. Otherwise the LOCAL PART of
+        // the address the proc returns in `surname` — enough to tell two
+        // participants apart, which a conversation needs, without handing an
+        // anonymous visitor a working address. The domain is never sent.
+        const name = [row.firstname, row.lastname].filter(Boolean).join(' ').trim();
+        authors[id] = name || String(row.surname || '').split('@')[0].trim();
       } catch (e) {
         this.debug('[dmz.chat_by_token] contact lookup failed for', id, e && e.message);
       }
