@@ -18,7 +18,10 @@
         "status": {
           "type": "string",
           "doc": "Present only when an error condition is detected. WRONG_TICKET when the token does not exist; REQUIRED_PASSWORD when the share requires password authentication.",
-          "enum": ["WRONG_TICKET", "REQUIRED_PASSWORD"]
+          "enum": [
+            "WRONG_TICKET",
+            "REQUIRED_PASSWORD"
+          ]
         },
         "guest_id": {
           "type": "string",
@@ -68,7 +71,12 @@
         "status": {
           "type": "string",
           "doc": "Authentication status. TICKET_INVALID when the token does not exist; REQUIRED_PASSWORD when a password is needed; WRONG_PASSWORD when the submitted password is incorrect; TICKET_OK on success.",
-          "enum": ["TICKET_INVALID", "REQUIRED_PASSWORD", "WRONG_PASSWORD", "TICKET_OK"]
+          "enum": [
+            "TICKET_INVALID",
+            "REQUIRED_PASSWORD",
+            "WRONG_PASSWORD",
+            "TICKET_OK"
+          ]
         },
         "uid": {
           "type": "string",
@@ -153,14 +161,36 @@
         "fast_check": "public-api"
       },
       "params": {
-        "token":           { "type": "string", "required": true,  "doc": "Secure share token" },
-        "email":           { "type": "string", "required": true,  "doc": "Requester email address" },
-        "requested_level": { "type": "string", "required": true,  "doc": "can_download, can_chat, or can_edit" },
-        "message":         { "type": "string", "required": false, "doc": "Optional message to the share owner" }
+        "token": {
+          "type": "string",
+          "required": true,
+          "doc": "Secure share token"
+        },
+        "email": {
+          "type": "string",
+          "required": true,
+          "doc": "Requester email address"
+        },
+        "requested_level": {
+          "type": "string",
+          "required": true,
+          "doc": "can_download, can_chat, or can_edit"
+        },
+        "message": {
+          "type": "string",
+          "required": false,
+          "doc": "Optional message to the share owner"
+        }
       },
       "returns": {
-        "status":     { "type": "string", "doc": "REQUEST_SENT, INVALID_TOKEN, or INVALID_LEVEL" },
-        "request_id": { "type": "string", "doc": "ID of the created or existing pending request" }
+        "status": {
+          "type": "string",
+          "doc": "REQUEST_SENT, INVALID_TOKEN, or INVALID_LEVEL"
+        },
+        "request_id": {
+          "type": "string",
+          "doc": "ID of the created or existing pending request"
+        }
       }
     },
     "signup": {
@@ -190,7 +220,12 @@
         "status": {
           "type": "string",
           "doc": "Error status. Present only when signup cannot proceed.",
-          "enum": ["WRONG_TICKET", "REQUIRED_PASSWORD", "EMAIL_EXIST", "FACTORY_FAILED"]
+          "enum": [
+            "WRONG_TICKET",
+            "REQUIRED_PASSWORD",
+            "EMAIL_EXIST",
+            "FACTORY_FAILED"
+          ]
         }
       },
       "errors": [
@@ -200,6 +235,50 @@
           "http_status": 400
         }
       ]
+    },
+    "list_by_token": {
+      "doc": "Read-only listing of a secure share's contents, authorised by the TOKEN alone. Exists because dmz.login refuses to bind a share identity onto a main-domain session (regsid guard), so a page served from the main domain can never obtain the grant media.show_node_by needs. This never touches the caller's session: no cookie_touch, no grant, no identity change. The listing target is derived from the token, never from client input. Refuses any share that is not plainly open — revoked, expired, invalid, locked, password-gated or email-gated all return a status and no items, because this endpoint performs no gate. A file share lists its parent folder hard-filtered to that file. Privileges are the anonymous guest's, clamped to the share's capabilities; sender-only fields are never echoed.",
+      "scope": "hub",
+      "permission": {
+        "src": "anonymous",
+        "fast_check": "public-api"
+      },
+      "params": {
+        "token": {
+          "type": "string",
+          "required": true,
+          "doc": "Secure-share token; the sole authority for what may be listed"
+        },
+        "page": {
+          "type": "number",
+          "required": false,
+          "default": 1,
+          "min": 1,
+          "doc": "Page number"
+        }
+      },
+      "returns": {
+        "status": {
+          "type": "string",
+          "doc": "TICKET_OK, or TICKET_INVALID / TICKET_REVOKED / TICKET_EXPIRED / TICKET_LOCKED / REQUIRED_PASSWORD / REQUIRED_EMAIL when refused"
+        },
+        "title": {
+          "type": "string",
+          "doc": "Shared workspace name"
+        },
+        "nid": {
+          "type": "string",
+          "doc": "Folder that was listed"
+        },
+        "hub_id": {
+          "type": "string",
+          "doc": "Share's content hub"
+        },
+        "items": {
+          "type": "array",
+          "doc": "nid, filename, ext, ftype, filetype, mimetype, filesize, ctime, mtime, privilege"
+        }
+      }
     }
   },
   "modules": {

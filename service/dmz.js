@@ -21,6 +21,7 @@ const {
   ID_NOBODY
 } = Constants;
 const { verifyPassword: verifySecureSharePassword } = require('./lib/secure-share-password');
+const { secureShareCapPrivilege } = require('./lib/secure-share-write-guard');
 const Jwt = require('jsonwebtoken');
 const { resolve: _resolvePath } = require('path');
 // Shared `drumee` secret, loaded ONCE at module load, used to sign a short-lived
@@ -1187,6 +1188,146 @@ class __dmz extends Mfs {
    */
   notification_list() {
     this.output.data([]);
+  }
+
+  /**
+   * Read-only listing of a share's contents, authorised BY THE TOKEN ALONE.
+   *
+   * Why this exists: dmz.login refuses to bind a share identity onto a
+   * main-domain session (see the regsid guard in login/_loginSecureShare — it
+   * would hijack or clamp the caller's auth session). So a page served from the
+   * main domain, such as the signin plugin's guest landing page, can never
+   * obtain the grant that media.show_node_by requires, and every listing there
+   * comes back 403. This answers from the token instead and NEVER touches the
+   * caller's session: no cookie_touch, no grant, no identity change.
+   *
+   * It is deliberately narrow — it lists, and nothing else:
+   *
+   *   - the target is derived from the token, never from client input. A client
+   *     cannot name a nid, so it cannot walk out of the share.
+   *   - a share that is not plainly open is refused: revoked, expired, invalid,
+   *     locked, password-gated or email-gated all return a status and NO items.
+   *     This endpoint performs no gate, so it must not serve gated content.
+   *   - a FILE share lists the parent folder hard-filtered to that one file, so
+   *     siblings are never exposed (same remap as _loginSecureShare).
+   *   - displayed privilege is the anonymous guest's, then clamped again by the
+   *     share's own capability set.
+   *   - the reply carries only what a viewer needs. secure_share_info also
+   *     returns sender-only data (password_hash, allowed_emails, denied_emails,
+   *     recipient_email, creator ids); none of it is echoed.
+   *
+   * Input:  token {String} required, page {Number} optional
+   * Output: { status, title, nid, hub_id, items[] }
+   */
+  async list_by_token() {
+    const token = this.input.need(Attr.token);
+    const page = parseInt(this.input.use(Attr.page, 1), 10) || 1;
+    const deny = (status) => this.output.data({ status, items: [] });
+
+    // Two kinds of share token exist and the caller cannot be expected to know
+    // which it holds, so resolve exactly as dmz.login does: secure share first,
+    // legacy dmz token second. Both are normalised to one shape.
+    let info = null;
+    let viewerUid = null;
+    let legacyPrivilege = null;
+    try {
+      const secure = toArray(await this.yp.await_proc('secure_share_info', token))[0];
+      if (secure && !secure.failed && secure.creator_id) info = secure;
+    } catch (e) {
+      this.warn('[dmz.list_by_token] secure_share_info failed:', e && e.message);
+    }
+    if (!info) {
+      try {
+        const legacy = await this.yp.await_proc('dmz_info_next', token);
+        if (legacy && !legacy.failed && legacy.hub_id) {
+          info = legacy;
+          // A legacy share owns a guest user; view as that identity and cap by
+          // the privilege the share itself grants.
+          viewerUid = legacy.uid || legacy.guest_id || null;
+          legacyPrivilege = legacy.privilege == null ? null : Number(legacy.privilege);
+        }
+      } catch (e) {
+        this.warn('[dmz.list_by_token] dmz_info_next failed:', e && e.message);
+      }
+    }
+    if (!info || !info.hub_id || !(info.node_id || info.nid)) {
+      return deny('TICKET_INVALID');
+    }
+    if (info.validity && info.validity !== 'TICKET_OK') {
+      return deny(info.validity);
+    }
+    // Gated shares are the gate's business, not this endpoint's.
+    if (info.is_locked) return deny('TICKET_LOCKED');
+    if (info.require_password) return deny('REQUIRED_PASSWORD');
+    if (info.require_email) return deny('REQUIRED_EMAIL');
+
+    // Listing target from the token. A real file → list its parent, filtered to
+    // the file itself; a folder / hub / root → list it directly.
+    let nid = info.node_id || info.nid;
+    let file_nid = null;
+    try {
+      const attr = toArray(
+        await this.yp.await_proc('forward_proc', info.hub_id, 'mfs_node_attr', `'${nid}'`)
+      )[0] || {};
+      if (attr.filetype && !['folder', 'hub', 'root'].includes(attr.filetype) && attr.pid) {
+        file_nid = nid;
+        nid = attr.pid;
+      }
+    } catch (e) {
+      // Probe failed → treat the shared node as a container.
+    }
+
+    // The anonymous guest is the viewing identity: mfs_show_node_by uses the uid
+    // for the per-row privilege/ownership columns, so this keeps the reply from
+    // ever describing the creator's own access.
+    const guest_id = viewerUid || Cache.getSysConf('guest_id');
+    const params = JSON.stringify({ sort_by: 'rank', order: 'asc', page, type: 'all' });
+    let rows;
+    try {
+      rows = toArray(await this.yp.await_proc(
+        'forward_proc', info.hub_id, 'mfs_show_node_by',
+        `'${nid}', '${guest_id}', '${params}'`
+      ));
+    } catch (e) {
+      this.warn('[dmz.list_by_token] listing failed:', e && e.message);
+      return deny('TICKET_INVALID');
+    }
+
+    if (file_nid) rows = rows.filter((r) => r && r.nid === file_nid);
+
+    // Clamp each row's displayed privilege to the share's caps, as
+    // media.show_node_by does. Anonymous caller → no recipient email.
+    let capPriv = legacyPrivilege;
+    if (capPriv == null) {
+      try {
+        capPriv = await secureShareCapPrivilege(this.yp, token, '');
+      } catch (e) {
+        capPriv = 0; // unknown caps → advertise none rather than the node's own
+      }
+    }
+
+    // Whitelist the columns that leave the server. Everything the viewer does
+    // not need — owner ids, db names, vhosts, metadata — stays here.
+    const items = rows.map((r) => ({
+      nid: r.nid,
+      filename: r.filename,
+      ext: r.ext,
+      ftype: r.ftype || r.filetype,
+      filetype: r.filetype || r.ftype,
+      mimetype: r.mimetype,
+      filesize: r.filesize,
+      ctime: r.ctime,
+      mtime: r.mtime,
+      privilege: capPriv == null ? r.privilege : (r.privilege || 0) & capPriv,
+    }));
+
+    this.output.data({
+      status: 'TICKET_OK',
+      title: info.title || '',
+      nid,
+      hub_id: info.hub_id,
+      items,
+    });
   }
 
 }
