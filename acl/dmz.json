@@ -255,6 +255,12 @@
           "default": 1,
           "min": 1,
           "doc": "Page number"
+        },
+        "with_posters": {
+          "type": "boolean",
+          "required": false,
+          "default": false,
+          "doc": "Ask for inlined preview images. Off by default because a single video poster outweighs the whole rest of the reply; callers fetch the listing first, paint it, then re-ask with this set and upgrade the tiles in place."
         }
       },
       "returns": {
@@ -276,7 +282,11 @@
         },
         "items": {
           "type": "array",
-          "doc": "nid, filename, ext, ftype, filetype, mimetype, filesize, ctime, mtime, privilege"
+          "doc": "nid, filename, ext, ftype, filetype, mimetype, filesize, ctime, mtime, privilege, and poster when one already exists"
+        },
+        "poster": {
+          "type": "string",
+          "doc": "Per-item: the file's ALREADY-RENDERED preview inlined as a data URI (vignette, or thumb for pdf/office, or the source for a vector). Inline rather than a URL because media.<format> authorises against the caller's session, which an anonymous main-domain visitor cannot satisfy; sending the bytes through this token-gated call opens no second anonymous route. Never generated on demand, so an anonymous caller cannot spend server CPU. Capped at 192KB per file and 768KB per response; absent when the file has no rendered preview, is over budget, or the share does not grant read."
         }
       }
     }
