@@ -331,8 +331,8 @@ class __private_hub extends Hub {
    * The frontend does the rest. welcome/index.js reads both params and arms them
    * (libs/hub-deep-link); once the recipient is authenticated — however they got
    * there, by sign-in, sign-up, or an already-live session — the desk offers to
-   * open the workspace ("Open Workspace" / "Cancel"), and confirming calls
-   * Wm.loadWorkspace({hub_id}).
+   * open the workspace ("Open Workspace" / "Cancel"), and confirming opens it
+   * through the app's own #/desk/wm/open/ deep link.
    *
    * `name` is display copy for that prompt, nothing more: it names the workspace in
    * the message instead of the generic fallback. It is never trusted as an

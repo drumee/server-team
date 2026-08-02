@@ -117,13 +117,19 @@ must inherit `_afterHomeSettled` → `_waitForHomePopups()`: the reward flow and
 LAUNCH30 popup are full-screen and self-gating, and an earlier version of this
 dialog appeared on top of them. The boot path cannot see either.
 
-**Open Workspace** calls `Wm.loadWorkspace({hub_id, filename})` — the headless
-workspace pane, exactly what clicking the workspace in the sidebar does, seeding
-`filename` so the title and root crumb are right from first paint. This replaces the
-`#/desk/wm/open/` hash the handler used to set, which launches a floating folder
-window instead of taking over the grid; for a first arrival from an invite, being put
-in the workspace beats being handed a popup of it. The guest-landing intent now gets
-that same behaviour, so one dialog has one outcome.
+**Open Workspace** sets `#/desk/wm/open/?hub_id=…&nid=0&filetype=folder&pid=0`, the
+same deep link the "<name> invited you to <workspace>" activity row uses. It launches
+a normal popup `window_folder` with the full window chrome.
+
+`Wm.loadWorkspace({hub_id})` — the headless workspace pane the sidebar opens — was
+tried here and reverted. A headless folder topbar deliberately drops the zoom and
+minimize controls (`folder/skeleton/topbar.js`: `headless ? "" : zoomMenu(ui)`,
+because a pane already fills the desk area), so the window opened from this dialog
+came up without its zoom control. Keeping the popup route also means this dialog and
+the activity row behave identically, which is the point of reusing the route rather
+than re-deriving it.
+
+`nid=0` is required, not decorative — see the note under Verification.
 
 **Cancel** is `_e.close` — the notice dismisses and the intent is already consumed,
 so it does not come back.
@@ -145,7 +151,9 @@ email CTA  →  #/welcome/signin?hub_id=42&name=Alpha
                                    v
                   "Open Workspace / Cancel"  -> consume()
                                    v
-                     Wm.loadWorkspace({hub_id, filename})
+              #/desk/wm/open/?hub_id=42&nid=0&filetype=folder&pid=0
+                                   v
+                     popup window_folder on the hub root
 ```
 
 Membership is granted exactly as before, and nothing about it moves:
@@ -167,9 +175,9 @@ and must keep working end to end, so none of this is removed:
   still arms and still gets its dialog.
 
 `_maybeOfferInvitedWorkspace` and the `guest-join-open-workspace` handler are shared
-rather than left alone: they now serve both intent sources, and the handler's outcome
-changes for the old flow too (headless pane instead of a folder popup). That is
-intentional — one dialog with two outcomes would be worse than a consistent one.
+rather than left alone: they now serve both intent sources. The handler's outcome is
+unchanged — still the `#/desk/wm/open/` popup — so an old guest-landing link behaves
+exactly as it did before.
 
 Retiring the rest is a separate decision, taken once no old link can plausibly
 still be clicked.
@@ -192,8 +200,8 @@ Note on `nid`: a caller that knows only a `hub_id` must reach `media.attributes`
 `nid: 0`, the server's own hub-root value. Leaving it unset is not equivalent —
 `fetchService` builds its GET query with `encodeURI(v)` per key, so an undefined nid
 is sent as the literal string `"undefined"`, which `mfs_access_node` resolves to zero
-rows. That is `Wm._rootNid`, and it is why the prompt's Open action can pass
-`{hub_id, filename}` with no nid at all.
+rows. That is what `Wm._rootNid` exists for, and why the prompt's Open deep link
+spells out `nid=0`.
 
 ## Risks
 
