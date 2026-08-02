@@ -366,23 +366,35 @@ const invariants = [
     );
   }],
 
-  ['the two open-notification paths still honour notify_on_open', async () => {
-    // The whole point of the setter is that these gates exist. If either one is
-    // removed, turning the toggle off goes silently back to notifying the sender.
+  ['secure_share_opened is a panel refresh, NOT a notification, so it is never gated', async () => {
+    // Corrected invariant. This push has exactly one consumer: the sender's own
+    // sharing panel, which refreshes its links list and access list on any
+    // 'share.track_event'. The activity panel narrows that same service down to
+    // 'secure_share_access_requested', so this event notifies nobody.
+    //
+    // Notification suppression belongs to the two feed procedures, which carry
+    // `AND t.notify_on_open != 0` (secure_share_open_feed and
+    // secure_share_list_open_notifications). Gating HERE as well meant turning
+    // the toggle off also killed the live refresh, so the access list only
+    // caught up on a reload -- the opposite of the requirement, which is no
+    // notification but an access list that keeps updating normally.
     const dmz = src('service/dmz.js');
-    assert.ok(
-      /info\.notify_on_open\s*!=\s*0/.test(dmz),
-      'dmz.js must still gate the real-time secure_share_opened push on notify_on_open'
-    );
-    const gateIdx = dmz.search(/info\.notify_on_open\s*!=\s*0/);
     const pushIdx = dmz.indexOf("event           : 'secure_share_opened'");
     assert.ok(pushIdx > 0, 'secure_share_opened push not found');
-    assert.ok(gateIdx > 0 && gateIdx < pushIdx, 'the gate must precede the push');
-    // The access log / access-event write must NOT be inside that gate: turning
-    // notifications off still records the open in the access list.
+
+    // Isolate the guard that wraps the push and assert notify_on_open is not in it.
+    const guardIdx = dmz.lastIndexOf('if (row.hub_id', pushIdx);
+    assert.ok(guardIdx > 0, 'the push guard was not found');
+    const guard = dmz.slice(guardIdx, pushIdx);
+    assert.ok(
+      !/notify_on_open/.test(guard),
+      'the secure_share_opened push must NOT be gated on notify_on_open -- that kills the live access-list refresh'
+    );
+
+    // The access-event write must still happen before the push, and outside any gate.
     const logIdx = dmz.indexOf("'secure_share_log_access_event'");
     assert.ok(logIdx > 0, 'access-event log not found');
-    assert.ok(logIdx < gateIdx, 'the access list must be recorded BEFORE/outside the notify gate');
+    assert.ok(logIdx < guardIdx, 'the access list must be recorded before the push guard');
   }],
 ];
 

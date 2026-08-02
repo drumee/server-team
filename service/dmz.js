@@ -488,10 +488,24 @@ class __dmz extends Mfs {
         this.warn('[dmz.login] secure_share access_event failed:', e && e.message);
       }
       const row   = toArray(track)[0] || {};
-      // The access counter always updates above; the SENDER notification only
-      // fires when the share has notify_on_open enabled (default 1; legacy rows
-      // without the field keep notifying). info comes from secure_share_info.
-      if (row.hub_id && info.notify_on_open != 0) {
+      // This push is NOT a notification and must never be gated on
+      // notify_on_open. Its only consumer is the sender's own sharing panel,
+      // which refreshes its links list and access list on any
+      // 'share.track_event' — the activity panel narrows the same service down
+      // to 'secure_share_access_requested', so 'secure_share_opened' notifies
+      // nobody.
+      //
+      // Notification suppression lives entirely in the two feed procedures,
+      // which both carry `AND t.notify_on_open != 0`
+      // (secure_share_open_feed and secure_share_list_open_notifications).
+      // Gating here as well meant turning the toggle off also killed the live
+      // refresh, so the access list only caught up on a reload or on reopening
+      // the folder — while the requirement is the opposite: no notification,
+      // but the access list keeps updating normally.
+      //
+      // It was invisible until now only because notify_on_open could not
+      // actually be set to 0 before the panel toggle was made to persist.
+      if (row.hub_id) {
         const recipients = await this.yp.await_proc('entity_sockets', { hub_id: row.hub_id });
         await RedisStore.sendData(
           this.payload(
