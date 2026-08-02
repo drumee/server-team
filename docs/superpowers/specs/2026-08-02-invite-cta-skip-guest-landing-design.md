@@ -134,6 +134,29 @@ than re-deriving it.
 **Cancel** is `_e.close` — the notice dismisses and the intent is already consumed,
 so it does not come back.
 
+#### The wait before it
+
+The prompt is late by design, so the desk says so. `_showInvitedWorkspaceLoader`
+raises a "Preparing your workspace…" notice (spinner + label, `mode: "hb"` so it has
+the drumee/✕ header and no footer) at the TOP of the chain, before the reward flow —
+the floor is ~2.4s (`SETTLE` 2000 + the 400ms settle) and unbounded while a
+full-screen flow is up.
+
+Raising it that early is only safe because of two things:
+
+- It hides itself whenever `_homePopupsBusy()` is true. That predicate is extracted
+  from `_waitForHomePopups`' local `busy()` so there is ONE definition, and the skin
+  hides `[data-guest-join-loading="1"][data-busy="1"]`. Hidden, not unmounted —
+  remounting on each toggle would flicker and lose its place in the windows pool.
+- `dismiss_after` is a hard backstop. Every path that ends the wait calls
+  `_hideInvitedWorkspaceLoader` (prompt raised, Wm never arrived, stale intent,
+  popups never cleared, chain failed), but a footerless loader has no button to
+  dismiss it, so it must not be able to outlive its reason to exist if a future path
+  forgets.
+
+It is a no-op unless a workspace is armed, which `_hasInvitedWorkspaceIntent` answers
+WITHOUT consuming — the prompt still needs that intent.
+
 ### 4. Resulting flow
 
 ```
@@ -147,7 +170,10 @@ email CTA  →  #/welcome/signin?hub_id=42&name=Alpha
     |            |  pending_invitation -> membership)   |
     +------------+-----------------+--------------------+
                                    v
-                    desk boot, Home settles, popups clear
+                    desk boot -> "Preparing your workspace…"
+                                 (hidden while reward / LAUNCH30 is up)
+                                   v
+                        Home settles, popups clear
                                    v
                   "Open Workspace / Cancel"  -> consume()
                                    v
@@ -190,6 +216,13 @@ Neither repo has a test runner (`package.json` scripts are dev/deploy only), so:
   workspace name containing `&` or `=` cannot forge query params) and the
   `hub-deep-link` age-guard / precedence / name-pairing rules — all pure, no DB,
   no DOM;
+- a harness that lifts the loader's four methods out of `desk/index.js` and runs the
+  shipped bodies against a fake desk and Wm: intent detection stays read-only, the
+  window is shaped right (`mode: "hb"`, no `actions`, `dismiss_after` set), and it
+  hides — without unmounting — for each of the busy signals;
+- the loader's two visual states rendered with a standalone `sass` compile of the
+  info skin and a headless chromium screenshot, checking both that the card looks
+  right and that `[data-busy="1"]` paints nothing at all;
 - a manual click-through on `local.drumee` for the anonymous and
   already-signed-in cases.
 
