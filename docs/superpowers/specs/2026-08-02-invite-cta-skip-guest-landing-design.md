@@ -24,28 +24,32 @@ and land on a bare desk with nothing opened, because the welcome router stashes
 
 ## Goal
 
-Clicking the email CTA takes the recipient to the sign-in form, and the invited
-workspace opens by itself once they are authenticated. No landing page, no prompt.
+Clicking the email CTA takes the recipient to the sign-in form. Once they are
+authenticated the desk offers the invited workspace — "Open Workspace" / "Cancel" —
+and confirming puts them in it. No landing page, and no click spent leaving one.
 
 ## Design
 
 ### 1. The CTA becomes a plain welcome link
 
 `_guestLandingLink(hubname, external, token, hub_id)` in `service/private/hub.js`
-is replaced by `_inviteCtaLink(hub_id)`, which returns:
+is replaced by `_inviteCtaLink(hub_id, hubname)`, which returns:
 
 ```
-https://<main_domain><endpoint_path>/#/welcome/signin?hub_id=<hub_id>
+https://<main_domain><endpoint_path>/#/welcome/signin?hub_id=<hub_id>&name=<workspace>
 ```
 
-`view=guest`, `scope`, `name` and `token` are all dropped:
+`view=guest`, `scope` and `token` are dropped:
 
 - `scope` only ever selected a landing-page layout.
-- `name` was the landing page's header. `Wm.loadWorkspace()` resolves the real
-  workspace name itself (`media.attributes` + `media.get_path`).
 - `token` authorised the landing page's `dmz.list_by_token` read. Nothing on the
   new path reads share content anonymously.
 - `hub` becomes `hub_id`, which is the name the welcome router already reads.
+- `name` stays, but for a different job: it was the landing page's header, and it is
+  now display copy for the prompt's message ("…you were invited to: Alpha"). It is
+  never an identity — `hub_id` alone selects the workspace and every service behind
+  it authorises the caller's session. Both values are percent-encoded, so a
+  workspace called `R&D = Q3` cannot forge extra query params.
 
 Two things deliberately stay in `invite()`:
 
@@ -69,11 +73,15 @@ while that tab is still open.)
 A new `src/drumee/libs/hub-deep-link.js` in ui-team, alongside the existing
 `libs/campaign.js`, owns the whole thing:
 
-- `arm(hub_id)` writes **both** `sessionStorage.drumee_hubDeepLink` (unchanged
-  shape, so any other reader keeps working) and
-  `localStorage.drumee_hubDeepLink = {hub_id, ts}`.
-- `consume()` reads session first, then the localStorage fallback, ignores an
-  intent older than 7 days, and clears both keys.
+- `arm(hub_id, name)` writes **both** `sessionStorage.drumee_hubDeepLink` — kept a
+  BARE hub_id string, its original shape, so a desk bundle from before this module
+  still reads it — and `localStorage.drumee_hubDeepLink = {hub_id, name, ts}`. The
+  name rides only on the localStorage copy, which has no older reader.
+- `peek()` returns `{hub_id, name}` or null. Session decides *whether* an intent
+  belongs to this tab; the localStorage copy supplies the name, and stands in
+  wholesale when the session key is gone. A localStorage copy for a *different*
+  hub never lends its name.
+- `consume()` is `peek()` + `clear()`, so a consumed intent cannot prompt twice.
 - `has()` answers the same question without consuming.
 - `clear()` drops both keys.
 
@@ -85,17 +93,45 @@ Call sites:
 
 | File | Change |
 |------|--------|
-| `modules/welcome/index.js` | `arm(args.hub_id)` in place of the bare `setItem` |
-| `modules/desk/wm/index.js` | `consume()` on the fallback path; the `#/desk/wm/hub?hub_id=` hash form keeps priority |
-| `modules/desk/index.js` | `_hasDeepLink()` uses `has()`, so desk-state restore does not race an armed intent |
+| `modules/welcome/index.js` | `arm(args.hub_id, decoded name)` in place of the bare `setItem` |
+| `modules/desk/wm/index.js` | boot path no longer opens an armed intent — only the explicit `#/desk/wm/hub?hub_id=` hash form still opens immediately |
+| `modules/desk/index.js` | `_maybeOfferInvitedWorkspace` consumes it; `_hasDeepLink()` uses `has()`, so desk-state restore does not race the prompt |
 
 The secure-share branch in `desk/wm.onDomRefresh` clears **both** keys instead of
 one — a secure-share return must still win over a hub deep link.
 
-### 3. Resulting flow
+### 3. The prompt, and where it lives
+
+The desk asks before opening. `_maybeOfferInvitedWorkspace` already rendered exactly
+this dialog for the guest-landing flow, so it takes the new intent as a second
+source rather than growing a second modal:
 
 ```
-email CTA  →  #/welcome/signin?hub_id=42
+You can now open the workspace you were invited to: Alpha
+
+        [ Open Workspace ]   [ Cancel ]
+```
+
+Consumption belongs to the desk, NOT to `desk/wm.onDomRefresh`, because the prompt
+must inherit `_afterHomeSettled` → `_waitForHomePopups()`: the reward flow and the
+LAUNCH30 popup are full-screen and self-gating, and an earlier version of this
+dialog appeared on top of them. The boot path cannot see either.
+
+**Open Workspace** calls `Wm.loadWorkspace({hub_id, filename})` — the headless
+workspace pane, exactly what clicking the workspace in the sidebar does, seeding
+`filename` so the title and root crumb are right from first paint. This replaces the
+`#/desk/wm/open/` hash the handler used to set, which launches a floating folder
+window instead of taking over the grid; for a first arrival from an invite, being put
+in the workspace beats being handed a popup of it. The guest-landing intent now gets
+that same behaviour, so one dialog has one outcome.
+
+**Cancel** is `_e.close` — the notice dismisses and the intent is already consumed,
+so it does not come back.
+
+### 4. Resulting flow
+
+```
+email CTA  →  #/welcome/signin?hub_id=42&name=Alpha
                  |
     +------------+-----------------+--------------------+
     | anonymous  | no account      | already signed in  |
@@ -105,9 +141,11 @@ email CTA  →  #/welcome/signin?hub_id=42
     |            |  pending_invitation -> membership)   |
     +------------+-----------------+--------------------+
                                    v
-                            desk boot -> consume()
+                    desk boot, Home settles, popups clear
                                    v
-                     Wm.loadWorkspace({hub_id})   <- pane opens, no prompt
+                  "Open Workspace / Cancel"  -> consume()
+                                   v
+                     Wm.loadWorkspace({hub_id, filename})
 ```
 
 Membership is granted exactly as before, and nothing about it moves:
@@ -117,7 +155,7 @@ Membership is granted exactly as before, and nothing about it moves:
 - no account → `_addInviteToken` + `yp_add_pending_invitation`, resolved by
   `signup.create_account` → `_resolve_pending_invitation`.
 
-### 4. What is deliberately left alone
+### 5. What is deliberately left alone
 
 Every link already sitting in an inbox carries `?view=guest&scope=…&token=…&hub=…`
 and must keep working end to end, so none of this is removed:
@@ -125,23 +163,37 @@ and must keep working end to end, so none of this is removed:
 - the `signin_guest` widget, its skeletons and its sample/share/chat content;
 - the `view=guest` branch in `signin_router.onDomRefresh`;
 - `dmz.list_by_token` / `dmz.chat_by_token` (no consumer other than that widget);
-- the desk's `drumee_guest_join` prompt — `_armJoinIntent`,
-  `_maybeOfferInvitedWorkspace` and the `guest-join-open-workspace` handler.
+- the guest flow's `drumee_guest_join` key and `_armJoinIntent`, so an old link
+  still arms and still gets its dialog.
 
-Retiring any of it is a separate decision, taken once no old link can plausibly
+`_maybeOfferInvitedWorkspace` and the `guest-join-open-workspace` handler are shared
+rather than left alone: they now serve both intent sources, and the handler's outcome
+changes for the old flow too (headless pane instead of a folder popup). That is
+intentional — one dialog with two outcomes would be worse than a consistent one.
+
+Retiring the rest is a separate decision, taken once no old link can plausibly
 still be clicked.
 
 ## Verification
 
 Neither repo has a test runner (`package.json` scripts are dev/deploy only), so:
 
-- a throwaway node harness asserting `_inviteCtaLink`'s output and the
-  `hub-deep-link` age-guard / precedence rules — both pure, no DB, no DOM;
+- a throwaway node harness asserting `_inviteCtaLink`'s output (including that a
+  workspace name containing `&` or `=` cannot forge query params) and the
+  `hub-deep-link` age-guard / precedence / name-pairing rules — all pure, no DB,
+  no DOM;
 - a manual click-through on `local.drumee` for the anonymous and
   already-signed-in cases.
 
 This box only serves `local.drumee`, so the link string and the storage logic can
 be verified here but a real inbox → production workspace open cannot.
+
+Note on `nid`: a caller that knows only a `hub_id` must reach `media.attributes` with
+`nid: 0`, the server's own hub-root value. Leaving it unset is not equivalent —
+`fetchService` builds its GET query with `encodeURI(v)` per key, so an undefined nid
+is sent as the literal string `"undefined"`, which `mfs_access_node` resolves to zero
+rows. That is `Wm._rootNid`, and it is why the prompt's Open action can pass
+`{hub_id, filename}` with no nid at all.
 
 ## Risks
 
@@ -151,3 +203,8 @@ be verified here but a real inbox → production workspace open cannot.
   works, and it drains as inboxes age.
 - **No preview before signing in.** The email itself carries the preview rows and
   the recent-activity snippets, which is where a recipient actually sees them.
+- **The prompt can be missed.** It waits for Home to settle and for the reward /
+  LAUNCH30 popups to clear, and gives up if `Wm` never appears within six seconds.
+  The intent is consumed either way, so a missed prompt does not return. The invite
+  stays in the activity list and the workspace stays in the sidebar, so nothing is
+  lost — the recipient just opens it themselves.

@@ -326,13 +326,18 @@ class __private_hub extends Hub {
   /**
    * The invite CTA: the sign-in form, with the invited workspace named on the URL.
    *
-   *   <endpoint>/#/welcome/signin?hub_id=<hub_id>
+   *   <endpoint>/#/welcome/signin?hub_id=<hub_id>&name=<workspace>
    *
-   * The frontend does the rest without another click. welcome/index.js reads
-   * `hub_id` and arms it (libs/hub-deep-link), and desk/wm consumes it on boot by
-   * calling Wm.loadWorkspace({hub_id}) — so the workspace pane opens by itself as
-   * soon as the recipient is authenticated, whichever way they got there
-   * (sign-in, sign-up, or already having a live session).
+   * The frontend does the rest. welcome/index.js reads both params and arms them
+   * (libs/hub-deep-link); once the recipient is authenticated — however they got
+   * there, by sign-in, sign-up, or an already-live session — the desk offers to
+   * open the workspace ("Open Workspace" / "Cancel"), and confirming calls
+   * Wm.loadWorkspace({hub_id}).
+   *
+   * `name` is display copy for that prompt, nothing more: it names the workspace in
+   * the message instead of the generic fallback. It is never trusted as an
+   * identity — `hub_id` alone selects the workspace, and the services behind it
+   * authorise the caller's own session.
    *
    * Replaces the former guest landing page (?view=guest&scope=…&token=…&hub=…),
    * which cost two extra clicks — one to leave the landing page, one on the desk's
@@ -345,12 +350,15 @@ class __private_hub extends Hub {
    * the caller's session, and the recipient is being invited to this workspace.
    *
    * @param {string|number} hub_id the workspace being invited to
+   * @param {string} [hubname] workspace display name, for the prompt's copy
    * @returns {string} absolute URL
    */
-  _inviteCtaLink(hub_id) {
+  _inviteCtaLink(hub_id, hubname) {
     const base = `${this._endpointBase()}/#/welcome/signin`;
     if (!hub_id) return base;
-    return `${base}?hub_id=${encodeURIComponent(hub_id)}`;
+    const q = [`hub_id=${encodeURIComponent(hub_id)}`];
+    if (hubname) q.push(`name=${encodeURIComponent(hubname)}`);
+    return `${base}?${q.join("&")}`;
   }
 
   /**
@@ -1125,9 +1133,9 @@ class __private_hub extends Hub {
     // on that room existing. The CTA itself no longer carries a share token —
     // see _inviteCtaLink.
     await this._ensurePublicShareToken();
-    // One CTA for everyone: the sign-in form, with the workspace named on the URL
-    // so the desk opens it by itself once the recipient is authenticated.
-    const ctaLink = this._inviteCtaLink(hubId);
+    // One CTA for everyone: the sign-in form, carrying the workspace so the desk
+    // can offer to open it once the recipient is authenticated.
+    const ctaLink = this._inviteCtaLink(hubId, hubname);
     // Address-book context resolved once for the whole call (see
     // _rememberInvitee). Null when the inviter has no drumate DB — the invite
     // still goes through, it just isn't remembered.
