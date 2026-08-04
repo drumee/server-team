@@ -226,11 +226,70 @@ class __yp extends Entity {
         await this.yp.await_proc(
           "session_reset", this.input.sid(), r.user.id, this.input.get(Attr.socket_id)
         );
+        // session.signin() logged an accepted connection BEFORE we got here --
+        // it has no idea this gate exists -- so without this the user is refused
+        // entry and their "last login" advances anyway. Take it back rather than
+        // reorder the check: the credentials have to be resolved before there is
+        // a uid to look unverified_email up by.
+        await this._revokeConnectionLog(r.user.id, "EMAIL_NOT_VERIFIED");
         return this.output.data({ status: "EMAIL_NOT_VERIFIED", email: row.unverified_email });
       }
     }
 
     this.output.data(r);
+  }
+
+  /**
+   * Record an accepted sign-in on a path that establishes a session without
+   * going through session.signin()/session.login().
+   *
+   * Those two are the only places @drumee/server-core logs a connection, so any
+   * other route to a live session is invisible to everything that reads
+   * services_log -- yp.show_login_log, and the analytics "Last login" column,
+   * which takes MAX(ctime) over rows carrying args.success='1'.
+   *
+   * NEVER LET THIS BREAK A LOGIN. The user is already authenticated by the time
+   * we are called; a logging failure must cost them an analytics row, not their
+   * session. Hence the swallow.
+   * @param {String} uid
+   */
+  async _logConnection(uid) {
+    try {
+      await this.session._log_connection({ uid });
+    } catch (e) {
+      this.warn("_logConnection: failed to record login for", uid, e && e.message);
+    }
+  }
+
+  /**
+   * Undo a connection log that session.signin() wrote before a later gate
+   * refused the sign-in.
+   *
+   * signin() logs as soon as the credentials check out; a caller that then tears
+   * the session down (see the unverified-email gate in login()) leaves behind a
+   * row saying the user got in. Marking it success=0 puts it with the other
+   * refusals -- both readers of this table select on args.success, so the row
+   * stops counting as a login without being erased from the audit trail.
+   *
+   * Targets the newest success row for the uid, which within this request is the
+   * one signin() just wrote. A second, concurrent login by the SAME user in the
+   * window between the two statements could see the wrong row marked; that costs
+   * an analytics timestamp, so it is not worth a lock.
+   * @param {String} uid
+   * @param {String} reason
+   */
+  async _revokeConnectionLog(uid, reason) {
+    try {
+      await this.yp.await_query(
+        `UPDATE services_log
+            SET args = JSON_SET(args, '$.success', 0, '$.reason', ?)
+          WHERE uid = ? AND JSON_VALUE(args, '$.success') = '1'
+          ORDER BY sys_id DESC LIMIT 1`,
+        reason, uid
+      );
+    } catch (e) {
+      this.warn("_revokeConnectionLog: failed for", uid, e && e.message);
+    }
   }
 
   /**
@@ -270,7 +329,14 @@ class __yp extends Entity {
   }
 
   /**
-   * 
+   * Second leg of a 2FA sign-in: verify the emailed code and open the session.
+   *
+   * This COMPLETES the login that login() started -- session.signin() returns at
+   * its `status == "otp"` branch without logging anything, because at that point
+   * nobody is signed in yet. The connection is therefore logged here, and only
+   * here: session_login_otp is a plain proc and writes no services_log row, so
+   * without this every 2FA account showed a permanently stale "Last login" in
+   * analytics while signing in perfectly normally.
    */
   async login_top() {
     const uid = this.input.get(Attr.id) || this.input.get(Attr.uid) || this.uid;
@@ -280,6 +346,7 @@ class __yp extends Entity {
     if (!result || result.status !== 'success') {
       return this.output.data({ status: 'error' });
     }
+    await this._logConnection(uid);
     const user = await this.yp.await_proc('get_user', uid);
     this.output.data(user);
   }
