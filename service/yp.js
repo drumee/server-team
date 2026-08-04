@@ -26,6 +26,7 @@ const { Entity, FileIo } = require("@drumee/server-core");
 const { existsSync, readFileSync } = require("fs");
 const { isEmpty, isArray, isString } = require("lodash");
 const { get_env, platform } = require('./lib/env');
+const { logConnection, revokeConnectionLog } = require('./lib/connection_log');
 const { resolve } = require("path");
 const { credential_dir } = sysEnv();
 let keyFile = resolve(credential_dir, `crypto/public.pem`);
@@ -231,65 +232,12 @@ class __yp extends Entity {
         // entry and their "last login" advances anyway. Take it back rather than
         // reorder the check: the credentials have to be resolved before there is
         // a uid to look unverified_email up by.
-        await this._revokeConnectionLog(r.user.id, "EMAIL_NOT_VERIFIED");
+        await revokeConnectionLog(this, r.user.id, "EMAIL_NOT_VERIFIED");
         return this.output.data({ status: "EMAIL_NOT_VERIFIED", email: row.unverified_email });
       }
     }
 
     this.output.data(r);
-  }
-
-  /**
-   * Record an accepted sign-in on a path that establishes a session without
-   * going through session.signin()/session.login().
-   *
-   * Those two are the only places @drumee/server-core logs a connection, so any
-   * other route to a live session is invisible to everything that reads
-   * services_log -- yp.show_login_log, and the analytics "Last login" column,
-   * which takes MAX(ctime) over rows carrying args.success='1'.
-   *
-   * NEVER LET THIS BREAK A LOGIN. The user is already authenticated by the time
-   * we are called; a logging failure must cost them an analytics row, not their
-   * session. Hence the swallow.
-   * @param {String} uid
-   */
-  async _logConnection(uid) {
-    try {
-      await this.session._log_connection({ uid });
-    } catch (e) {
-      this.warn("_logConnection: failed to record login for", uid, e && e.message);
-    }
-  }
-
-  /**
-   * Undo a connection log that session.signin() wrote before a later gate
-   * refused the sign-in.
-   *
-   * signin() logs as soon as the credentials check out; a caller that then tears
-   * the session down (see the unverified-email gate in login()) leaves behind a
-   * row saying the user got in. Marking it success=0 puts it with the other
-   * refusals -- both readers of this table select on args.success, so the row
-   * stops counting as a login without being erased from the audit trail.
-   *
-   * Targets the newest success row for the uid, which within this request is the
-   * one signin() just wrote. A second, concurrent login by the SAME user in the
-   * window between the two statements could see the wrong row marked; that costs
-   * an analytics timestamp, so it is not worth a lock.
-   * @param {String} uid
-   * @param {String} reason
-   */
-  async _revokeConnectionLog(uid, reason) {
-    try {
-      await this.yp.await_query(
-        `UPDATE services_log
-            SET args = JSON_SET(args, '$.success', 0, '$.reason', ?)
-          WHERE uid = ? AND JSON_VALUE(args, '$.success') = '1'
-          ORDER BY sys_id DESC LIMIT 1`,
-        reason, uid
-      );
-    } catch (e) {
-      this.warn("_revokeConnectionLog: failed for", uid, e && e.message);
-    }
   }
 
   /**
@@ -346,7 +294,7 @@ class __yp extends Entity {
     if (!result || result.status !== 'success') {
       return this.output.data({ status: 'error' });
     }
-    await this._logConnection(uid);
+    await logConnection(this, uid);
     const user = await this.yp.await_proc('get_user', uid);
     this.output.data(user);
   }

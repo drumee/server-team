@@ -11,6 +11,7 @@ const {
 } = Constants;
 
 const { Mfs, MfsTools } = require("@drumee/server-core");
+const { logConnection } = require("./lib/connection_log");
 
 const { google } = require("googleapis");
 const oauth2 = google.oauth2("v2");
@@ -364,7 +365,12 @@ class __butler extends Mfs {
         metadata.otp_secret,
         this.input.sid()
       );
-      //await this.log_connection(metadata.uid)
+      // session_login_otp above OPENS A SESSION -- completing a forgot-password
+      // reset signs the user straight in -- and it is a plain proc, so it writes
+      // no services_log row. Without this the reset is a way into the product
+      // that never registers as a login. (The call this replaces was commented
+      // out and named a method that does not exist on this class.)
+      await logConnection(this, metadata.uid);
       await this.yp.await_proc("token_delete", secret);
       await this.yp.await_proc(
         "otp_delete",
