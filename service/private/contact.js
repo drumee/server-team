@@ -15,7 +15,7 @@
  * =============================================================================
  */
 
-const { Attr, Constants, Messenger, utils, RedisStore, Cache, nullValue, sysEnv } = require("@drumee/server-essentials");
+const { Attr, Constants, Messenger, utils, RedisStore, Cache, nullValue } = require("@drumee/server-essentials");
 const { EMAIL_CHECKER } = Constants;
 
 const { readFileSync } = require('fs');
@@ -27,23 +27,7 @@ const { google } = require("googleapis");
 
 const { toArray } = utils;
 const { shouldSendNotification } = require("../lib/email-policy");
-
-/**
- * Configured envelope sender (email.json -> auth.user), resolved once.
- * Used to build a display-name From and a List-Unsubscribe mailto without
- * hardcoding the address (it differs per deployment / tenant).
- */
-let _butlerSender;
-function butlerSender() {
-  if (_butlerSender !== undefined) return _butlerSender;
-  try {
-    const f = resolve(sysEnv().credential_dir, 'email.json');
-    _butlerSender = (JSON.parse(readFileSync(f, 'utf8')).auth || {}).user || null;
-  } catch (e) {
-    _butlerSender = null;
-  }
-  return _butlerSender;
-}
+const { butlerFrom } = require("../lib/mail-sender");
 
 /** ==============================================  */
 const Contact = require('../contact');
@@ -505,7 +489,11 @@ class __private_contact extends Contact {
    * The shared @drumee/server-essentials Messenger.send() emits HTML-only mail
    * with no List-Unsubscribe — both are spam signals for Gmail. This restores
    * the text part and headers without forking the package. Falls back to
-   * msg.send() when no MTA or no usable sender address is configured.
+   * msg.send() when no MTA is configured.
+   *
+   * The From is the pinned brand address (lib/mail-sender), so unlike the old
+   * credential-derived sender it is always available — there is no longer a
+   * "no usable sender" case to fall back from.
    *
    * @param {Messenger} msg
    * @param {{recipient:string, subject:string, html:string, text:string}} parts
@@ -513,10 +501,8 @@ class __private_contact extends Contact {
   async _sendButlerMail(msg, { recipient, subject, html, text }) {
     const mta = await msg.getMTA();
     if (!mta) return msg.send({ html });        // preserves NO_MTA handling
-    const sender = butlerSender();
-    if (!sender) return msg.send({ html });      // no usable From -> old path
     const mailOptions = {
-      from: `"Drumee" <${sender}>`,
+      from: butlerFrom(),
       to: recipient,
       subject,
       text,

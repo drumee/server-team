@@ -7,6 +7,7 @@
 const { readFileSync } = require('fs');
 const { resolve } = require('path');
 const { sysEnv } = require('@drumee/server-essentials');
+const { mailbox } = require('./mail-sender');
 
 let _butlerSender;
 /**
@@ -39,7 +40,10 @@ async function sendButlerMail(msg, { recipient, subject, html, text }) {
   const sender = butlerSender();
   if (!sender) return msg.send({ html });
   const mailOptions = {
-    from: `"Drumee" <${sender}>`,
+    // Via mailbox() rather than a hand-rolled `"Drumee" <${sender}>`: `sender`
+    // is credential-derived (email.json auth.user), so a value that already
+    // carries angle brackets would nest them and ship a "Drumee>" display name.
+    from: mailbox("Drumee", sender),
     to: recipient,
     subject,
     text,

@@ -20,10 +20,14 @@ const { FORGOT_PASSWORD } = Constants;
 const { Entity } = require("@drumee/server-core");
 const { resolve } = require("path");
 
+const { butlerFrom, mailbox } = require("./lib/mail-sender");
+
 /**
- * Configured envelope sender (email.json -> auth.user), resolved once. Used to
- * build a "Drumee" <addr> display-name From, matching the other butler emails.
- * The address is read at runtime (it differs per deployment) not hardcoded.
+ * Configured envelope sender (email.json -> auth.user), resolved once.
+ *
+ * Only the reset-password mail still builds its From from this. The OTP mail
+ * moved to the pinned brand address (lib/mail-sender); this one was left on the
+ * credential-derived sender because it was not part of that change.
  */
 let _butlerSender;
 function butlerSender() {
@@ -110,11 +114,9 @@ class Otp extends Entity {
     });
     const tplPath = resolve(__dirname, "./templates/otp.html");
     const html = msg.renderFrom(tplPath, data);
-    // Display-name From ("Drumee" <butler@...>) so the inbox shows "Drumee",
-    // matching the other butler emails. Falls back to default sender if unset.
-    const sender = butlerSender();
-    const from = sender ? `"Drumee" <${sender}>` : undefined;
-    const payload = from ? { html, from } : { html };
+    // Display-name From ("Drumee" <contact@drumee.org>) so the inbox shows
+    // "Drumee", matching the other butler emails.
+    const payload = { html, from: butlerFrom() };
 
     // Answer with the secret the moment it's minted — the SMTP round-trip is the
     // slow part (seconds) and the client only needs the secret to open the
@@ -186,8 +188,11 @@ class Otp extends Entity {
     });
     const tplPath = resolve(__dirname, "./templates/reset-password.html");
     const html = msg.renderFrom(tplPath, data);
+    // Via mailbox() rather than a hand-rolled `"Drumee" <${sender}>`: `sender`
+    // is credential-derived (email.json auth.user), so a value that already
+    // carries angle brackets would nest them and ship a "Drumee>" display name.
     const sender = butlerSender();
-    const from = sender ? `"Drumee" <${sender}>` : undefined;
+    const from = sender ? mailbox("Drumee", sender) : undefined;
 
     let sent = 0;
     try {

@@ -32,23 +32,7 @@ const { credential_dir } = sysEnv();
 let keyFile = resolve(credential_dir, `crypto/public.pem`);
 const publicKey = readFileSync(keyFile);
 
-/**
- * Configured envelope sender (email.json -> auth.user), resolved once. Used to
- * build a "Drumee" <addr> display-name From so the inbox shows "Drumee"
- * instead of the raw butler@ address — matching otp.js and the other butler
- * emails. The address is read at runtime (it differs per deployment).
- */
-let _butlerSender;
-function butlerSender() {
-  if (_butlerSender !== undefined) return _butlerSender;
-  try {
-    const f = resolve(credential_dir, "email.json");
-    _butlerSender = (JSON.parse(readFileSync(f, "utf8")).auth || {}).user || null;
-  } catch (e) {
-    _butlerSender = null;
-  }
-  return _butlerSender;
-}
+const { butlerFrom } = require("./lib/mail-sender");
 
 
 //########################################
@@ -263,13 +247,10 @@ class __yp extends Entity {
     });
     const tplPath = resolve(__dirname, "./templates/otp.html");
     const html = msg.renderFrom(tplPath, data);
-    // Display-name From ("Drumee" <butler@...>) so the inbox shows "Drumee"
-    // instead of the raw sender address, matching otp.js. Falls back to the
-    // default sender if unset.
-    const sender = butlerSender();
-    const from = sender ? `"Drumee" <${sender}>` : undefined;
+    // Display-name From ("Drumee" <contact@drumee.org>) so the inbox shows
+    // "Drumee" instead of the raw sender address, matching otp.js.
     try {
-      await msg.send(from ? { html, from } : { html });
+      await msg.send({ html, from: butlerFrom() });
     } catch (e) {
       this.warn("2FA OTP email send failed", e);
     }
