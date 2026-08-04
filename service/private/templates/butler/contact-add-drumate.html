@@ -10,7 +10,13 @@
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#fff;">
     <tr>
       <td align="center" style="padding:0;">
-        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;max-width:100%;background:#fff;border:1px solid #d1d1d6;border-radius:8px;overflow:hidden;">
+        <!-- 600px is the standard email frame width, and the width the sibling
+             templates use. Fluid below it, capped above: uncapped it stretched
+             to the whole viewport, so on a desktop inbox the body copy ran the
+             full width of the screen. The width ATTRIBUTE has to be a number
+             for Outlook, which ignores the style and treats width="100%" as a
+             broken value. Centring comes from the align="center" on the td. -->
+        <table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0" style="width:100%;max-width:600px;background:#fff;border:1px solid #d1d1d6;border-radius:8px;overflow:hidden;">
 
           <!-- Header: purple signature -->
           <tr>
