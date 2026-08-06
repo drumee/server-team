@@ -519,6 +519,29 @@ class __private_desk extends Media {
   }
 
   /**
+   * Record that the caller created a workspace from the workspace form
+   * (ui-team builtins/media/form).
+   *
+   * The body is deliberately empty of work: the row this service exists to
+   * write has already been written by the time we run. `"log": true` in
+   * acl/desk.json makes router/rest/index.js call session.log_service(),
+   * which posts yp.analytics_log -> INSERT INTO yp.services_log with the
+   * caller's uid, the posted args and a timestamp. Same mechanism that logs
+   * desk.create_hub, same table the analytics Referral users table already
+   * reads for its Shares column.
+   *
+   * Why a separate service rather than counting desk.create_hub rows: the
+   * form's THIRD workspace type, `personal`, is not a hub at all — it is a
+   * home-root folder created through media.make_dir (see the comment in
+   * media/form/index.js) — so it never touches desk.create_hub or yp.hub.
+   * The form is the only place that knows which of the three types the user
+   * asked for, so the form reports it and this records what it reported.
+   */
+  async track_workspace() {
+    this.output.data({ ok: 1 });
+  }
+
+  /**
    *
    * @param {*} s
    * @param {*} status

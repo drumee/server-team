@@ -294,6 +294,43 @@
         }
       ]
     },
+    "track_workspace": {
+      "doc": "Record that the caller created a workspace from the workspace form (ui-team builtins/media/form). Writes one yp.services_log row per creation — the write is done by the router's `log` flag below, not by the handler — and the analytics Referral users table counts those rows for its Workspaces column and its Activated badge. Exists as its own service because the form's `personal` type is a home-root folder created through media.make_dir, not a hub: it never reaches desk.create_hub or yp.hub, so counting hub ownership cannot see it. Tracking only; never blocks or alters the creation it reports.",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "log": true,
+      "params": {
+        "wid": {
+          "type": "string",
+          "required": true,
+          "doc": "Workspace id — hub id for team/share, folder nid for personal. Dedupe key for the backfill in analytics-server."
+        },
+        "type": {
+          "type": "string",
+          "required": true,
+          "enum": ["team", "share", "personal"],
+          "doc": "Workspace type the user picked in the form"
+        },
+        "area": {
+          "type": "string",
+          "required": false,
+          "doc": "yp.entity.area the workspace was created with (private, share, personal)"
+        },
+        "filename": {
+          "type": "string",
+          "required": false,
+          "doc": "Name the user typed"
+        }
+      },
+      "returns": {
+        "ok": {
+          "type": "boolean",
+          "doc": "Always true — the caller does not wait for this"
+        }
+      }
+    },
     "limit": {
       "doc": "Get current quota limits and available storage space",
       "scope": "hub",
