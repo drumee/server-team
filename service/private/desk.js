@@ -18,6 +18,7 @@
 const { isArray, after, union, filter, isEmpty } = require('lodash');
 const Media = require('../media');
 const { writeAudit } = require('./_audit');
+const { pushReferralLive } = require('./_referral_live');
 
 const {
   Attr, Privilege, toArray,
@@ -542,55 +543,11 @@ class __private_desk extends Media {
     // above), so by the time we run, referral_members can already see this
     // workspace and will report the row's new status. Publishing before that
     // would push the status the user just left.
-    this._pushReferralLive(this.uid);
+    // Coalesced and sent by service/private/_referral_live.js, which the
+    // upload path uses too — see there for why the row is read back from
+    // referral_members rather than assembled here.
+    pushReferralLive(this, this.uid);
     this.output.data({ ok: 1 });
-  }
-
-  /**
-   * Tell any open analytics dashboard that this user's referral row changed.
-   *
-   * Creating a first real workspace is the Onboarding -> Activated transition
-   * on the Referral users board. Without this the board shows the old badge
-   * until its two-minute poll comes round; with it the row turns over about as
-   * fast as the click.
-   *
-   * NOT AWAITED AND NEVER THROWS, for the same reason nothing else in
-   * track_workspace is allowed to fail: this service exists to report on a
-   * workspace that has already been created, and an analytics push must never
-   * be the thing that makes creating one look broken.
-   *
-   * THE ROW COMES FROM referral_members — the procedure that owns the status
-   * CASE. Nothing here re-derives a status, which is what keeps the live badge
-   * and the polled badge from ever disagreeing. It is also the cohort gate:
-   * most workspaces are made by users who were never referred, and for them it
-   * answers nothing and no push goes out.
-   *
-   * This is the mirror of loby service/onboarding.js _pushReferralLive, which
-   * reports the New -> Onboarding half. Keep the payload shape identical.
-   *
-   * @param {String} uid the user whose referral row moved
-   */
-  async _pushReferralLive(uid) {
-    try {
-      if (!uid) return;
-      const rows = toArray(await this.yp.await_proc('referral_members', { uid }));
-      const model = rows && rows[0];
-      if (!model) return; // not a referred user — nothing on that board to move
-      const sockets = toArray(await this.yp.await_proc('referral_live_sockets'));
-      if (!sockets || !sockets.length) return; // no dashboard open anywhere
-      await RedisStore.sendData(
-        {
-          model,
-          // No top-level `service` here on purpose: router/push stamps the
-          // envelope "live.update", which routes it to the client's `live`
-          // event. This name is how the widget knows what it received.
-          options: { service: 'live.referral_member', keys: '*' },
-        },
-        sockets
-      );
-    } catch (e) {
-      this.warn('[desk] referral live push failed', e && e.message);
-    }
   }
 
   /**

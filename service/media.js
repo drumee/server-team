@@ -1117,6 +1117,19 @@ class __media extends Mfs {
     }
 
     await this.changelog_write({ src: res, event: service })
+
+    // The Uploads column on the analytics Referral users board counts exactly
+    // the media.new rows written above, and an upload can also complete the
+    // Onboarding -> Activated bar. Reported AFTER the changelog write so the
+    // dashboard re-reads a count that already includes this file. Coalesced
+    // per user inside the helper — store() runs once per FILE, so a bundle
+    // would otherwise announce itself a hundred times. Never awaited: an
+    // analytics message must not sit in the upload's critical path.
+    // media.replace is not an upload the board counts, so it is not reported.
+    if (service === "media.new") {
+      require('./private/_referral_live').pushReferralLive(this, this.uid);
+    }
+
     let hub_id = this.hub.get(Attr.id);
     let recipients = await this.yp.await_proc("entity_sockets", {
       hub_id,
