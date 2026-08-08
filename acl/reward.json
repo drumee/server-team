@@ -14,7 +14,7 @@
       "scope": "hub",
       "permission": { "src": "owner" },
       "params": {
-        "status": { "type": "string", "required": true, "description": "clicked | started | dropped | done | missed" },
+        "status": { "type": "string", "required": true, "description": "clicked | started | left | dropped | done | missed" },
         "step": { "type": "string", "required": false, "description": "step1 | step2 | step3 — the card step the user is on" },
         "campaign": { "type": "string", "required": false, "description": "utm_campaign, defaults to free-storage" }
       },
