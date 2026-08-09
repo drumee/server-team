@@ -29,6 +29,7 @@
 
 const { Mariadb, RedisStore } = require('@drumee/server-essentials');
 const OverLimit = require('../../service/lib/over-limit');
+const { pushPromoLive } = require('../../service/private/_promo_live');
 
 const WORKER_NAME = process.env.WORKER_NAME || 'promo-expiry-worker-1';
 const INTERVAL_MS = (parseInt(process.env.PROMO_EXPIRY_INTERVAL_SEC, 10) || 900) * 1000;
@@ -83,6 +84,17 @@ async function expireOne(row) {
     // Same revert path an org's Stripe cancel takes — see the module doc.
     await yp.await_proc('payment_clear_entitlement', org_id);
     await yp.await_proc('promo_launch30_mark_expired', payer_id);
+    // THE ONLY WRITER THE DASHBOARD CANNOT OTHERWISE LEARN FROM. Every other
+    // move in the promo table follows something a user did in a request; this
+    // one happens out here on a timer, so without the push a row sits at
+    // 'lapsing' on every open dashboard until somebody reloads by hand — which
+    // reads as this worker not running, the exact fault that bucket exists to
+    // surface. Not awaited and it cannot throw; see _promo_live.js.
+    //
+    // Guarded on Redis because this process starts whether or not Redis came
+    // up (see redisReady), unlike a request handler, which cannot run without
+    // it.
+    if (redisReady) pushPromoLive(yp, console.warn, payer_id, 'expired');
     await evaluateOverLimit(org_id);
     console.log(`[PromoExpiryWorker] expired promo for payer=${payer_id} org=${org_id}`);
     return true;

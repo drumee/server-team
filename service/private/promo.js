@@ -11,6 +11,7 @@
 const { Entity } = require('@drumee/server-core');
 const { isEmpty } = require('lodash');
 const { COUPON_HOLD_TTL_SEC } = require('../lib/mkt-coupon');
+const { pushPromoLiveFrom } = require('./_promo_live');
 
 // Env-overridable, defaults are the real product/business values — same
 // pattern as the workers (reminderWorker's REMINDER_INTERVAL_SEC,
@@ -108,6 +109,10 @@ class __private_promo extends Entity {
       return this.output.status('SURFACE_INVALID');
     }
     await this.yp.await_proc('promo_launch30_mark_seen', this.uid, surface);
+    // A first sighting CREATES the analytics row, so this is the only event
+    // that changes the size of the dashboard's table rather than moving a row
+    // within it. Not awaited, and it cannot throw — see _promo_live.js.
+    pushPromoLiveFrom(this, this.uid, 'seen');
     this.output.json({ status: 'OK' });
   }
 
@@ -128,6 +133,10 @@ class __private_promo extends Entity {
     }
     await this.yp.await_proc('payment_clear_entitlement', orgId);
     await this.yp.await_proc('promo_launch30_mark_expired', this.uid);
+    // Reported here rather than after the over-limit sweep below: the revert is
+    // committed at this point, and the sweep is best-effort work that must not
+    // decide whether the dashboard hears about it.
+    pushPromoLiveFrom(this, this.uid, 'cancelled');
 
     // Downgrade over-limit: the org just fell to the free tier — measure it
     // against the free limits and set the flags/grace if it no longer fits.
@@ -187,6 +196,12 @@ class __private_promo extends Entity {
       'promo_launch30_grant', this.uid, org.id, org.domain_id, TRIAL_DAYS,
     );
     const row = Array.isArray(res) ? res[0] : res;
+
+    // The grant is committed. Two different audiences hear about it and neither
+    // substitutes for the other: notify_user below tells the CLAIMANT their own
+    // session moved to Team, this tells every open analytics DASHBOARD that a
+    // row in its table moved from 'shown' to 'trialing'.
+    pushPromoLiveFrom(this, this.uid, 'claimed');
 
     // Same event the Stripe webhook emits on a real plan change — the
     // billing widget's existing onWsMessage('payment.plan_updated') handler
