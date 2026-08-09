@@ -14,6 +14,9 @@
  */
 const { Entity } = require('@drumee/server-core');
 const { Cache, toArray } = require('@drumee/server-essentials');
+// Live updates for the dashboard's Claim reward tracking table. Same shape as
+// desk.js's use of _referral_live: fire-and-forget, never throws.
+const { pushRewardLive } = require('./_reward_live');
 
 const CAMPAIGN = 'free-storage';
 /**
@@ -260,6 +263,18 @@ class __reward extends Entity {
       ))[0];
       granted = row && row.completed_count > 0 ? 1 : 0;
     }
+
+    // Tell any open analytics dashboard the row moved. AFTER the write and
+    // after the read-back, so what the board re-reads is the settled row and
+    // not one still being decided — a 'done' that the cap refuses is a 'missed'
+    // by the time this fires, and pushing before the read would race the board
+    // into showing the wrong one.
+    //
+    // Not awaited and never able to throw: the row is already committed, and
+    // the user's answer must not wait on an analytics message (see
+    // _reward_live.js).
+    pushRewardLive(this, this.uid, status);
+
     this.output.data({ ok: true, status, step, granted });
   }
 }
