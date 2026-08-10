@@ -440,6 +440,20 @@ class __public_stripe_webhook extends Entity {
     }
   }
 
+  // An Invoice's own subscription link. On API version 2026-05-27.dahlia
+  // (and later), Invoice.subscription is gone; the id lives at
+  // invoice.parent.subscription_details.subscription instead. Kept as one
+  // helper so invoice.paid, invoice.payment_failed and charge.refunded read
+  // the same shape and can't drift apart — the refund path missing this was
+  // empirically proven on stage to skip every single refund (91 invoices, 91
+  // skips) because invoice.subscription is always undefined on this version.
+  _invoiceSubscriptionId(invoice) {
+    return (invoice && typeof invoice.subscription === 'string' ? invoice.subscription : null)
+      || (invoice && invoice.parent && invoice.parent.subscription_details
+        && invoice.parent.subscription_details.subscription)
+      || null;
+  }
+
   /**
    * Turn a Stripe invoice into the ledger row payment_ledger_upsert takes.
    *
@@ -481,8 +495,7 @@ class __public_stripe_webhook extends Entity {
     const refunded = ~~invoice.post_payment_credit_notes_amount;
     return {
       invoice_id: invoice.id,
-      subscription_id: (typeof invoice.subscription === 'string' ? invoice.subscription : null)
-        || (sub && sub.id) || null,
+      subscription_id: this._invoiceSubscriptionId(invoice) || (sub && sub.id) || null,
       customer_id: (typeof invoice.customer === 'string' ? invoice.customer : null),
       entity_id,
       payer_id,
@@ -886,9 +899,7 @@ class __public_stripe_webhook extends Entity {
         case 'invoice.paid':
         case 'invoice.payment_failed': {
           // Invoices don't carry the subscription metadata directly — resolve it.
-          const subId = obj.subscription
-            || (obj.parent && obj.parent.subscription_details && obj.parent.subscription_details.subscription)
-            || null;
+          const subId = this._invoiceSubscriptionId(obj);
           let sub = null;
           if (subId) { try { sub = await stripe.subscriptions.retrieve(subId); } catch (e2) {} }
           const smd = (sub && sub.metadata) || {};
@@ -997,7 +1008,7 @@ class __public_stripe_webhook extends Entity {
           let invoice = null;
           try { invoice = await stripe.invoices.retrieve(invId); } catch (e7) { invoice = null; }
           if (!invoice) break;
-          const rSubId = typeof invoice.subscription === 'string' ? invoice.subscription : null;
+          const rSubId = this._invoiceSubscriptionId(invoice);
           let rSub = null;
           if (rSubId) {
             try { rSub = await stripe.subscriptions.retrieve(rSubId); } catch (e7) {
