@@ -999,12 +999,31 @@ class __public_stripe_webhook extends Entity {
           if (!invoice) break;
           const rSubId = typeof invoice.subscription === 'string' ? invoice.subscription : null;
           let rSub = null;
-          if (rSubId) { try { rSub = await stripe.subscriptions.retrieve(rSubId); } catch (e7) {} }
+          if (rSubId) {
+            try { rSub = await stripe.subscriptions.retrieve(rSubId); } catch (e7) {
+              this.warn(`refund subscription retrieve failed for ${event.id}: ${e7.message}`);
+            }
+          }
           const rmd = (rSub && rSub.metadata) || {};
-          const rEid = await this._resolveOrgEntity(rmd, stripe);
+          // Unlike invoice.paid, nothing but a ledger row is at stake here —
+          // there is no entitlement to grant, so a throw buys nothing but an
+          // infinite Stripe redelivery loop (the outer catch below deletes
+          // the 'seen' row on any escape and returns 500). invoice.paid lets
+          // the same calls throw on purpose: a payment must not go
+          // ungranted, and redelivery is how that retries. A refund has no
+          // such urgency, and any row this path misses is picked up by
+          // analytics-server's revenue-reconcile job — so log and break
+          // instead of propagating.
+          let rEid = null;
+          try { rEid = await this._resolveOrgEntity(rmd, stripe); } catch (e7b) {
+            this.error(`refund entity resolve failed for ${event.id}: ${e7b.message}`);
+          }
           if (!rEid) break;
           const rItems = (rSub && rSub.items && rSub.items.data) || [];
-          const rActual = await this._planFromItems(rItems);
+          let rActual = null;
+          try { rActual = await this._planFromItems(rItems); } catch (e7c) {
+            this.warn(`refund plan resolve failed for ${event.id}: ${e7c.message}`);
+          }
           const row = await this._ledgerRowFromInvoice(invoice, rSub, rmd, rEid, {
             plan: (rActual && rActual.plan) || rmd.plan || 'team',
             period: (rActual && rActual.period) || rmd.period || 'month',
