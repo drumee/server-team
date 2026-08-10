@@ -982,6 +982,50 @@ class __public_stripe_webhook extends Entity {
           }
           break;
         }
+        // A refund moves revenue as surely as a payment does. Stripe reports it
+        // against the CHARGE, so the invoice has to be re-read: its
+        // amount_paid is unchanged and only the charge knows what went back.
+        //
+        // NO NEW ROW. This goes through the same builder and the same upsert as
+        // invoice.paid, keyed on the same invoice_id, so it can only ever
+        // update the row the payment created.
+        case 'charge.refunded': {
+          const invId = typeof obj.invoice === 'string' ? obj.invoice : (obj.invoice && obj.invoice.id);
+          // A charge with no invoice is not a subscription payment (a one-off
+          // PaymentIntent). Nothing in the ledger corresponds to it.
+          if (!invId) break;
+          let invoice = null;
+          try { invoice = await stripe.invoices.retrieve(invId); } catch (e7) { invoice = null; }
+          if (!invoice) break;
+          const rSubId = typeof invoice.subscription === 'string' ? invoice.subscription : null;
+          let rSub = null;
+          if (rSubId) { try { rSub = await stripe.subscriptions.retrieve(rSubId); } catch (e7) {} }
+          const rmd = (rSub && rSub.metadata) || {};
+          const rEid = await this._resolveOrgEntity(rmd, stripe);
+          if (!rEid) break;
+          const rItems = (rSub && rSub.items && rSub.items.data) || [];
+          const rActual = await this._planFromItems(rItems);
+          const row = await this._ledgerRowFromInvoice(invoice, rSub, rmd, rEid, {
+            plan: (rActual && rActual.plan) || rmd.plan || 'team',
+            period: (rActual && rActual.period) || rmd.period || 'month',
+            entity_type: (rActual && rActual.entity_type) || rmd.entity_type || 'user',
+          });
+          // The CHARGE is authoritative on what was refunded; the invoice's
+          // credit-note total covers the other way money comes back. Take the
+          // larger rather than adding them — a credit note raised to settle a
+          // refund would otherwise be counted twice and drive net negative.
+          row.amount_refunded = Math.max(
+            ~~obj.amount_refunded,
+            ~~invoice.post_payment_credit_notes_amount,
+          );
+          try {
+            await this.yp.await_proc('payment_ledger_upsert', row);
+            pushRevenueLive(this, { plan: row.plan, paid_at: row.paid_at });
+          } catch (eRef) {
+            this.error(`payment_ledger refund write failed for ${event.id}: ${eRef.message}`);
+          }
+          break;
+        }
         default:
           break; // unhandled types are acknowledged (already deduped)
       }
