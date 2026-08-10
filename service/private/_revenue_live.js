@@ -42,6 +42,9 @@ const REVENUE_LIVE_DEBOUNCE_MS = 1500;
 let _timer = null;
 /** The most recent signal seen during the current window. */
 let _pending = null;
+/** The most recent ctx.yp / bound ctx.warn seen during the current window. */
+let _yp = null;
+let _warn = null;
 
 /**
  * Report that money moved.
@@ -55,14 +58,28 @@ let _pending = null;
  * @param {Object} signal {plan, paid_at} — the payload the dashboard receives
  */
 function pushRevenueLive(ctx, signal = {}) {
+  if (!ctx || !ctx.yp || typeof ctx.yp.await_proc !== 'function') return;
   _pending = { plan: signal.plan || '', paid_at: ~~signal.paid_at };
+  // Refreshed on every call in the window, same as _reward_live.js: the
+  // scheduled closure below fires after THIS request has finished, and
+  // acl.js self-destroys the handler (session, input, output, websocket,
+  // user, hub) shortly after the webhook responds — well inside 1500ms. A
+  // ctx captured only from the call that opened the window would go stale
+  // mid-burst, and everything after it would silently be dropped. yp and a
+  // pre-bound warn are the two fields worth outliving the request for.
+  _yp = ctx.yp;
+  _warn = ctx.warn ? ctx.warn.bind(ctx) : null;
   if (_timer) return;
   _timer = setTimeout(async () => {
     const model = _pending;
+    const yp = _yp;
+    const warn = _warn;
     _timer = null;
     _pending = null;
+    _yp = null;
+    _warn = null;
     try {
-      const sockets = toArray(await ctx.yp.await_proc('referral_live_sockets'));
+      const sockets = toArray(await yp.await_proc('referral_live_sockets'));
       if (!sockets || !sockets.length) return; // no dashboard open anywhere
       await RedisStore.sendData(
         {
@@ -76,7 +93,7 @@ function pushRevenueLive(ctx, signal = {}) {
       );
     } catch (e) {
       // Log and swallow: see the header. The payment already succeeded.
-      if (ctx && ctx.warn) ctx.warn('[revenue-live] push failed', e && e.message);
+      if (warn) warn('[revenue-live] push failed', e && e.message);
     }
   }, REVENUE_LIVE_DEBOUNCE_MS);
   // Do not hold the process open for a dashboard nobody has open.

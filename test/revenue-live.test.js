@@ -51,6 +51,23 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     assert.strictEqual(sent.length, 1, `expected 1 push, got ${sent.length}`);
   });
 
+  await test("a burst uses the LATEST call's ctx and payload, not the first", async () => {
+    sent.length = 0;
+    // First call in the window has a ctx whose yp is broken; a later call in
+    // the SAME window has a healthy ctx with sockets. If the debounce closure
+    // captured ctx only from the call that opened the window, this would
+    // silently drop the whole burst (sent.length === 0) instead of using the
+    // latest, healthy ctx and latest payload.
+    const bad = { yp: { await_proc: async () => { throw new Error("db down"); } }, warn: () => {} };
+    const good = ctx([{ cookie: "c", uid: "u", socket_id: "s1" }]);
+    pushRevenueLive(bad, { plan: "team", paid_at: 1 });
+    await sleep(100); // still well inside REVENUE_LIVE_DEBOUNCE_MS
+    pushRevenueLive(good, { plan: "pro", paid_at: 999 });
+    await sleep(REVENUE_LIVE_DEBOUNCE_MS + 60);
+    assert.strictEqual(sent.length, 1, `expected 1 push via the later, healthy ctx; got ${sent.length}`);
+    assert.deepStrictEqual(sent[0].payload.model, { plan: "pro", paid_at: 999 });
+  });
+
   await test("payload is the signal only, on the agreed service name", async () => {
     sent.length = 0;
     pushRevenueLive(ctx([{ cookie: "c", uid: "u", socket_id: "s1" }]), { plan: "pro", paid_at: 42 });
