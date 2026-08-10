@@ -4,6 +4,7 @@ const { Messenger } = require('@drumee/server-essentials');
 const { resolve } = require('path');
 const { stripeClient, endpointSecret } = require('../lib/stripe');
 const { sendButlerMail } = require('../lib/butler-mail');
+const { pushRevenueLive } = require('../private/_revenue_live');
 
 // "What's unlocked" checklist per plan (payment-receipt email, Figma 2803-1288).
 // Static marketing copy matching the billing plans page (the July 2026 FINAL
@@ -439,6 +440,70 @@ class __public_stripe_webhook extends Entity {
     }
   }
 
+  /**
+   * Turn a Stripe invoice into the ledger row payment_ledger_upsert takes.
+   *
+   * ONE BUILDER, TWO EVENTS. invoice.paid and charge.refunded both write the
+   * same row and differ only in the amounts Stripe reports at the time. Two
+   * hand-built objects is how a refund ends up storing a different plan or a
+   * blank email than the payment it corrects.
+   *
+   * THE EMAIL IS THE ONE STRIPE BILLED, falling back to the payer's account
+   * address. It cannot come from a drumate join on entity_id: an org plan keys
+   * entity_id to the ORGANISATION, so that join is NULL for every business and
+   * team subscription (visible on stage today).
+   *
+   * @param {Object} invoice  Stripe Invoice
+   * @param {Object} sub      Stripe Subscription (may be null)
+   * @param {Object} smd      subscription metadata
+   * @param {String} entity_id resolved org/user id
+   * @param {Object} eff      { plan, period, entity_type } already resolved by the caller
+   * @returns {Promise<Object>} args for payment_ledger_upsert
+   */
+  async _ledgerRowFromInvoice(invoice, sub, smd, entity_id, eff) {
+    const md = smd || {};
+    const payer_id = md.payer_id || (eff.entity_type === 'user' ? entity_id : null);
+    let email = (invoice.customer_email)
+      || (invoice.customer_details && invoice.customer_details.email)
+      || '';
+    if (!email && payer_id) {
+      try {
+        const payer = await this.yp.await_proc('payment_get_payer', payer_id);
+        email = (payer && payer.email) || '';
+      } catch (e) { /* the row is still worth storing without an address */ }
+    }
+    // post_payment_credit_notes_amount catches an invoice credited AFTER
+    // payment. It is the ONLY refund figure available here: a Stripe Invoice
+    // carries no refunded total of its own, and the charge that would know one
+    // is not fetched on this path. The charge-side figure arrives through
+    // charge.refunded, which re-reads this same invoice and calls the same
+    // upsert with the larger of the two — see that handler.
+    const refunded = ~~invoice.post_payment_credit_notes_amount;
+    return {
+      invoice_id: invoice.id,
+      subscription_id: (typeof invoice.subscription === 'string' ? invoice.subscription : null)
+        || (sub && sub.id) || null,
+      customer_id: (typeof invoice.customer === 'string' ? invoice.customer : null),
+      entity_id,
+      payer_id,
+      email,
+      entity_type: eff.entity_type === 'org' ? 'org' : 'user',
+      plan: eff.plan,
+      period: eff.period === 'year' ? 'year' : 'month',
+      amount_paid: ~~invoice.amount_paid,
+      amount_refunded: refunded,
+      currency: String(invoice.currency || 'usd').toLowerCase(),
+      billing_reason: invoice.billing_reason || null,
+      // status_transitions.paid_at is when the money actually moved; `created`
+      // is when the invoice was drafted, which for a renewal is days earlier
+      // and would file the payment in the wrong month.
+      paid_at: ~~((invoice.status_transitions && invoice.status_transitions.paid_at)
+        || invoice.created),
+      promo_code: md.mkt_code || null,
+      source: 'webhook',
+    };
+  }
+
   async receive() {
     let stripe, secret;
     try { stripe = stripeClient(); secret = endpointSecret(); }
@@ -854,6 +919,21 @@ class __public_stripe_webhook extends Entity {
               const { seats, extra_disk, extra_seats } = await this._itemsEntitlement(items);
               const seat_total = await this._seatTotal(eff_entity, eff_plan, eff_period, seats, extra_seats);
               await this.yp.await_proc('payment_apply_entitlement', eid, eff_plan, pend, eff_entity, seat_total, extra_disk);
+              // Ledger, then signal. Both are best-effort: the entitlement above
+              // is already applied and a 500 here would make Stripe redeliver
+              // the whole event. A row missed this way is picked up by
+              // analytics-server bin/revenue-reconcile.js, which is the reason
+              // that job exists.
+              try {
+                const ledger = await this._ledgerRowFromInvoice(
+                  obj, sub, smd, eid,
+                  { plan: eff_plan, period: eff_period, entity_type: eff_entity },
+                );
+                await this.yp.await_proc('payment_ledger_upsert', ledger);
+                pushRevenueLive(this, { plan: ledger.plan, paid_at: ledger.paid_at });
+              } catch (eLedger) {
+                this.error(`payment_ledger write failed for ${event.id}: ${eLedger.message}`);
+              }
               await this.notify_user(eid, {
                 service: 'payment.plan_updated', plan: eff_plan, status: 'active',
                 quota: await this._freshQuota(md.payer_id, eid, eff_entity),
