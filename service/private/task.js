@@ -51,6 +51,8 @@ class __private_task extends Entity {
     this.comment_update = this.comment_update.bind(this);
     this.comment_delete = this.comment_delete.bind(this);
     this.comment_react = this.comment_react.bind(this);
+    this.comment_link_file = this.comment_link_file.bind(this);
+    this.comment_unlink_file = this.comment_unlink_file.bind(this);
     this.activity = this.activity.bind(this);
     this.column_list = this.column_list.bind(this);
     this.column_create = this.column_create.bind(this);
@@ -854,6 +856,86 @@ class __private_task extends Entity {
       count: row && row.count,
     });
     this.output.data(row);
+  }
+
+  /**
+   * The comment behind an id, or null. Used by the two file endpoints below to
+   * enforce author-only access before touching task_comment_file — the link
+   * proc is an INSERT IGNORE and would otherwise happily staple a file onto
+   * somebody else's comment.
+   */
+  async _ownComment(comment_id) {
+    try {
+      const row = toArray(
+        await this.db.await_run(
+          'SELECT id, task_id, author_uid, parent_id, body, edited, ctime, mtime FROM task_comment WHERE id = ?',
+          [comment_id]
+        )
+      )[0];
+      if (!row || row.author_uid !== this.uid) return null;
+      return row;
+    } catch (e) {
+      this.warn('[task.comment_file] comment lookup failed:', e && e.message);
+      return null;
+    }
+  }
+
+  /**
+   * Attach a file (media node) to one's OWN comment — the per-comment twin of
+   * link_file. Idempotent (INSERT IGNORE). Returns the comment's full
+   * attachment list.
+   *
+   * Broadcasts `task.comment_update`, not a service of its own: peers react to
+   * that by reloading the feed, which is exactly what is needed here, and the
+   * comment genuinely did change. It also fixes an ordering trap — a comment
+   * created with files links them AFTER comment_create has already announced
+   * itself, so without this second announcement peers would hold a copy of the
+   * comment with no attachments until something else refreshed it.
+   *
+   * Params: comment_id, file_nid, task_id (required — the broadcast targets a
+   * task's feed).
+   */
+  async comment_link_file() {
+    const comment_id = this.input.need('comment_id');
+    const file_nid = this.input.need('file_nid');
+    const task_id = this.input.need('task_id');
+
+    const comment = await this._ownComment(comment_id);
+    if (isEmpty(comment)) return this.exception.user('COMMENT_NOT_FOUND');
+
+    const data = await this.db.await_proc(
+      'task_comment_link_file',
+      comment_id,
+      file_nid,
+      this.uid
+    );
+    await this._broadcast('task.comment_update', { ...comment, task_id });
+    this.output.list(data);
+  }
+
+  /**
+   * Detach a file from one's own comment. The media node itself is untouched —
+   * it lives in the folder body, exactly as with unlink_file.
+   * Params: comment_id, file_nid, task_id (required, for the broadcast).
+   */
+  async comment_unlink_file() {
+    const comment_id = this.input.need('comment_id');
+    const file_nid = this.input.need('file_nid');
+    const task_id = this.input.need('task_id');
+
+    const comment = await this._ownComment(comment_id);
+    if (isEmpty(comment)) return this.exception.user('COMMENT_NOT_FOUND');
+
+    const data = await this.db.await_proc(
+      'task_comment_unlink_file',
+      comment_id,
+      file_nid,
+      this.uid
+    );
+    const row = Array.isArray(data) ? data[0] : data;
+    const result = { comment_id, file_nid, task_id, affected: row && row.affected };
+    await this._broadcast('task.comment_update', { ...comment, task_id });
+    this.output.data(result);
   }
 
   /**

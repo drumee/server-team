@@ -741,6 +741,113 @@
         }
       }
     },
+    "comment_link_file": {
+      "doc": "Attach a file (media node) to your own comment, as opposed to link_file which attaches it to the task. Idempotent — linking the same file twice has no effect. Returns the comment's full attachment list.",
+      "scope": "hub",
+      "permission": {
+        "src": "write"
+      },
+      "params": {
+        "comment_id": {
+          "type": "string",
+          "required": true,
+          "doc": "Comment ID to attach the file to. Must be the caller's own comment."
+        },
+        "file_nid": {
+          "type": "string",
+          "required": true,
+          "doc": "Media node ID of the file"
+        },
+        "task_id": {
+          "type": "string",
+          "required": true,
+          "doc": "Task the comment belongs to — the change is broadcast to that task's feed"
+        }
+      },
+      "returns": {
+        "type": "array",
+        "doc": "The comment's attachments, including media metadata",
+        "items": {
+          "type": "object",
+          "properties": {
+            "comment_id": {
+              "type": "string",
+              "doc": "Comment ID"
+            },
+            "file_nid": {
+              "type": "string",
+              "doc": "File media node ID"
+            },
+            "linked_by": {
+              "type": "string",
+              "doc": "UID that attached the file"
+            },
+            "ctime": {
+              "type": "number",
+              "doc": "Attach time (unix seconds)"
+            },
+            "filename": {
+              "type": "string",
+              "doc": "File name without extension"
+            },
+            "category": {
+              "type": "string",
+              "doc": "Media category"
+            },
+            "extension": {
+              "type": "string",
+              "doc": "File extension"
+            },
+            "filesize": {
+              "type": "number",
+              "doc": "Size in bytes"
+            }
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "COMMENT_NOT_FOUND",
+          "message": "No comment with that ID owned by the caller",
+          "http_status": 404
+        }
+      ]
+    },
+    "comment_unlink_file": {
+      "doc": "Detach a file from your own comment. The media node itself is left in place. Author-only.",
+      "scope": "hub",
+      "permission": {
+        "src": "write"
+      },
+      "params": {
+        "comment_id": {
+          "type": "string",
+          "required": true,
+          "doc": "Comment ID to detach the file from. Must be the caller's own comment."
+        },
+        "file_nid": {
+          "type": "string",
+          "required": true,
+          "doc": "Media node ID of the file"
+        },
+        "task_id": {
+          "type": "string",
+          "required": true,
+          "doc": "Task the comment belongs to — the change is broadcast to that task's feed"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "doc": "{ comment_id, file_nid, task_id, affected } — affected is 0 when nothing matched"
+      },
+      "errors": [
+        {
+          "code": "COMMENT_NOT_FOUND",
+          "message": "No comment with that ID owned by the caller",
+          "http_status": 404
+        }
+      ]
+    },
     "comment_update": {
       "doc": "Edit your own comment. Returns COMMENT_NOT_FOUND if the caller is not the author.",
       "scope": "hub",
