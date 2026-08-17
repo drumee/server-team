@@ -155,6 +155,130 @@ function mapContactRefusedRow(r) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Notification buckets — the 5 Notification Center tabs (Round 3 / Sprint 1).
+//
+// The tab a notification belongs to is decided HERE, server-side, and shipped on
+// every row as `bucket`. The client only reads it and never re-derives one: an
+// event maps to exactly one bucket at generation time, so the same event cannot
+// land in two different tabs on two different surfaces.
+//
+// Rows arrive in three different shapes, which is why the checks are ordered
+// instead of being a single lookup:
+//   - notification_center_next rollups → `category` (chat|teamchat|media|ticket|
+//     contact), plus `meeting_action` on teamchat rows
+//   - activity_get_feed_all rows       → `event_type` ('mfs' | 'contact')
+//   - mfs_get_activity_feed rows       → neither, only `event`
+// ---------------------------------------------------------------------------
+const BUCKET = {
+  files: 'files',
+  task: 'task',
+  meeting: 'meeting',
+  chat: 'chat',
+  other: 'other',
+};
+
+// Matched FIRST, by exact event name. Task events live in yp.contact_activity,
+// so their category AND event_type both resolve to 'contact' — without this
+// every task notification would land in Other. The client's getActivityMeta()
+// works around the same trap to pick its copy, so the two must stay in step.
+const BUCKET_BY_EVENT = {
+  task_assigned: BUCKET.task,
+  task_mention: BUCKET.task,
+  task_column_change: BUCKET.task,
+  // A bare @-mention row (channel.list_notifications, type='mention') carries no
+  // category at all; a chat mention belongs to Chat.
+  mention: BUCKET.chat,
+};
+
+const BUCKET_BY_CATEGORY = {
+  // Files — uploads, folder creates, shares, removes, workspace moves.
+  media: BUCKET.files,
+  mfs: BUCKET.files,
+  workspace_move: BUCKET.files,
+  share_open: BUCKET.files,
+  // Chat — p2p messages and folder chat. A teamchat rollup carrying a
+  // meeting_action is re-routed to Meeting below, before this lookup runs.
+  chat: BUCKET.chat,
+  teamchat: BUCKET.chat,
+  meeting: BUCKET.meeting,
+  // Other — workspace/team invites, contacts, tickets, access requests and
+  // (via the default) every system alert.
+  contact: BUCKET.other,
+  contact_invite: BUCKET.other,
+  contact_refused: BUCKET.other,
+  hub_invite: BUCKET.other,
+  ticket: BUCKET.other,
+  access_request: BUCKET.other,
+};
+
+// Last resort for rows that carry only an `event`: mfs_get_activity_feed (the
+// Unread-ON feed) returns no category and no event_type whatsoever.
+const BUCKET_BY_EVENT_PREFIX = [
+  ['media.', BUCKET.files],
+  ['secure_share.', BUCKET.files],
+  ['chat.', BUCKET.chat],
+  ['channel.', BUCKET.chat],
+  ['conference.', BUCKET.meeting],
+  ['room.', BUCKET.meeting],
+  ['contact.', BUCKET.other],
+  ['hub.', BUCKET.other],
+];
+
+// Own-property lookup only. `event` / `category` come straight from the DB, so a
+// row whose value happens to be an Object.prototype key ('constructor',
+// 'toString', …) would otherwise resolve to an inherited function and be stamped
+// as the bucket. Not reachable from user input today, but a plain `map[key]`
+// here is a silent correctness hole, not a style question.
+function lookup(map, key) {
+  if (!key) return null;
+  return Object.prototype.hasOwnProperty.call(map, key) ? map[key] : null;
+}
+
+function bucketOf(row) {
+  if (!row) return BUCKET.other;
+  const event = String(row.event || '');
+
+  const byEvent = lookup(BUCKET_BY_EVENT, event);
+  if (byEvent) return byEvent;
+
+  // A folder-chat rollup whose latest unread event is a meeting start/end is a
+  // MEETING, not a chat message. notification_center_next surfaces that as
+  // meeting_action and the client already renders meeting copy for it ("started
+  // a meeting in <folder>"), so the bucket has to agree — otherwise the row
+  // would read as a meeting while sitting in the Chat tab.
+  if (row.meeting_action === 'start' || row.meeting_action === 'end') {
+    return BUCKET.meeting;
+  }
+
+  const byCategory = lookup(BUCKET_BY_CATEGORY, row.category || row.event_type || row.type);
+  if (byCategory) return byCategory;
+
+  for (const [prefix, bucket] of BUCKET_BY_EVENT_PREFIX) {
+    if (event.startsWith(prefix)) return bucket;
+  }
+
+  // Anything unrecognised — including every future system alert — falls into
+  // Other. Never drop a row: an unmapped notification must stay reachable.
+  return BUCKET.other;
+}
+
+// Stamp `bucket` on every row, in place. Idempotent, and never overwrites a
+// bucket a row already carries.
+function stampBuckets(rows) {
+  for (const r of rows) {
+    if (r && r.bucket == null) r.bucket = bucketOf(r);
+  }
+  return rows;
+}
+
+// A caller-supplied bucket is only honoured when it names one of the 5 tabs;
+// anything else (absent, empty, typo'd) means "no bucket scope" and every path
+// keeps its pre-existing, unscoped behaviour.
+function validBucket(value) {
+  return lookup(BUCKET, String(value || '').trim());
+}
+
 // Flatten watched-column metadata so the activity row can render and open the
 // affected task after it was created or moved.
 function flattenTaskColumnChange(rows) {
@@ -234,19 +358,34 @@ class MfsActivity extends Entity {
   async mark_all_read() {
 
     const lastId = parseInt(this.input.get('last_id')) || 0;
+    // Round 3: "Mark as all read" acts on the tab the user is looking at.
+    // null = unscoped = clear everything, exactly as before this existed.
+    const bucket = validBucket(this.input.use('bucket'));
+    // The changelog read pointer and the share-open seen flag both back the Files
+    // tab, so they are skipped when the user is clearing a different tab. Without
+    // this, clearing "Chat" would silently mark every file notification read too.
+    const clearFiles = !bucket || bucket === BUCKET.files;
 
-    this.debug(`[MFS_ACTIVITY] Marking all read for user ${this.uid}, last_id: ${lastId}`);
+    this.debug(`[MFS_ACTIVITY] Marking all read for user ${this.uid}, last_id: ${lastId}, bucket: ${bucket || 'all'}`);
 
-    const result = await this._callUserProc('mfs_mark_all_read', this.uid, lastId);
-    const data = toArray(result)[0];
+    // Seeded with the same shape the proc returns, so a scoped call that never
+    // touches the changelog still answers with a stable payload instead of an
+    // undefined last_read_id.
+    let data = { status: 'ok', last_read_id: 0 };
+    if (clearFiles) {
+      const result = await this._callUserProc('mfs_mark_all_read', this.uid, lastId);
+      data = toArray(result)[0];
+    }
 
     // "Mark all as read" must also clear share-open notifications, which ride the
     // feed via secure_share_open_feed / creator_seen_at (not mfs_mark_all_read).
     // Best-effort — never fail the whole mark-all if this errors.
-    try {
-      await this.yp.await_proc('secure_share_mark_all_open_seen', this.uid);
-    } catch (e) {
-      this.warn('[MFS_ACTIVITY] mark_all_read: secure_share_mark_all_open_seen failed', e && e.message);
+    if (clearFiles) {
+      try {
+        await this.yp.await_proc('secure_share_mark_all_open_seen', this.uid);
+      } catch (e) {
+        this.warn('[MFS_ACTIVITY] mark_all_read: secure_share_mark_all_open_seen failed', e && e.message);
+      }
     }
 
     // "Mark all as read" must also persist-clear the pinned rollups
@@ -259,6 +398,10 @@ class MfsActivity extends Entity {
       const rollups = toArray(await this._callUserProc('notification_center_next'));
       for (const r of rollups) {
         if (!r || !r.category) continue;
+        // Same bucket rule the tabs are built from, so "clear this tab" clears
+        // exactly the rows that tab shows — a teamchat rollup carrying a
+        // meeting_action is cleared by Meeting, not by Chat.
+        if (bucket && bucketOf(r) !== bucket) continue;
         let keyId;
         switch (r.category) {
           case 'chat':     keyId = r.drumate_id || r.key_id; break;
@@ -285,10 +428,50 @@ class MfsActivity extends Entity {
       this.warn('[MFS_ACTIVITY] mark_all_read: rollup enumerate failed', e && e.message);
     }
 
+    // Task rows are yp.contact_activity events, NOT notification_center_next
+    // rollups, so the loop above has never been able to clear them — clearing
+    // "all" left them behind. The 5-tab UI makes that visible: a Mark-as-all-read
+    // on the Task tab would appear to do nothing at all.
+    //
+    // Scoped to bucket === 'task' ON PURPOSE. Doing it unscoped would clear rows
+    // the unscoped call has never cleared, which is a behaviour change to a path
+    // that works today — so the capability is added only on the new code path.
+    // Pre-existing unscoped behaviour stays untouched.
+    if (bucket === BUCKET.task) {
+      for (const proc of [
+        'contact_task_assigned_unread',
+        'contact_task_mention_unread',
+        'contact_task_column_change_unread',
+      ]) {
+        try {
+          const rows = toArray(await this.yp.await_proc(proc, this.uid));
+          for (const r of rows) {
+            const activityId = parseInt(r && r.id);
+            if (!activityId) continue;
+            try {
+              await this._callUserProc('contact_activity_dismiss', this.uid, activityId);
+            } catch (e) {
+              this.warn('[MFS_ACTIVITY] mark_all_read: task dismiss failed', activityId, e && e.message);
+            }
+          }
+        } catch (e) {
+          // A missing proc during a rollout window must not sink the whole call —
+          // same reasoning as the get_feed merge above (debug, not warn, so the
+          // alert bot isn't spammed until the SQL lands).
+          this.debug(`[MFS_ACTIVITY] mark_all_read: ${proc} skipped`, e && e.message);
+        }
+      }
+    }
+
     if (data && data.status === 'ok') {
       return this.output.data({
         status: 'ok',
-        message: 'All notifications marked as read',
+        // The unscoped wording is unchanged on purpose; only a tab-scoped call
+        // gets different copy, because claiming "all" there would be false.
+        message: bucket
+          ? `Notifications marked as read for ${bucket}`
+          : 'All notifications marked as read',
+        bucket: bucket || null,
         last_read_id: data.last_read_id,
         mtime: data.mtime
       });
@@ -318,6 +501,9 @@ class MfsActivity extends Entity {
     const page = this.input.use(Attr.page) || 1;
     const filter = this.input.use('filter') || 'all';
     const unreadOnly = parseInt(this.input.use('unread_only') || 0);
+    // Round 3: one of the 5 Notification Center tabs. null = unscoped, i.e. the
+    // exact pre-existing behaviour for every caller that doesn't send it.
+    const bucket = validBucket(this.input.use('bucket'));
     // unread_only=1 → unread-only feed (mfs_get_activity_feed, unchanged).
     // unread_only=0 → full feed (read + unread together) via
     // activity_get_feed_all, which returns the unified log with a correct
@@ -479,6 +665,21 @@ class MfsActivity extends Entity {
     // assignments, mentions, and watched-column create/move notifications.
     flattenTaskFields(result);
     flattenTaskColumnChange(result);
+
+    // Stamp the tab on every row, then (only when the caller asked for a tab)
+    // narrow to it. Deliberately AFTER every merge above, so a row is judged by
+    // its final shape — the rollup merge is what supplies `category` and
+    // `meeting_action`, and flattenTaskFields runs before this too.
+    //
+    // Filtering the assembled page rather than filtering in SQL matches how the
+    // existing `mentions` / `shares` tabs have always worked (see the filter
+    // branch near the top of this method): a tab's page N holds that tab's share
+    // of feed page N. Same trade-off, no new behaviour — and crucially, without
+    // a `bucket` the output is byte-for-byte what it was before.
+    stampBuckets(result);
+    if (bucket) {
+      result = result.filter((row) => row && row.bucket === bucket);
+    }
 
     this.output.list(result);
   }
@@ -726,12 +927,15 @@ class MfsActivity extends Entity {
       // the existing notification badge.
       this.debug('[ACTIVITY] notification_workspace_moves unavailable', e && e.message);
     }
-    return [
+    // Stamp `bucket` here so BOTH consumers get it from one place: list() (the
+    // badge / priority source) and get_feed()'s chronological merge. Purely
+    // additive — an existing client that ignores the field is unaffected.
+    return stampBuckets([
       ...rows.map(mapNotificationRow),
       ...hubs.map(mapHubInviteRow),
       ...refused.map(mapContactRefusedRow),
       ...workspaceMoves,
-    ];
+    ]);
   }
 
   /**

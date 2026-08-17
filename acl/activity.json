@@ -37,6 +37,11 @@
           "required": false,
           "default": 0,
           "description": "Specific changelog ID to mark as last read. If not provided or 0, uses the latest changelog ID from database."
+        },
+        "bucket": {
+          "type": "string",
+          "required": false,
+          "description": "Notification Center tab to clear - files, task, meeting, chat or other. Only that tab's notifications are marked read. Omitted or unrecognised clears everything, exactly as before. The changelog read pointer and the share-open seen flag back the files tab, so they are only advanced for files or for an unscoped call."
         }
       },
       "returns": {
@@ -85,6 +90,11 @@
           "required": false,
           "default": 1,
           "description": "Page number for pagination (45 items per page)"
+        },
+        "bucket": {
+          "type": "string",
+          "required": false,
+          "description": "Notification Center tab to narrow the feed to - files, task, meeting, chat or other. Omitted or unrecognised means no tab scope, i.e. the full feed exactly as before. Each row's bucket is assigned server-side and returned in the bucket field."
         }
       },
       "returns": {
