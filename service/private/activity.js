@@ -193,6 +193,13 @@ const BUCKET_BY_EVENT = {
 
 const BUCKET_BY_CATEGORY = {
   // Files — uploads, folder creates, shares, removes, workspace moves.
+  //
+  // ⚠️ Link-sharing notifications (`share_open`, `media.share`) belong to FILES,
+  // and that is deliberate even though the backlog's row-4 text lists "Files/
+  // Folders's link sharing activity" under Other. Lexis (PO) was asked directly
+  // on 2026-08-19 — including the folder-link case — and ruled Files, because
+  // Other is defined as member invites plus miscellaneous. The PO's call wins
+  // over the sheet's prose; do not "fix" this back from the sheet.
   media: BUCKET.files,
   mfs: BUCKET.files,
   workspace_move: BUCKET.files,
@@ -712,6 +719,12 @@ class MfsActivity extends Entity {
     } catch (e) {
       this.warn('[ACTIVITY] contact_task_column_change_unread failed', e && e.message);
     }
+    // These rows are pinned into the panel alongside activity.list rows, so they
+    // need the same `bucket` field or the client cannot filter them by tab. They
+    // resolve to `task` via their event name — the client relabels their
+    // `category` to 'contact_invite' for dismiss routing, which would otherwise
+    // send them to Other.
+    stampBuckets(rows);
     this.output.list(rows);
   }
 
@@ -936,6 +949,81 @@ class MfsActivity extends Entity {
       ...refused.map(mapContactRefusedRow),
       ...workspaceMoves,
     ]);
+  }
+
+  /**
+   * Unread count per Notification Center tab, for the badges on the tab bar
+   * (Figma `number-noti`). One call, so the panel does not fan out per tab.
+   *
+   * Counting convention is ONE PER ROW, not the sum of each rollup's `cnt` —
+   * the same convention the bell badge already uses. "Tran sent 3 messages"
+   * is one row the user sees, so it is one, not three. Changing that here
+   * would make the tab badges disagree with the bell.
+   *
+   * Every source is best-effort and independent: a failing or not-yet-deployed
+   * proc contributes 0 rather than sinking the whole response, because a wrong
+   * badge is far better than a panel that cannot render its tab bar.
+   *
+   * Endpoint: POST /activity.unread_counts
+   * Output: { all, files, task, meeting, chat, other }
+   */
+  async unread_counts() {
+    const counts = { files: 0, task: 0, meeting: 0, chat: 0, other: 0 };
+    // bucketOf only ever returns one of the five, but guard the write anyway so
+    // an unexpected value can never create a stray key on the response.
+    const bump = (row) => {
+      const bucket = bucketOf(row);
+      if (Object.prototype.hasOwnProperty.call(counts, bucket)) counts[bucket] += 1;
+    };
+
+    // 1. The rollup categories + hub invites + refused invitations + workspace
+    //    moves. Already bucket-stamped; bucketOf is idempotent on them.
+    try {
+      for (const r of await this._notificationRollups()) if (r) bump(r);
+    } catch (e) {
+      this.warn('[ACTIVITY] unread_counts: rollups failed', e && e.message);
+    }
+
+    // 2. yp.contact_activity unread rows. Task events land in Task; the system
+    //    alerts (storage, reward expiry) land in Other. Same proc list get_feed
+    //    merges, so the badge and the feed agree on what exists.
+    for (const proc of [
+      'contact_task_assigned_unread',
+      'contact_task_mention_unread',
+      'contact_task_column_change_unread',
+      'contact_storage_alert_unread',
+      'contact_reward_expiry_unread',
+    ]) {
+      try {
+        for (const r of toArray(await this.yp.await_proc(proc, this.uid))) if (r) bump(r);
+      } catch (e) {
+        // debug, not warn: a proc missing during a rollout window is expected
+        // and must not spam the alert bot.
+        this.debug(`[ACTIVITY] unread_counts: ${proc} skipped`, e && e.message);
+      }
+    }
+
+    // 3. Unread secure-share opens ("{email} opened {folder}") — Files, per the
+    //    PO's ruling that link-sharing activity belongs to Files.
+    try {
+      const opens = toArray(await this.yp.await_proc('secure_share_open_feed', this.uid, 1));
+      for (const r of opens) if (r) bump({ ...r, category: 'share_open' });
+    } catch (e) {
+      this.debug('[ACTIVITY] unread_counts: secure_share_open_feed skipped', e && e.message);
+    }
+
+    // 4. Pending secure-share access requests addressed to this user — Other.
+    //    The panel counts these into the bell badge today, so leaving them out
+    //    would make the tabs sum to less than the bell.
+    try {
+      const reqs = toArray(await this.yp.await_proc('secure_share_list_requests', this.uid));
+      for (const r of reqs) if (r) bump({ ...r, category: 'access_request' });
+    } catch (e) {
+      this.debug('[ACTIVITY] unread_counts: secure_share_list_requests skipped', e && e.message);
+    }
+
+    const all = counts.files + counts.task + counts.meeting + counts.chat + counts.other;
+    this.output.data({ all, ...counts });
   }
 
   /**

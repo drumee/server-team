@@ -290,14 +290,216 @@ for (const [label, input] of [
 }
 
 // ---------------------------------------------------------------------------
-// Report
+// 8. activity.unread_counts — the per-tab badge numbers (Figma `number-noti`).
+//
+// Runs the REAL method, sliced out of the class the same way as the helpers
+// above, against stubbed stored procedures. What matters here is not SQL but
+// the counting contract: one per row, correct bucket per source, `all` equal to
+// the sum, and every source isolated so one failure cannot zero the rest.
 // ---------------------------------------------------------------------------
-console.log(`\nnotification bucket mapper — ${pass} passed, ${failures.length} failed\n`);
-if (failures.length) {
-  for (const f of failures) console.error('  FAIL  ' + f);
-  console.error('');
-  process.exit(1);
+{
+  // Faithful to lib/utils/index.js toArray(a, no_null = 1) for the shapes this
+  // test feeds it (arrays and empties). It is NOT a general lodash-isEmpty
+  // replica — the stubs below only ever return arrays.
+  const toArray = (a) => {
+    if (a == null) return [];
+    if (Array.isArray(a)) return a;
+    if (typeof a === 'object' && Object.keys(a).length === 0) return [];
+    return [a];
+  };
+
+  const MARKER = '\n  async unread_counts() {';
+  const mStart = src.indexOf(MARKER);
+  if (mStart < 0) {
+    console.error('FATAL: could not find unread_counts() in the service module');
+    process.exit(1);
+  }
+  // Brace-match from the method's OWN `{`, not from the marker start.
+  let d = 0;
+  let mEnd = -1;
+  for (let i = src.indexOf('{', mStart); i < src.length; i++) {
+    if (src[i] === '{') d++;
+    else if (src[i] === '}') { d--; if (d === 0) { mEnd = i + 1; break; } }
+  }
+  if (mEnd < 0) { console.error('FATAL: unbalanced braces slicing unread_counts'); process.exit(1); }
+  const methodSrc = src.slice(mStart, mEnd);
+  for (const needed of ['_notificationRollups', 'secure_share_list_requests', 'contact_task_assigned_unread']) {
+    if (!methodSrc.includes(needed)) {
+      console.error(`FATAL: sliced unread_counts is missing ${needed} — slicer is wrong`);
+      process.exit(1);
+    }
+  }
+  const impl = (new Function('toArray', 'bucketOf', `return { ${methodSrc} };`))(toArray, bucketOf);
+
+  // Build a stub `this`. `procs` maps proc name -> rows, or a thrown Error.
+  function harness({ rollups = [], procs = {} } = {}) {
+    let captured = null;
+    const ctx = {
+      uid: 'u1',
+      warn() {}, debug() {},
+      output: { data(o) { captured = o; } },
+      yp: {
+        async await_proc(name) {
+          const v = procs[name];
+          if (v instanceof Error) throw v;
+          return v || [];
+        },
+      },
+      async _notificationRollups() {
+        if (rollups instanceof Error) throw rollups;
+        return rollups;
+      },
+    };
+    return impl.unread_counts.call(ctx).then(() => captured);
+  }
+
+  const results = [];
+  const q = (label, cfg, assert) => results.push(harness(cfg).then((got) => assert(label, got)));
+
+  // Each source lands in the right bucket.
+  q('rollups bucket correctly', {
+    rollups: [
+      { category: 'media' }, { category: 'media' },              // files x2
+      { category: 'chat' },                                       // chat
+      { category: 'teamchat', meeting_action: 'start' },           // meeting
+      { category: 'teamchat' },                                   // chat
+      { category: 'hub_invite' },                                 // other
+    ],
+  }, (label, got) => {
+    check(`${label}: files`, got.files, 2);
+    check(`${label}: chat`, got.chat, 2);
+    check(`${label}: meeting`, got.meeting, 1);
+    check(`${label}: other`, got.other, 1);
+    check(`${label}: task`, got.task, 0);
+    check(`${label}: all is the sum`, got.all, 6);
+  });
+
+  q('contact_activity procs split task vs other', {
+    procs: {
+      contact_task_assigned_unread: [{ id: 1, event: 'task_assigned' }],
+      contact_task_mention_unread: [{ id: 2, event: 'task_mention' }],
+      contact_task_column_change_unread: [{ id: 3, event: 'task_column_change' }],
+      contact_storage_alert_unread: [{ id: 4, event: 'storage_alert' }],
+      contact_reward_expiry_unread: [{ id: 5, event: 'reward_expiry_warning' }],
+    },
+  }, (label, got) => {
+    check(`${label}: task`, got.task, 3);
+    check(`${label}: other (system alerts)`, got.other, 2);
+    check(`${label}: all`, got.all, 5);
+  });
+
+  q('share opens count as files, access requests as other', {
+    procs: {
+      secure_share_open_feed: [{ id: 1 }, { id: 2 }],
+      secure_share_list_requests: [{ request_id: 'r1' }],
+    },
+  }, (label, got) => {
+    check(`${label}: files`, got.files, 2);
+    check(`${label}: other`, got.other, 1);
+    check(`${label}: all`, got.all, 3);
+  });
+
+  // One per ROW, never the rollup's event count — this is what keeps the tab
+  // badges consistent with the bell badge.
+  q('a rollup of many events counts once', {
+    rollups: [{ category: 'chat', cnt: 5 }, { category: 'teamchat', cnt: 12 }],
+  }, (label, got) => {
+    check(`${label}: chat`, got.chat, 2);
+    check(`${label}: all`, got.all, 2);
+  });
+
+  // Best-effort isolation: one broken source must not zero the others.
+  q('a throwing proc contributes 0 but the rest still count', {
+    rollups: [{ category: 'media' }],
+    procs: {
+      contact_task_assigned_unread: new Error('proc missing during rollout'),
+      contact_task_mention_unread: [{ id: 9, event: 'task_mention' }],
+      secure_share_list_requests: new Error('boom'),
+    },
+  }, (label, got) => {
+    check(`${label}: files survived`, got.files, 1);
+    check(`${label}: task counted the working proc`, got.task, 1);
+    check(`${label}: other stayed 0`, got.other, 0);
+    check(`${label}: all`, got.all, 2);
+  });
+
+  q('rollups failing entirely still returns a usable response', {
+    rollups: new Error('rollup enumerate failed'),
+    procs: { contact_task_assigned_unread: [{ id: 1, event: 'task_assigned' }] },
+  }, (label, got) => {
+    ok(`${label}: responded`, !!got);
+    check(`${label}: task`, got.task, 1);
+    check(`${label}: all`, got.all, 1);
+  });
+
+  // Degenerate rows must not crash or invent keys.
+  q('null rows and unknown categories are safe', {
+    rollups: [null, undefined, { category: 'brand_new_2027' }],
+  }, (label, got) => {
+    check(`${label}: unknown fell to other`, got.other, 1);
+    check(`${label}: all`, got.all, 1);
+  });
+
+  q('empty everywhere returns all zeros', {}, (label, got) => {
+    check(`${label}: all`, got.all, 0);
+    for (const tab of TABS) check(`${label}: ${tab}`, got[tab], 0);
+  });
+
+  q('response shape is exactly all + the 5 tabs', {
+    rollups: [{ category: 'chat' }],
+  }, (label, got) => {
+    const keys = Object.keys(got).sort();
+    check(`${label}: key count`, keys.length, 6);
+    check(`${label}: keys`, keys.join(','), ['all'].concat(TABS).sort().join(','));
+  });
+
+  // The own-property guard inside bump() is defence-in-depth: the real bucketOf
+  // is total over the 5 tabs, so nothing should ever reach it. Prove it holds
+  // anyway by injecting a bucketOf that returns a prototype-chain key. Without
+  // the guard, `counts['constructor'] = (counts['constructor'] || 0) + 1`
+  // resolves to Object's own constructor function and stringifies into a stray
+  // 7th key on the response — a corrupt payload the client would render.
+  {
+    const implHostile = (new Function('toArray', 'bucketOf', `return { ${methodSrc} };`))(
+      toArray, () => 'constructor',
+    );
+    let captured = null;
+    const ctx = {
+      uid: 'u1', warn() {}, debug() {},
+      output: { data(o) { captured = o; } },
+      yp: { async await_proc() { return []; } },
+      async _notificationRollups() { return [{ category: 'chat' }, { category: 'media' }]; },
+    };
+    results.push(implHostile.unread_counts.call(ctx).then(() => {
+      const keys = Object.keys(captured).sort();
+      check('hostile bucketOf: no stray key on the response', keys.length, 6);
+      check('hostile bucketOf: keys unchanged', keys.join(','), ['all'].concat(TABS).sort().join(','));
+      check('hostile bucketOf: all stays numeric', typeof captured.all, 'number');
+      check('hostile bucketOf: all is 0, nothing was miscounted', captured.all, 0);
+    }));
+  }
+
+  // The assertions above run inside promises. Node runs this file top to
+  // bottom, so the report has to wait for them — otherwise it prints a pass
+  // count that silently omits this whole section.
+  Promise.all(results).then(report, (e) => {
+    console.error('FATAL: unread_counts harness threw', e);
+    process.exit(1);
+  });
 }
-console.log('  All good: the 5 tabs partition every known row shape, degenerate');
-console.log('  input can never escape the tab set, and an unscoped call is');
-console.log('  byte-for-byte what it was before buckets existed.\n');
+
+// ---------------------------------------------------------------------------
+// Report — called once the async section above has settled.
+// ---------------------------------------------------------------------------
+function report() {
+  console.log(`\nnotification buckets + unread counts — ${pass} passed, ${failures.length} failed\n`);
+  if (failures.length) {
+    for (const f of failures) console.error('  FAIL  ' + f);
+    console.error('');
+    process.exit(1);
+  }
+  console.log('  All good: the 5 tabs partition every known row shape, degenerate');
+  console.log('  input can never escape the tab set, an unscoped call is');
+  console.log('  byte-for-byte what it was before buckets existed, and the tab');
+  console.log('  badges count one per row with every source isolated.\n');
+}

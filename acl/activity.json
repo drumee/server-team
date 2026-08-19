@@ -25,6 +25,51 @@
       "errors": []
     },
 
+    "unread_counts": {
+      "doc": "Unread notification count per Notification Center tab, for the tab-bar badges. Counts one per notification row the user sees - not the sum of each rollup's event count - so the tab badges agree with the bell badge. Every underlying source is best-effort: one that fails or is not yet deployed contributes zero instead of failing the call.",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "params": {},
+      "returns": {
+        "type": "object",
+        "properties": {
+          "all": {
+            "type": "integer",
+            "description": "Total across every tab - the sum of the five below",
+            "example": 14
+          },
+          "files": {
+            "type": "integer",
+            "description": "Files tab: uploads, folder creates, removes, workspace moves and link-sharing activity",
+            "example": 5
+          },
+          "task": {
+            "type": "integer",
+            "description": "Task tab: assignments, task mentions and watched-column changes",
+            "example": 3
+          },
+          "meeting": {
+            "type": "integer",
+            "description": "Meeting tab: meeting start and end events",
+            "example": 1
+          },
+          "chat": {
+            "type": "integer",
+            "description": "Chat tab: p2p messages and folder chat",
+            "example": 4
+          },
+          "other": {
+            "type": "integer",
+            "description": "Other tab: workspace and team invites, contacts, tickets, access requests and system alerts",
+            "example": 1
+          }
+        }
+      },
+      "errors": []
+    },
+
     "mark_all_read": {
       "doc": "Mark all MFS notifications as read for current user. Updates the mfs_ack table with the last read changelog ID. If no last_id provided, uses the latest changelog ID from database.",
       "scope": "hub",
