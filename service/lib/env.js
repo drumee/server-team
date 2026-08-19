@@ -146,6 +146,13 @@ function platform() {
   // because the client only needs on/off; there is no "derive it" third
   // state for this one.
   platform.over_limit_enforcement = global.myDrumee.over_limit_enforcement ? 1 : 0;
+  // Contextual tutorial sub-tours (desk triggers fire a short tour on the
+  // user's FIRST interaction with a surface, once per user ever). Same rollout
+  // pattern and same coercion as over_limit_enforcement above: off unless the
+  // deployment's myDrumee.json turns it on. Off means the desk keeps today's
+  // single post-signup tour and no trigger fires, so this is a true kill
+  // switch — the client writes nothing while it is 0.
+  platform.contextual_tours = global.myDrumee.contextual_tours ? 1 : 0;
   platform.cdnHost = global.myDrumee.cdnHost;
   platform.version = global.VERSION;
   platform.TfaMethods = TfaMethods;

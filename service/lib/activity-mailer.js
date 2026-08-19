@@ -133,20 +133,44 @@ function _redis() {
  * fullname and `online` flag, minus the actor.
  *
  * hub_get_members_by_type is a hub-only proc, so on a personal (drumate)
- * database there is nobody else to notify. We test the area up front rather
- * than letting the call fail: swallowing the throw was behaviourally correct
- * but mariadb_stub logs every SQL failure at WARN *before* we catch it, so
- * PROD alerted on ER_SP_DOES_NOT_EXIST ~500x/day from the moment activity
- * mail went live (2026-08-11) — every MFS event funnels through
- * changelog_write, and on a personal desk that is every upload.
+ * database there is nobody else to notify. Skipping the call up front keeps
+ * ER_SP_DOES_NOT_EXIST out of the logs — mariadb_stub logs every SQL failure
+ * at WARN *before* we catch it, so each one surfaced as a PROD alert once
+ * activity mail went live (2026-08-11): notifyHubActivity is hooked at
+ * changelog_write, the funnel every MFS event passes through.
  *
- * Mirrors the existing guard in service/private/hub.js `_members_by_type`.
- * The try/catch below is kept as a backstop for any other database that
- * happens to lack the proc.
+ * WHY THE IDENTITY TEST AND NOT ONLY `area`
+ * ----------------------------------------
+ * An earlier version of this guard tested `hub.get(Attr.area) === "personal"`
+ * alone and did NOT work. Reproduced on stage 2026-08-19 via desk.create_hub
+ * and logged what the guard actually sees:
+ *
+ *   {"svc":"desk.create_hub","uid":"0d8f…","hub_id":"0d8f…",
+ *    "hub_db":"a_0d8f…","ctx_dbname":"a_0d8f…","hub_ctor":"__core_user"}
+ *
+ * `area` and `type` were absent: on this path `ctx.hub` is a **__core_user**,
+ * not a hub/entity model, so it carries `id` and `db_name` but no `area`, and
+ * `get(Attr.area)` is undefined. Hence the primary test is identity —
+ * a real hub id is never the caller's own id — which uses only fields
+ * __core_user does carry. The `area` test is kept for contexts where `hub` IS
+ * a proper entity model.
+ *
+ * NB service/private/hub.js `_members_by_type` guards on `area` alone and has
+ * the same blind spot on any path where hub is a __core_user; it held for the
+ * ACL-routed hub services it was written for, but is worth hardening the same
+ * way if those paths ever reach it.
+ *
+ * The try/catch below stays as a backstop for any other database lacking the
+ * proc. It matters beyond log noise: where a legacy copy of the proc still
+ * exists in a personal DB (seen on stage, 0/3538 on prod) the call SUCCEEDS
+ * and would return that desk's own permission rows — i.e. mail to people who
+ * should not get it.
  */
 async function _recipients(ctx, actorId) {
   const seen = new Set();
   const out = [];
+  const hubId = ctx.hub && ctx.hub.get ? ctx.hub.get(Attr.id) : null;
+  if (hubId && ctx.uid && hubId === ctx.uid) return out;
   if (ctx.hub && ctx.hub.get && ctx.hub.get(Attr.area) === "personal") return out;
   for (let page = 1; page <= MAX_MEMBER_PAGES; page++) {
     let rows;

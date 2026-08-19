@@ -33,6 +33,11 @@ const { Entity, Generator, MfsTools } = require("@drumee/server-core");
 const { get_node_content } = MfsTools;
 const { purge_account } = require("../lib/account-purge");
 
+// Contextual tutorial tour ids. See tutorial_seen() below for why this list is
+// duplicated in acl/drumate.json and in ui-team's tours.js, and what a
+// mismatch costs.
+const __TUTORIAL_TOURS = ['workspace', 'folder_task', 'share', 'migrate'];
+
 //########################################
 class __private_drumate extends Entity {
 
@@ -518,6 +523,60 @@ class __private_drumate extends Entity {
     this.debug(`:::::${settings_str}:::::::: update_settings`);
     let res = await this.yp.await_proc('entity_update_settings', this.uid, settings_str);
     this.output.data(res);
+  }
+
+  /**
+   * Record that one contextual tutorial tour has been shown to this user.
+   *
+   * Deliberately NOT routed through update_settings above: that one merges
+   * only at the top level, and it merges from `this.user` — the session
+   * snapshot taken when the request started, not a fresh read. Two sessions
+   * recording two different tours would lose one of them, and a nested
+   * `tutorials_seen` map posted through it would be replaced wholesale rather
+   * than merged. drumate_tutorial_seen does the merge in one atomic UPDATE
+   * against the current column value instead.
+   *
+   * ALLOW-LIST: these ids are a wire contract shared with two other files and
+   * there is no mechanism in this stack for sharing a constant across them —
+   * getServices() ships service NAMES to the client, not params. Adding a tour
+   * means editing all three:
+   *   - acl/drumate.json                             (the tour_id doc string)
+   *   - ui-team src/drumee/modules/desk/tutorial/tours.js   (the TOURS keys)
+   *   - here
+   * A mismatch fails as a silently rejected write with no client-side symptom,
+   * so the id is validated rather than passed through.
+   */
+  async tutorial_seen() {
+    const reset = ~~this.input.use('reset');
+    if (reset) {
+      // QA reset. Dev-gated server-side rather than trusting the client flag,
+      // so a normal account cannot clear its own seen-map and replay the tours.
+      const profile = this.parseJSON(this.user.get(Attr.profile)) || {};
+      if (!profile.devel) {
+        return this.exception.forbiden();
+      }
+      const res = await this.yp.await_proc('drumate_tutorial_seen', this.uid, null, 1);
+      return this.output.data(this._tutorialsSeen(res));
+    }
+
+    const tour_id = this.input.use('tour_id');
+    if (!__TUTORIAL_TOURS.includes(tour_id)) {
+      return this.exception.bad_request('INVALID_TOUR_ID');
+    }
+    const res = await this.yp.await_proc('drumate_tutorial_seen', this.uid, tour_id, 0);
+    this.output.data(this._tutorialsSeen(res));
+  }
+
+  /**
+   * The proc returns `tutorials_seen` as a JSON string (entity.settings is
+   * mediumtext, not a native JSON column, so JSON_EXTRACT hands back text).
+   * Normalise it to an object for the client, which reads it as a map.
+   */
+  _tutorialsSeen(res) {
+    const row = isArray(res) ? res[0] : res;
+    const raw = row && row.tutorials_seen;
+    const map = (typeof raw === 'string' ? this.parseJSON(raw) : raw) || {};
+    return { tutorials_seen: map };
   }
 
   /**

@@ -485,6 +485,32 @@
         }
       }
     },
+    "tutorial_seen": {
+      "doc": "Record that one contextual tutorial tour has been shown to this user, and return the whole seen-map. First-write-wins and idempotent: repeating a tour_id returns the existing timestamp rather than an error. Tour ids MUST stay in sync with two other sites: the allow-list constant in service/private/drumate.js and the TOURS registry in ui-team src/drumee/modules/desk/tutorial/tours.js. Allowed: workspace, folder_task, share, migrate. TODO(OQ4): flip \"log\" to true once privacy sign-off lands — see plan §4 S9; it is false for now so Phase 1 creates no per-user behavioural rows in services_log that might later have to be deleted.",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "log": false,
+      "params": {
+        "tour_id": {
+          "type": "string",
+          "required": false,
+          "doc": "One of: workspace, folder_task, share, migrate. Ignored when reset is set."
+        },
+        "reset": {
+          "type": "number",
+          "required": false,
+          "doc": "1 = QA reset: empty the seen-map and drop the legacy tutorial_done flag. Refused unless the caller's profile carries devel:1."
+        }
+      },
+      "returns": {
+        "tutorials_seen": {
+          "type": "object",
+          "doc": "Map of tour_id to the unix timestamp at which it was first shown"
+        }
+      }
+    },
     "update_settings": {
       "doc": "Update user settings (merged with existing settings)",
       "scope": "hub",
@@ -830,10 +856,22 @@
         "src": "owner"
       },
       "returns": {
-        "files": { "type": "number", "doc": "Bytes of user-owned files" },
-        "chat": { "type": "number", "doc": "Bytes of team chat text" },
-        "workspace": { "type": "number", "doc": "Bytes of workspace files the user can access" },
-        "activity": { "type": "number", "doc": "Approximate bytes of the activity CSVs" }
+        "files": {
+          "type": "number",
+          "doc": "Bytes of user-owned files"
+        },
+        "chat": {
+          "type": "number",
+          "doc": "Bytes of team chat text"
+        },
+        "workspace": {
+          "type": "number",
+          "doc": "Bytes of workspace files the user can access"
+        },
+        "activity": {
+          "type": "number",
+          "doc": "Approximate bytes of the activity CSVs"
+        }
       },
       "method": "backup_size"
     },
