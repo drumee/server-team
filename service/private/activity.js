@@ -551,12 +551,23 @@ class MfsActivity extends Entity {
         for (const r of opens) {
           if (!r) continue;
           let nodeName = '';
+          // Round 3 Phase 1c: the client also needs the shared node's TYPE and
+          // PARENT. Without them it cannot tell a shared file from a shared
+          // folder and was building the deep link with `filetype=folder&pid=0`
+          // hardcoded, so a shared FILE opened a phantom empty folder named
+          // after the file. Both already come back from the mfs_node_attr call
+          // this loop makes anyway (it returns filetype/ftype and parent_id) —
+          // no extra query and no schema change, just stop discarding them.
+          let nodeFiletype = '';
+          let nodeParentId = '';
           if (r.hub_id && r.node_id) {
             try {
               const a = toArray(
                 await this.yp.await_proc('forward_proc', r.hub_id, 'mfs_node_attr', `'${r.node_id}'`)
               )[0] || {};
               if (a.filename) nodeName = a.filename;
+              if (a.filetype || a.ftype) nodeFiletype = a.filetype || a.ftype;
+              if (a.parent_id != null) nodeParentId = String(a.parent_id);
             } catch (e) { /* keep fallback */ }
           }
           result.push({
@@ -567,6 +578,11 @@ class MfsActivity extends Entity {
             hub_id         : r.hub_id,
             node_id        : r.node_id,
             node_name      : nodeName,
+            // Deliberately NOT named `filetype`/`parent_id`: those keys already
+            // drive isFolder() and the media deep link in the row widget, and
+            // reusing them would change behaviour outside this row type.
+            node_filetype  : nodeFiletype,
+            node_parent_id : nodeParentId,
             recipient_email: r.recipient_email,
             fullname       : r.recipient_email || 'Someone',
             is_read        : r.is_read ? 1 : 0,
