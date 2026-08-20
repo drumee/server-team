@@ -46,6 +46,13 @@ function mapNotificationRow(r) {
     meeting_action: r.meeting_action,
   };
 
+  // A folder chat rollup names the folder the message was posted in, which is
+  // the chip. The sentence therefore no longer has to carry it — see the
+  // teamchat branch in the row skeleton.
+  if (r.category === 'teamchat') {
+    item.folder_name = item.filename;
+  }
+
   if (r.category === 'media') {
     const targetName = firstValue(
       r.folder_name,
@@ -67,6 +74,13 @@ function mapNotificationRow(r) {
     item.item_filename = r.item_filename;
     item.filename = targetName;
     item.link_label = targetName;
+    // The containing folder/workspace, for the card's folder chip (Figma
+    // component property `folder-name`). On a media rollup `targetName` IS the
+    // destination folder — the uploaded file's own name is item_filename — so
+    // the chip and the sentence read from two different fields and cannot
+    // duplicate each other. Raw mfs_changelog rows carry only the file, and get
+    // this resolved from their parent id instead; see _stampFolderNames.
+    item.folder_name = targetName;
     item.author_id = firstValue(r.author_id, r.owner_id, r.drumate_id);
     item.author_firstname = firstValue(r.author_firstname, r.firstname);
     item.author_lastname = firstValue(r.author_lastname, r.lastname);
@@ -699,12 +713,91 @@ class MfsActivity extends Entity {
     // branch near the top of this method): a tab's page N holds that tab's share
     // of feed page N. Same trade-off, no new behaviour — and crucially, without
     // a `bucket` the output is byte-for-byte what it was before.
+    // Resolve the containing folder for file rows that only carry the file's
+    // own attributes. Must run before the bucket filter only in the sense that
+    // it is cheaper here (one pass over the assembled page); it is independent
+    // of bucketing either way.
+    await this._stampFolderNames(result);
+
     stampBuckets(result);
     if (bucket) {
       result = result.filter((row) => row && row.bucket === bucket);
     }
 
     this.output.list(result);
+  }
+
+  /**
+   * Stamp `folder_name` on file rows that carry only the FILE's attributes.
+   *
+   * The Figma card shows the containing folder/workspace in a chip next to the
+   * timestamp, so the client needs ONE field it can trust regardless of where a
+   * row came from. Rollup rows already resolve it (mapNotificationRow), but raw
+   * `yp.mfs_changelog` rows embed only the file's own node attributes in
+   * `src`/`dest` — the parent's NAME appears nowhere on them, just its id.
+   *
+   * Resolved per DISTINCT (hub_id, parent_id), not per row: a page of uploads is
+   * normally a handful of folders, so this is a few lookups rather than one per
+   * row. `mfs_node_attr` already returns the WORKSPACE name when the parent is
+   * the hub root, which is exactly what the chip should read for a file dropped
+   * at the top level of a workspace.
+   *
+   * Deliberately conservative:
+   *  - never overwrites a folder_name a rollup already resolved;
+   *  - MAX_LOOKUPS bounds the worst case, so a pathological page can never fan
+   *    out into an unbounded number of queries;
+   *  - internal plumbing folders (`__chat__`, `__upload__`) are dropped rather
+   *    than shown to a user;
+   *  - every failure is swallowed — an absent chip is the pre-existing look,
+   *    whereas throwing here would take out the whole feed.
+   */
+  async _stampFolderNames(rows) {
+    const MAX_LOOKUPS = 12;
+    if (!Array.isArray(rows) || !rows.length) return;
+
+    const asObject = (v) => {
+      if (!v) return null;
+      if (typeof v === 'object') return v;
+      try { return JSON.parse(v); } catch (e) { return null; }
+    };
+    // A name Drumee uses for plumbing, not a folder a person put a file in.
+    const internal = (n) => !n || /^__.*__$/.test(n) || n.indexOf('__') === 0;
+
+    const wanted = new Map(); // "hub:parent" -> { hub_id, parent_id }
+    const targets = [];       // [row, key]
+    for (const r of rows) {
+      if (!r || r.folder_name) continue;
+      if (!/^media\./.test(String(r.event || ''))) continue;
+      // workspace_move already says where it went, in its own sentence.
+      if (r.event === 'media.workspace_move') continue;
+      const node = asObject(r.dest) || asObject(r.src) || {};
+      const parentId = r.parent_id || node.parent_id || node.pid;
+      const hubId = r.hub_id || node.hub_id;
+      if (!parentId || !hubId || `${parentId}` === '0') continue;
+      const key = `${hubId}:${parentId}`;
+      if (!wanted.has(key)) {
+        if (wanted.size >= MAX_LOOKUPS) continue;
+        wanted.set(key, { hub_id: hubId, parent_id: parentId });
+      }
+      targets.push([r, key]);
+    }
+    if (!wanted.size) return;
+
+    const names = new Map();
+    for (const [key, { hub_id, parent_id }] of wanted) {
+      try {
+        const a = toArray(
+          await this.yp.await_proc('forward_proc', hub_id, 'mfs_node_attr', `'${parent_id}'`)
+        )[0] || {};
+        if (a.filename && !internal(a.filename)) names.set(key, a.filename);
+      } catch (e) {
+        this.debug('[ACTIVITY] folder name lookup failed', key, e && e.message);
+      }
+    }
+    for (const [row, key] of targets) {
+      const name = names.get(key);
+      if (name) row.folder_name = name;
+    }
   }
 
   /**
