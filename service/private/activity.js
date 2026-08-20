@@ -562,6 +562,10 @@ class MfsActivity extends Entity {
     if (filter !== 'mentions' && filter !== 'shares' && page <= 1) {
       try {
         const opens = toArray(await this.yp.await_proc('secure_share_open_feed', this.uid, unreadOnly));
+        // Name the person who opened the share when the event carries no
+        // recipient email — otherwise the row reads "Someone opened X" even
+        // though we know exactly who it was.
+        const openers = await this._resolveOpeners(opens);
         for (const r of opens) {
           if (!r) continue;
           let nodeName = '';
@@ -598,7 +602,10 @@ class MfsActivity extends Entity {
             node_filetype  : nodeFiletype,
             node_parent_id : nodeParentId,
             recipient_email: r.recipient_email,
-            fullname       : r.recipient_email || 'Someone',
+            // `recipient_email` itself is NOT touched — the client sends it back
+            // to secure_share.mark_open_seen to persist the seen state. Only the
+            // display name falls back through the resolved opener.
+            fullname       : r.recipient_email || openers.get(r.actor_id) || 'Someone',
             is_read        : r.is_read ? 1 : 0,
             timestamp      : r.last_seen_at,
             ctime          : r.last_seen_at,
@@ -725,6 +732,51 @@ class MfsActivity extends Entity {
     }
 
     this.output.list(result);
+  }
+
+  /**
+   * Map actor_id -> display name, for share-open rows with no recipient email.
+   *
+   * A share-open event records the recipient's email only when the recipient
+   * identified themselves. It always records `actor_id` when a signed-in user
+   * opened the link, so most "Someone opened X" rows are people we can name —
+   * on stage, 77 of the 119 email-less events carry a resolvable actor.
+   *
+   * `ffffffffffffffff` is the anonymous sentinel: an unauthenticated visitor
+   * opened a public link, so there genuinely is nobody to name and the row must
+   * keep saying "Someone". Same guard as service/private/secure_share.js.
+   * A deleted account, or a guest with no drumate row, resolves to nothing and
+   * falls back the same way.
+   *
+   * One lookup per DISTINCT actor (a page is usually two or three people),
+   * capped, and best-effort: any failure just leaves the row saying "Someone",
+   * which is the pre-existing text.
+   */
+  async _resolveOpeners(opens) {
+    const MAX_LOOKUPS = 12;
+    const names = new Map();
+    if (!Array.isArray(opens) || !opens.length) return names;
+
+    const pending = [];
+    for (const r of opens) {
+      if (!r || r.recipient_email) continue;
+      const id = r.actor_id;
+      if (!id || id === 'ffffffffffffffff') continue;
+      if (names.has(id)) continue;
+      if (pending.length >= MAX_LOOKUPS) continue;
+      names.set(id, null);
+      pending.push(id);
+    }
+    for (const id of pending) {
+      try {
+        const d = toArray(await this.yp.await_proc('drumate_get', id))[0] || {};
+        const name = String(d.fullname || `${d.firstname || ''} ${d.lastname || ''}`).trim();
+        if (name) names.set(id, name);
+      } catch (e) {
+        this.debug('[ACTIVITY] opener lookup failed', id, e && e.message);
+      }
+    }
+    return names;
   }
 
   /**
