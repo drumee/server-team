@@ -770,9 +770,15 @@ class MfsActivity extends Entity {
       if (!/^media\./.test(String(r.event || ''))) continue;
       // workspace_move already says where it went, in its own sentence.
       if (r.event === 'media.workspace_move') continue;
-      const node = asObject(r.dest) || asObject(r.src) || {};
-      const parentId = r.parent_id || node.parent_id || node.pid;
-      const hubId = r.hub_id || node.hub_id;
+      // Read ACROSS src and dest instead of picking one. `dest` on an upload row
+      // parses to an EMPTY object, which is truthy — so `dest || src` selected
+      // {} and never looked at src, where the parent id actually lives. That
+      // silently left every changelog row without a chip.
+      const dest = asObject(r.dest) || {};
+      const source = asObject(r.src) || {};
+      const parentId = r.parent_id || dest.parent_id || dest.pid
+        || source.parent_id || source.pid;
+      const hubId = r.hub_id || dest.hub_id || source.hub_id;
       if (!parentId || !hubId || `${parentId}` === '0') continue;
       const key = `${hubId}:${parentId}`;
       if (!wanted.has(key)) {

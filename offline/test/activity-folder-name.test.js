@@ -113,6 +113,30 @@ const upload = (over = {}) => ({
     await h._stampFolderNames(rows);
     eq(rows[0].folder_name, 'viaPid', 'pid is accepted');
   }
+  {
+    // REGRESSION: an upload row's `dest` is an EMPTY object, which is truthy.
+    // Selecting `dest || src` therefore picked {} and never read src, where the
+    // parent id lives — every changelog row silently lost its chip. The fields
+    // must be read ACROSS both objects, not from whichever one exists.
+    const h = new Holder({ 'HUB1:P1': { filename: 'checkin' } });
+    const rows = [
+      upload({ dest: {} }),                       // already-parsed empty object
+      upload({ dest: '{}' }),                     // empty JSON string
+      upload({ dest: '[]' }),                     // empty array, as the driver can return
+    ];
+    await h._stampFolderNames(rows);
+    for (let i = 0; i < rows.length; i++) {
+      eq(rows[i].folder_name, 'checkin', `empty dest #${i} must not mask src`);
+    }
+    eq(h.calls.length, 1, 'still one lookup for the one distinct folder');
+  }
+  {
+    // And a non-empty dest still wins over src, as it must for a move.
+    const h = new Holder({ 'HUB1:PD': { filename: 'destWins' } });
+    const rows = [upload({ dest: JSON.stringify({ parent_id: 'PD' }), src: JSON.stringify({ parent_id: 'PS' }) })];
+    await h._stampFolderNames(rows);
+    eq(rows[0].folder_name, 'destWins', 'dest keeps precedence when it has data');
+  }
 
   console.log('\n3. lookups are deduped, not per row');
   {
