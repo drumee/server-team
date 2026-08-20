@@ -14,6 +14,24 @@ function firstValue(...values) {
   return undefined;
 }
 
+// Which identity to look up for a share-open event, or null when the opener is
+// genuinely anonymous. Shared by the resolver and the row builder so the two can
+// never disagree about what was looked up.
+//
+// The recipient's email wins over the actor id when both exist: the email is the
+// identity the row already displays, so resolving THAT keeps the name and the
+// avatar the same person. `ffffffffffffffff` is the anonymous sentinel — an
+// unauthenticated visitor on a public link (same guard as
+// service/private/secure_share.js).
+const ANONYMOUS_UID = 'ffffffffffffffff';
+function openerKeyOf(r) {
+  if (!r) return null;
+  if (r.recipient_email) return r.recipient_email;
+  const id = r.actor_id;
+  if (!id || id === ANONYMOUS_UID) return null;
+  return id;
+}
+
 function mapNotificationRow(r) {
   const item = {
     category: r.category,
@@ -562,9 +580,9 @@ class MfsActivity extends Entity {
     if (filter !== 'mentions' && filter !== 'shares' && page <= 1) {
       try {
         const opens = toArray(await this.yp.await_proc('secure_share_open_feed', this.uid, unreadOnly));
-        // Name the person who opened the share when the event carries no
-        // recipient email — otherwise the row reads "Someone opened X" even
-        // though we know exactly who it was.
+        // Identify who opened each share, for the row's name AND its avatar:
+        // without this the row reads "Someone opened X" even when we know
+        // exactly who it was, and shows the workspace icon rather than a face.
         const openers = await this._resolveOpeners(opens);
         for (const r of opens) {
           if (!r) continue;
@@ -588,7 +606,8 @@ class MfsActivity extends Entity {
               if (a.parent_id != null) nodeParentId = String(a.parent_id);
             } catch (e) { /* keep fallback */ }
           }
-          result.push({
+          const opener = openers.get(openerKeyOf(r)) || null;
+          const row = {
             category       : 'share_open',
             event          : 'secure_share.opened',
             id             : r.id,
@@ -605,11 +624,18 @@ class MfsActivity extends Entity {
             // `recipient_email` itself is NOT touched — the client sends it back
             // to secure_share.mark_open_seen to persist the seen state. Only the
             // display name falls back through the resolved opener.
-            fullname       : r.recipient_email || openers.get(r.actor_id) || 'Someone',
+            fullname       : r.recipient_email || (opener && opener.name) || 'Someone',
             is_read        : r.is_read ? 1 : 0,
             timestamp      : r.last_seen_at,
             ctime          : r.last_seen_at,
-          });
+          };
+          // Show the person who opened it instead of the workspace icon. Only
+          // when the lookup actually returned an account: getAuthorId falls back
+          // to hub_id without this, but an id that does not resolve makes the
+          // avatar render the CURRENT user's face — so an unverified id is worse
+          // than no id. Anonymous opens keep the workspace icon, as before.
+          if (opener && opener.id) row.author_id = opener.id;
+          result.push(row);
         }
         result.sort((a, b) => (Number(b.timestamp || b.ctime || 0) - Number(a.timestamp || a.ctime || 0)));
       } catch (e) {
@@ -735,48 +761,53 @@ class MfsActivity extends Entity {
   }
 
   /**
-   * Map actor_id -> display name, for share-open rows with no recipient email.
+   * Identify the person behind each share-open row: `{ id, name }` per lookup
+   * key, for the row's display name AND its avatar.
    *
    * A share-open event records the recipient's email only when the recipient
-   * identified themselves. It always records `actor_id` when a signed-in user
-   * opened the link, so most "Someone opened X" rows are people we can name —
-   * on stage, 77 of the 119 email-less events carry a resolvable actor.
+   * identified themselves, but it records `actor_id` whenever a signed-in user
+   * opened the link. `drumate_get` accepts EITHER (`WHERE id = _key OR email =
+   * _key`), so one proc covers both and the key is simply whichever we have.
    *
-   * `ffffffffffffffff` is the anonymous sentinel: an unauthenticated visitor
-   * opened a public link, so there genuinely is nobody to name and the row must
-   * keep saying "Someone". Same guard as service/private/secure_share.js.
-   * A deleted account, or a guest with no drumate row, resolves to nothing and
-   * falls back the same way.
+   * Why the avatar needs the resolved `id` and not the raw one: an id that does
+   * not resolve makes the client's avatar fall back to the CURRENT user, which
+   * is the "every row shows my own face" bug. So `id` is taken from the row the
+   * proc returned — proof the account exists — and the caller sets author_id
+   * only when it is present.
    *
-   * One lookup per DISTINCT actor (a page is usually two or three people),
-   * capped, and best-effort: any failure just leaves the row saying "Someone",
-   * which is the pre-existing text.
+   * `ffffffffffffffff` is the anonymous sentinel: an unauthenticated visitor on
+   * a public link, so there is genuinely nobody to name or depict and the row
+   * must keep saying "Someone" with no face. Same guard as
+   * service/private/secure_share.js. A deleted account or a guest with no
+   * drumate row resolves to nothing and falls back the same way.
+   *
+   * One lookup per DISTINCT person (a page is usually two or three), capped, and
+   * best-effort: any failure leaves the row exactly as it was before.
    */
   async _resolveOpeners(opens) {
     const MAX_LOOKUPS = 12;
-    const names = new Map();
-    if (!Array.isArray(opens) || !opens.length) return names;
+    const found = new Map();
+    if (!Array.isArray(opens) || !opens.length) return found;
 
     const pending = [];
     for (const r of opens) {
-      if (!r || r.recipient_email) continue;
-      const id = r.actor_id;
-      if (!id || id === 'ffffffffffffffff') continue;
-      if (names.has(id)) continue;
+      const key = openerKeyOf(r);
+      if (!key || found.has(key)) continue;
       if (pending.length >= MAX_LOOKUPS) continue;
-      names.set(id, null);
-      pending.push(id);
+      found.set(key, null);
+      pending.push(key);
     }
-    for (const id of pending) {
+    for (const key of pending) {
       try {
-        const d = toArray(await this.yp.await_proc('drumate_get', id))[0] || {};
+        const d = toArray(await this.yp.await_proc('drumate_get', key))[0] || {};
+        if (!d.id) continue; // no such account — stays anonymous
         const name = String(d.fullname || `${d.firstname || ''} ${d.lastname || ''}`).trim();
-        if (name) names.set(id, name);
+        found.set(key, { id: d.id, name });
       } catch (e) {
-        this.debug('[ACTIVITY] opener lookup failed', id, e && e.message);
+        this.debug('[ACTIVITY] opener lookup failed', key, e && e.message);
       }
     }
-    return names;
+    return found;
   }
 
   /**
