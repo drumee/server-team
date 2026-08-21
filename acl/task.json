@@ -53,6 +53,10 @@
               "type": "string",
               "doc": "UID of the user who created the task"
             },
+            "reporter_uid": {
+              "type": "string",
+              "doc": "UID of the reporter. Editable, unlike created_by; falls back to created_by for tasks predating the reporter field."
+            },
             "nid": {
               "type": "string",
               "doc": "Folder node id the task belongs to, null if workspace-level (legacy)"
@@ -82,7 +86,7 @@
       }
     },
     "create": {
-      "doc": "Create a new task scoped to a folder node. The task is placed at the bottom of the target status column within that folder.",
+      "doc": "Create a new task scoped to a folder node. The task is placed at the bottom of the target status column within that folder. reporter_uid defaults to the caller when omitted.",
       "scope": "hub",
       "permission": {
         "src": "write"
@@ -115,6 +119,11 @@
             "urgent"
           ],
           "doc": "Task priority. Defaults to medium."
+        },
+        "reporter_uid": {
+          "type": "string",
+          "required": false,
+          "doc": "UID of the reporter (who the task is reported by). Exactly one user; omit to keep the existing value. On create, omitting it defaults the reporter to the caller. Never clears: a task always reads as reported by somebody, falling back to created_by."
         },
         "due_date": {
           "type": "string",
@@ -157,11 +166,16 @@
           "code": "INVALID_ASSIGNEE",
           "message": "assignee_uid does not reference a valid user",
           "http_status": 400
+        },
+        {
+          "code": "INVALID_REPORTER",
+          "message": "reporter_uid must be an existing user",
+          "http_status": 400
         }
       ]
     },
     "update": {
-      "doc": "Update a task's title, description, priority and/or due date. Title / description / priority: omit to keep existing value. due_date is always written through (pass null to clear).",
+      "doc": "Update a task's title, description, priority, due date and/or reporter. Title / description / priority / reporter_uid: omit to keep existing value. due_date is always written through (pass null to clear). created_by is NOT updatable — it is write-once provenance; reporter_uid is the editable field.",
       "scope": "hub",
       "permission": {
         "src": "write"
@@ -193,6 +207,11 @@
           ],
           "doc": "New priority. Omit to keep existing value."
         },
+        "reporter_uid": {
+          "type": "string",
+          "required": false,
+          "doc": "UID of the reporter (who the task is reported by). Exactly one user; omit to keep the existing value. On create, omitting it defaults the reporter to the caller. Never clears: a task always reads as reported by somebody, falling back to created_by."
+        },
         "due_date": {
           "type": "string",
           "required": false,
@@ -220,6 +239,11 @@
         {
           "code": "INVALID_PRIORITY",
           "message": "priority must be one of: low, medium, high, urgent",
+          "http_status": 400
+        },
+        {
+          "code": "INVALID_REPORTER",
+          "message": "reporter_uid must be an existing user",
           "http_status": 400
         }
       ]
@@ -326,6 +350,10 @@
           "affected": {
             "type": "number",
             "doc": "Number of rows deleted (1 if found, 0 if not found)"
+          },
+          "reporter_uid": {
+            "type": "string",
+            "doc": "UID of the reporter. Editable, unlike created_by; falls back to created_by for tasks predating the reporter field."
           }
         }
       }
@@ -385,6 +413,10 @@
             "filesize": {
               "type": "number",
               "doc": "File size in bytes"
+            },
+            "reporter_uid": {
+              "type": "string",
+              "doc": "UID of the reporter. Editable, unlike created_by; falls back to created_by for tasks predating the reporter field."
             }
           }
         }
@@ -423,6 +455,10 @@
           "affected": {
             "type": "number",
             "doc": "1 if removed, 0 if link did not exist"
+          },
+          "reporter_uid": {
+            "type": "string",
+            "doc": "UID of the reporter. Editable, unlike created_by; falls back to created_by for tasks predating the reporter field."
           }
         }
       }
@@ -488,6 +524,10 @@
             "color": {
               "type": "string",
               "doc": "Label color (hex with leading #)"
+            },
+            "reporter_uid": {
+              "type": "string",
+              "doc": "UID of the reporter. Editable, unlike created_by; falls back to created_by for tasks predating the reporter field."
             }
           }
         }
@@ -523,6 +563,10 @@
           },
           "affected": {
             "type": "number"
+          },
+          "reporter_uid": {
+            "type": "string",
+            "doc": "UID of the reporter. Editable, unlike created_by; falls back to created_by for tasks predating the reporter field."
           }
         }
       }
@@ -604,6 +648,10 @@
             "score": {
               "type": "number",
               "doc": "Match score (higher = better)"
+            },
+            "reporter_uid": {
+              "type": "string",
+              "doc": "UID of the reporter. Editable, unlike created_by; falls back to created_by for tasks predating the reporter field."
             }
           }
         }
@@ -655,6 +703,10 @@
             "mtime": {
               "type": "number",
               "doc": "Unix timestamp of last edit"
+            },
+            "reporter_uid": {
+              "type": "string",
+              "doc": "UID of the reporter. Editable, unlike created_by; falls back to created_by for tasks predating the reporter field."
             }
           }
         }
@@ -737,6 +789,10 @@
           "count": {
             "type": "number",
             "doc": "Remaining count for that emoji"
+          },
+          "reporter_uid": {
+            "type": "string",
+            "doc": "UID of the reporter. Editable, unlike created_by; falls back to created_by for tasks predating the reporter field."
           }
         }
       }
@@ -801,6 +857,10 @@
             "filesize": {
               "type": "number",
               "doc": "Size in bytes"
+            },
+            "reporter_uid": {
+              "type": "string",
+              "doc": "UID of the reporter. Editable, unlike created_by; falls back to created_by for tasks predating the reporter field."
             }
           }
         }
@@ -916,6 +976,10 @@
           },
           "affected": {
             "type": "number"
+          },
+          "reporter_uid": {
+            "type": "string",
+            "doc": "UID of the reporter. Editable, unlike created_by; falls back to created_by for tasks predating the reporter field."
           }
         }
       }
@@ -994,6 +1058,10 @@
             },
             "mtime": {
               "type": "number"
+            },
+            "reporter_uid": {
+              "type": "string",
+              "doc": "UID of the reporter. Editable, unlike created_by; falls back to created_by for tasks predating the reporter field."
             }
           }
         }
@@ -1117,6 +1185,10 @@
           "moved_tasks": {
             "type": "number",
             "doc": "How many tasks were moved back to todo"
+          },
+          "reporter_uid": {
+            "type": "string",
+            "doc": "UID of the reporter. Editable, unlike created_by; falls back to created_by for tasks predating the reporter field."
           }
         }
       }

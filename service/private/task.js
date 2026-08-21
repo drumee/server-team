@@ -398,6 +398,64 @@ class __private_task extends Entity {
   }
 
   /**
+   * Read the fields of a prospective parent task that create() needs: its own
+   * parent link (to refuse a second level of nesting) and its folder scope (to
+   * inherit). Returns null when the id doesn't resolve.
+   */
+  async _taskParentMeta(id) {
+    try {
+      return (
+        toArray(
+          await this.db.await_run(
+            'SELECT id, nid, parent_task_id FROM task WHERE id = ?',
+            [id],
+          ),
+        )[0] || null
+      );
+    } catch (e) {
+      this.warn('[task._taskParentMeta] failed:', e && e.message);
+      return null;
+    }
+  }
+
+  /**
+   * Parent auto-complete. Run after a subtask's status changed: task_rollup_parent
+   * applies the all-siblings-done rule and returns the updated PARENT row, or
+   * nothing when the rollup did not fire (not a subtask, no done column on the
+   * board, parent already complete or parked in a later column, siblings still
+   * open — see the proc for the full ordering).
+   *
+   * Returns the parent row when it fired, else null. Best-effort: a rollup
+   * failure must never fail the status change the user actually asked for.
+   */
+  async _rollupParent(subtask_id) {
+    let row = null;
+    try {
+      const data = await this.db.await_proc('task_rollup_parent', subtask_id);
+      row = (Array.isArray(data) ? data[0] : data) || null;
+      if (!row || !row.id) return null;
+    } catch (e) {
+      this.warn('[task._rollupParent] failed:', e && e.message);
+      return null;
+    }
+    // Attributed to whoever completed the last subtask — they caused it, and an
+    // unattributed entry reads as a system glitch in the task's History tab.
+    // `auto` marks it as a rollup rather than a manual move.
+    await this._logActivity(row.id, 'complete', {
+      title: row.title,
+      status: row.status,
+      auto: 1,
+    });
+    // Peers reload their whole task set on this service, so the parent's new
+    // status reaches them without a second broadcast shape.
+    await this._broadcast('task.update_status', row);
+    // Deliberately NOT calling _notifyColumnWatchers: nobody moved this task by
+    // hand, and mailing a column's watchers about a move the server made turns
+    // one user's checkbox into a burst of notifications.
+    return row;
+  }
+
+  /**
    * Append a row to the folder-scoped task activity feed (Project Health).
    * Best-effort: a logging failure must never break the mutation it follows.
    * For deletions call BEFORE the row is removed (the proc snapshots task.nid).
@@ -466,6 +524,30 @@ class __private_task extends Entity {
   }
 
   /**
+   * Resolve the requested reporter uid.
+   *
+   * Returns `undefined` when the caller did not supply the key at all — which
+   * the SPs read as "keep" (create defaults it to the creator, update leaves it
+   * alone). Returns `null` after raising an exception when the uid is not a real
+   * drumate, so callers must bail on null exactly like _validateAssignees.
+   *
+   * A reporter is exactly ONE person and can never be cleared: a task always
+   * reads as reported by somebody, falling back to created_by. An explicitly
+   * empty value is therefore treated as "unchanged", not as "unset".
+   */
+  async _validateReporter() {
+    const raw = this.input.use('reporter_uid', null);
+    if (raw == null || raw === '') return undefined;
+    const uid = String(raw);
+    const drumate = await this.yp.await_proc('drumate_exists', uid);
+    if (isEmpty(drumate)) {
+      this.exception.user('INVALID_REPORTER');
+      return null;
+    }
+    return uid;
+  }
+
+  /**
    * Read the assignee set from the request, accepting the multi-assignee
    * `assignee_uids` array and falling back to the legacy single `assignee_uid`.
    * Returns null when the caller supplied neither key (i.e. "unchanged").
@@ -497,7 +579,7 @@ class __private_task extends Entity {
   /**
    * Create a new task in the current hub (folder).
    * Params: title (required), description, status, priority, due_date,
-   * start_date, assignee_uid (all optional)
+   * start_date, assignee_uid, parent_task_id (all optional)
    */
   async create() {
     const title = this.input.need(Attr.title);
@@ -508,10 +590,36 @@ class __private_task extends Entity {
     // Optional range start (Duration toggle). null = single-date task.
     const start_date = this.input.use('start_date', null);
     // Folder scope: media node id of the folder the task belongs to (nullable).
-    const nid = this.input.use('nid', null);
+    let nid = this.input.use('nid', null);
+    // Subtask link. Resolved before anything else: the parent decides the folder
+    // scope, so `nid` below may be overwritten.
+    const parent_task_id = this.input.use('parent_task_id', null);
+    if (parent_task_id) {
+      const parent = await this._taskParentMeta(parent_task_id);
+      if (!parent) {
+        return this.exception.user('PARENT_TASK_NOT_FOUND');
+      }
+      // ONE level of nesting, enforced here rather than in the UI: hiding the
+      // "+ Add subtask" control on a subtask is presentation, and a direct API
+      // call would otherwise build a tree the views cannot render.
+      if (parent.parent_task_id) {
+        return this.exception.user('SUBTASK_NESTING_DENIED');
+      }
+      // Inherit the parent's folder rather than trusting the client's nid: a
+      // subtask on a different board than its parent would be invisible from
+      // the task it belongs to, and would resolve its status against the wrong
+      // column set. This is also what "inherits the parent folder's ACL" means
+      // in practice — permission is enforced per folder node.
+      nid = parent.nid;
+    }
     // Multi-assignee: array (or legacy single). null/[] = unassigned.
     const assignees = (await this._validateAssignees(this._readAssignees() || []));
     if (assignees == null) return; // invalid assignee — exception already raised
+
+    // Reporter. Undefined = the creator (what the SP defaults to); the create
+    // modal only sends a uid when the user picked somebody else.
+    const reporter_uid = await this._validateReporter();
+    if (reporter_uid === null) return; // invalid reporter — exception raised
 
     if (!(await this._isValidStatus(status, nid))) status = 'todo';
     if (!VALID_PRIORITIES.includes(priority)) priority = 'medium';
@@ -520,8 +628,9 @@ class __private_task extends Entity {
     // Bypass `await_proc` which coerces JS null to '' before binding —
     // STRICT_TRANS_TABLES rejects '' for nullable DATE / VARCHAR columns.
     let data = await this.db.await_run(
-      'CALL task_create(?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      [id, title, description, status, priority, due_date, start_date, this.uid, nid]
+      'CALL task_create(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [id, title, description, status, priority, due_date, start_date, this.uid,
+       reporter_uid || null, nid, parent_task_id || null]
     );
     // The DB layer swallows SQL errors (returns empty) — an empty result here
     // means the row was NOT inserted, e.g. a hub DB missing the task-v2
@@ -550,12 +659,18 @@ class __private_task extends Entity {
   }
 
   /**
-   * Update task title, description, priority, due_date, and/or start_date.
+   * Update task title, description, priority, due_date, start_date and/or
+   * reporter.
    * Params: id (required); title / description / priority / due_date /
-   * start_date (optional).
-   * For title / description / priority: omit the key to keep existing value.
+   * start_date / reporter_uid (optional).
+   * For title / description / priority / reporter_uid: omit the key to keep the
+   * existing value.
    * For due_date / start_date: the value is always written through (pass null
    * to clear; start_date null = Duration toggle OFF).
+   *
+   * `created_by` is NOT updatable — it is write-once provenance. Reassigning the
+   * reporter writes reporter_uid only, so the creation timestamp the detail
+   * panel prints beside it stays true. See common/tables/task.sql.
    */
   async update() {
     const id = this.input.need(Attr.id);
@@ -590,15 +705,50 @@ class __private_task extends Entity {
       }
     }
 
+    const reporter_uid = await this._validateReporter();
+    if (reporter_uid === null) return; // invalid reporter — exception raised
+
+    // Snapshot the reporter BEFORE the write so the activity feed logs a
+    // reporter change only when one actually happened — the detail panel posts
+    // every field on Update, so the key is present even when it did not move.
+    // COALESCE mirrors the SPs: an un-backfilled row reports as its creator.
+    let prevReporter = null;
+    if (reporter_uid !== undefined) {
+      try {
+        const before = await this.db.await_run(
+          'SELECT COALESCE(reporter_uid, created_by) AS reporter_uid FROM task WHERE id = ?',
+          [id]
+        );
+        const r = Array.isArray(before) ? before[0] : before;
+        prevReporter = r && r.reporter_uid != null ? String(r.reporter_uid) : null;
+      } catch (e) {
+        this.warn('[task.update] prior reporter lookup failed:', e && e.message);
+      }
+    }
+
     const data = await this.db.await_run(
-      'CALL task_update(?, ?, ?, ?, ?, ?)',
-      [id, title, description, priority, due_date, start_date]
+      'CALL task_update(?, ?, ?, ?, ?, ?, ?)',
+      [id, title, description, priority, due_date, start_date,
+       reporter_uid === undefined ? null : reporter_uid]
     );
     if (isEmpty(data)) {
       return this.exception.user('TASK_NOT_FOUND');
     }
     const row = Array.isArray(data) ? data[0] : data;
-    await this._logActivity(id, 'update', { title: row && row.title });
+    // A reporter reassignment gets its own feed entry (like 'assignee') instead
+    // of being folded into the generic 'update' — it is a change of ownership,
+    // and the history panel names the new reporter from this meta.
+    const movedReporter =
+      reporter_uid !== undefined &&
+      prevReporter !== null &&
+      String(reporter_uid) !== prevReporter;
+    await this._logActivity(
+      id,
+      movedReporter ? 'reporter' : 'update',
+      movedReporter
+        ? { title: row && row.title, reporter_uid: String(reporter_uid) }
+        : { title: row && row.title },
+    );
     await this._broadcast('task.update', data);
     // Client sends only the newly-added mentions in `mention_uids`.
     await this._notifyMentions(data, this.input.use('mention_uids', null));
@@ -659,6 +809,10 @@ class __private_task extends Entity {
     // nobody had switched on — 2 such rows existed in the whole stage DB — so in
     // practice a status change notified no one. Only fires on a real move, so
     // re-saving the same column stays silent.
+    //
+    // Deliberately BEFORE the parent rollup below: that branch returns early,
+    // so notifying after it would silently skip every subtask whose move
+    // completes its parent — exactly the moves people most want to hear about.
     if (prevStatus !== status) {
       await this._notifyAssigneesOfChange(id, 'moved', {
         column_key: status,
@@ -667,6 +821,19 @@ class __private_task extends Entity {
         // key: a renamed or user-created done column still counts.
         is_done: isDone ? 1 : 0,
       });
+    }
+
+    // Parent auto-complete. Returned alongside the moved row rather than left
+    // to a client reload: peers pick the change up from the broadcast above,
+    // but the user who ticked the last subtask merges only the row this call
+    // answers with — without `parent` they are the one person who doesn't see
+    // the parent flip.
+    const parent = row && row.parent_task_id
+      ? await this._rollupParent(id)
+      : null;
+    if (parent) {
+      this.output.data({ ...row, parent });
+      return;
     }
     this.output.data(data);
   }
@@ -712,7 +879,10 @@ class __private_task extends Entity {
   }
 
   /**
-   * Delete a task. Linked files and labels are removed by the SP.
+   * Delete a task. Linked files, labels and any SUBTASKS are removed by the SP,
+   * in one statement — there is no orphan state and no promote-to-standalone
+   * path. The response carries `subtask_ids` so callers can prune the children
+   * from their local list without a full reload.
    * Params: id (required)
    */
   async delete() {
@@ -722,7 +892,14 @@ class __private_task extends Entity {
     // Log BEFORE the delete — task_activity_log snapshots the task's nid/title.
     await this._logActivity(id, 'update', { deleted: 1 });
     const data = await this.db.await_proc('task_delete', id);
-    const result = { id, ...data };
+    const row = Array.isArray(data) ? data[0] : data;
+    // The SP returns the children as a comma-separated string (GROUP_CONCAT),
+    // NULL when there were none. Normalise to an array so the client never has
+    // to parse it.
+    const subtask_ids = row && row.subtask_ids
+      ? String(row.subtask_ids).split(',').filter(Boolean)
+      : [];
+    const result = { id, ...(row || {}), subtask_ids };
     await this._broadcast('task.delete', result);
     this.output.data(result);
   }

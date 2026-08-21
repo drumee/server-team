@@ -74,6 +74,20 @@
       "errors": []
     },
 
+    "contact": {
+      "doc": "Resolve the account that answers Contact Support, so the client can open a 1:1 conversation with it. Reads the support_contact key from yp.sys_conf (an entity id or an email) and resolves it through drumate_exists. Answers {configured:0} when no key is set or the named account no longer exists, so the caller can fall back to the support mail link.",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "params": {},
+      "returns": {
+        "type": "object",
+        "description": "{configured, is_self, entity_id, firstname, lastname, display} when a support account is resolved; {configured: 0} otherwise."
+      },
+      "errors": []
+    },
+
     "list_feedback": {
       "doc": "List all submitted feedback with sorting and pagination. Requires special_access preproc with remit level 1. Calls support_list_feedback stored procedure with column, order, and page parameters.",
       "scope": "hub",
