@@ -118,7 +118,7 @@ class __private_task extends Entity {
    * 'reply' — a reply to your comment); omitted for real @-mentions, so their
    * stored data stays exactly as before.
    */
-  async _notifyMentions(data, mentionUids, kind = null) {
+  async _notifyMentions(data, mentionUids, kind = null, extra = null) {
     const uids = toArray(mentionUids).filter((u) => u && u !== this.uid);
     if (isEmpty(uids)) return;
     const hub_id = this.hub && this.hub.get(Attr.id);
@@ -132,6 +132,10 @@ class __private_task extends Entity {
       nid: (data && data.nid) || null,
     };
     if (kind) meta.kind = kind;
+    // Kind-specific fields (the new priority, the destination column). Written
+    // only for the kinds that carry them, so a plain @-mention's stored data is
+    // byte-for-byte what it has always been.
+    if (extra) Object.assign(meta, extra);
     for (const target_uid of uids) {
       try {
         await this.yp.await_proc(
@@ -161,12 +165,87 @@ class __private_task extends Entity {
     }
     // Email leg for offline recipients — same theme and rules as the hub
     // activity mail. Deliberately not awaited.
-    notifyTaskEvent(this, {
-      uids,
-      title: meta.title,
-      taskId: task_id,
-      kind: kind === 'reply' ? 'reply' : 'mention',
-    }).catch((e) => this.warn('[task._notifyMentions] mail failed:', e && e.message));
+    //
+    // ONLY for the two kinds the mail templates have copy for. The kinds added
+    // on 2026-08-21 (comment / priority / moved) are in-app notifications that
+    // nobody asked to be emailed, and notifyTaskEvent falls back to the
+    // "assigned you the task" wording for an unrecognised kind — so passing one
+    // through would send a mail that says the wrong thing. Opt in explicitly if
+    // those should mail too.
+    if (kind === null || kind === undefined || kind === 'reply') {
+      notifyTaskEvent(this, {
+        uids,
+        title: meta.title,
+        taskId: task_id,
+        kind: kind === 'reply' ? 'reply' : 'mention',
+      }).catch((e) => this.warn('[task._notifyMentions] mail failed:', e && e.message));
+    }
+  }
+
+  /**
+   * Notify a task's ASSIGNEES about something that happened to their task
+   * (Duy 2026-08-21 — issues 5, 6 and 8: a status move, a comment, and a
+   * priority change all went unnotified).
+   *
+   * Rides the existing `task_mention` event with a `kind` discriminator, exactly
+   * as the "replied to your comment" notification already does. That is a
+   * deliberate reuse, not a shortcut: it inherits the Task bucket, the unread
+   * proc, the feed merge, the per-tab mark-as-read and the dismiss routing, so
+   * these three notifications need NO schema change at all. The client matches
+   * every kind before its generic mention branch, so none of them can read as
+   * "mentioned you".
+   *
+   * Never touches _notifyColumnWatchers: the column-watch feature keeps working
+   * exactly as it does today, and its coalesce-per-column dedupe is wrong for a
+   * per-task notification anyway (two tasks moved through the same column would
+   * collapse into one row and the assignee of the first would lose theirs).
+   *
+   * Best-effort and self-excluding: moving/commenting on your own task notifies
+   * nobody but the other assignees.
+   */
+  async _notifyAssigneesOfChange(taskId, kind, extra = null, exclude = []) {
+    try {
+      if (!taskId || !kind) return;
+      const rows = toArray(await this.db.await_run(
+        'SELECT uid FROM task_assignee WHERE task_id = ?', [taskId],
+      ));
+      const skip = new Set(toArray(exclude).map((u) => String(u)));
+      const uids = rows
+        .map((r) => r && r.uid)
+        .filter((u) => u && !skip.has(String(u)));
+      if (isEmpty(uids)) return;
+      const t = toArray(await this.db.await_run(
+        'SELECT id, title, nid FROM task WHERE id = ?', [taskId],
+      ))[0];
+      if (!t) return;
+      // _notifyMentions drops `this.uid` itself and dedupes nothing else, so a
+      // person assigned twice cannot happen (task_assignee is keyed per uid).
+      await this._notifyMentions(
+        { id: t.id, title: t.title || '', nid: t.nid || null },
+        uids,
+        kind,
+        extra,
+      );
+    } catch (e) {
+      this.warn('[task._notifyAssigneesOfChange] failed:', e && e.message);
+    }
+  }
+
+  /**
+   * The display name of a column key, for the "moved to <Column>" sentence.
+   * Built-in keys resolve client-side from LOCALE (they have no task_column row
+   * on most boards — the table is empty on a board that never customised one),
+   * so this only reports a STORED name, i.e. a user-created or renamed column.
+   * Returns null when there is nothing stored, and the client localises the
+   * built-in key instead.
+   */
+  async _columnName(status, nid) {
+    try {
+      const col = toArray(await this.db.await_proc('task_column_get_v2', status, nid))[0];
+      return (col && col.name) || null;
+    } catch (e) {
+      return null;
+    }
   }
 
   /**
@@ -492,6 +571,25 @@ class __private_task extends Entity {
       return this.exception.user('INVALID_PRIORITY');
     }
 
+    // Snapshot the priority BEFORE the write so the assignees are told only
+    // about a real change (Duy 2026-08-21, issue 8). Re-saving the same value —
+    // which the editor does on every unrelated field edit, since it posts the
+    // whole form — must stay silent. Read only when a priority was actually
+    // submitted; on failure `prevPriority` stays undefined and the comparison
+    // below simply does not fire, so a lookup problem cannot produce a false
+    // notification.
+    let prevPriority;
+    if (priority != null) {
+      try {
+        const before = toArray(await this.db.await_run(
+          'SELECT priority FROM task WHERE id = ?', [id],
+        ))[0];
+        if (before) prevPriority = before.priority;
+      } catch (e) {
+        this.warn('[task.update] prior priority lookup failed:', e && e.message);
+      }
+    }
+
     const data = await this.db.await_run(
       'CALL task_update(?, ?, ?, ?, ?, ?)',
       [id, title, description, priority, due_date, start_date]
@@ -504,6 +602,11 @@ class __private_task extends Entity {
     await this._broadcast('task.update', data);
     // Client sends only the newly-added mentions in `mention_uids`.
     await this._notifyMentions(data, this.input.use('mention_uids', null));
+    // Assignees hear about a priority change. Guarded on a genuine change so a
+    // form save that leaves priority alone notifies nobody.
+    if (priority != null && prevPriority !== undefined && prevPriority !== priority) {
+      await this._notifyAssigneesOfChange(id, 'priority', { priority });
+    }
     this.output.data(data);
   }
 
@@ -538,17 +641,33 @@ class __private_task extends Entity {
       return this.exception.user('TASK_NOT_FOUND');
     }
     const row = Array.isArray(data) ? data[0] : data;
+    // nid is unchanged by a column move, so the task's folder still scopes the
+    // done-column lookup correctly. Resolved ONCE — both the activity log and
+    // the assignee notification below need it.
+    const isDone = await this._isDoneColumn(status, prev.nid);
     await this._logActivity(
       id,
-      // nid is unchanged by a column move, so the task's folder still scopes
-      // the done-column lookup correctly.
-      (await this._isDoneColumn(status, prev.nid)) ? 'complete' : 'status',
+      isDone ? 'complete' : 'status',
       { title: row && row.title, status },
     );
     await this._broadcast('task.update_status', data);
     const cols =
       prevStatus && prevStatus !== status ? [status, prevStatus] : [status];
     await this._notifyColumnWatchers(row, cols, 'moved');
+    // The task's assignees are told too (Duy 2026-08-21, issue 5). Column
+    // WATCHERS were the only audience before, and watching is an opt-in bell
+    // nobody had switched on — 2 such rows existed in the whole stage DB — so in
+    // practice a status change notified no one. Only fires on a real move, so
+    // re-saving the same column stays silent.
+    if (prevStatus !== status) {
+      await this._notifyAssigneesOfChange(id, 'moved', {
+        column_key: status,
+        column_name: await this._columnName(status, prev.nid),
+        // Completion is column-driven, so the client cannot infer it from the
+        // key: a renamed or user-created done column still counts.
+        is_done: isDone ? 1 : 0,
+      });
+    }
     this.output.data(data);
   }
 
@@ -796,6 +915,17 @@ class __private_task extends Entity {
     if (repliers.size) {
       await this._notifyCommentMentions(task_id, [...repliers], 'reply');
     }
+    // The task's assignees hear about a comment on their task even when they
+    // were not @-mentioned and are not the person being replied to (Duy
+    // 2026-08-21, issue 6). Anyone already notified above is excluded, so one
+    // person gets exactly one notification per comment — a mention or a reply
+    // wins over the plainer "commented on" wording.
+    await this._notifyAssigneesOfChange(
+      task_id,
+      'comment',
+      null,
+      [...mentionSet, ...repliers],
+    );
     this.output.data(row);
   }
 

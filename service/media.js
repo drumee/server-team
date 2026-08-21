@@ -1435,8 +1435,16 @@ class __media extends Mfs {
   /**
    * 
    */
+  /**
+   * `opt.notify === 0` writes the changelog row (so the in-app notification is
+   * produced) WITHOUT the activity email. Added for the editor-save path, which
+   * had no changelog row at all until 2026-08-21 and therefore produced no
+   * notification: giving it one is what Duy asked for, but silently turning
+   * every note save into a hub-wide email to offline members is a channel nobody
+   * asked for. Every existing caller omits the flag and mails exactly as before.
+   */
   async changelog_write(opt) {
-    let { src, dest, event } = opt;
+    let { src, dest, event, notify } = opt;
     let { metadata, md5Hash } = src;
     if (!md5Hash && metadata && metadata.md5Hash) {
       src.md5Hash = metadata.md5Hash;
@@ -1468,7 +1476,7 @@ class __media extends Mfs {
       this.warn("changelog_write failed:", e)
     }
     this.__changelog = changelog
-    if (changelog) {
+    if (changelog && notify !== 0) {
       // Email leg of the notification fan-out: offline members only, one
       // mail per hub per cooldown window. Deliberately not awaited — mail
       // must never delay or fail the file operation.

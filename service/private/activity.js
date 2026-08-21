@@ -139,7 +139,48 @@ function flattenTaskFields(rows) {
       // it lets the item say "replied to your comment in" instead of the
       // (untrue) "mentioned you in". Absent on real @-mentions.
       if (r.task_kind == null && meta.kind != null) r.task_kind = meta.kind;
+      // The other kinds that ride this event (Round 3, Duy 2026-08-21) need one
+      // extra field each for their sentence. All optional and all guarded, so a
+      // plain mention or a reply is shaped exactly as before.
+      //   priority → the new priority         ("… to High")
+      //   moved    → the destination column    ("… moved to In progress")
+      //              and whether it is a DONE column ("… marked as completed")
+      if (r.task_priority == null && meta.priority != null) r.task_priority = meta.priority;
+      if (r.column_key == null && meta.column_key != null) r.column_key = meta.column_key;
+      if (r.column_name == null && meta.column_name != null) r.column_name = meta.column_name;
+      if (r.task_is_done == null && meta.is_done != null) r.task_is_done = meta.is_done;
     }
+  }
+  return rows;
+}
+
+// Surface the scheduled-meeting fields from a `meeting_notice` row's nested
+// `data` JSON (written by service/private/room.js) so the client can render the
+// sentence and open the meeting's folder without re-parsing the JSON. Same
+// contract and same idempotence as flattenTaskFields; touches no other event.
+function flattenMeetingNotice(rows) {
+  for (const r of rows) {
+    if (!r || r.event !== 'meeting_notice') continue;
+    let meta = r.data;
+    if (typeof meta === 'string') {
+      try { meta = JSON.parse(meta); } catch (e) { meta = null; }
+    }
+    meta = meta || {};
+    // 'invite' | 'moved' | 'cancelled'. The client defaults an unknown kind to
+    // the invitation wording rather than falling through to contact copy.
+    if (r.meeting_kind == null && meta.kind != null) r.meeting_kind = meta.kind;
+    if (r.meeting_title == null) r.meeting_title = meta.title || '';
+    if (r.meeting_stime == null && meta.stime != null) r.meeting_stime = meta.stime;
+    if (r.meeting_nid == null && meta.nid != null) r.meeting_nid = meta.nid;
+    // The meeting node's PARENT — the folder the click opens. Deliberately not
+    // the node itself: a cancelled meeting's node is hard-deleted
+    // (permission_revoke DELETEs a `schedule` row), so opening it would render
+    // "the file you requested does not exist".
+    if (r.meeting_pid == null && meta.pid != null) r.meeting_pid = meta.pid;
+    if (r.meeting_hub_id == null && meta.hub_id != null) r.meeting_hub_id = meta.hub_id;
+    // The chip. Resolved by room.js at write time from the parent node, because
+    // a cancelled meeting can no longer be looked up when the row is READ.
+    if (r.folder_name == null && meta.folder_name != null) r.folder_name = meta.folder_name;
   }
   return rows;
 }
@@ -218,6 +259,10 @@ const BUCKET_BY_EVENT = {
   task_assigned: BUCKET.task,
   task_mention: BUCKET.task,
   task_column_change: BUCKET.task,
+  // A scheduled-meeting notice (invited / rescheduled / cancelled). Another
+  // yp.contact_activity event, so its category resolves to 'contact' and it
+  // would otherwise land in Other.
+  meeting_notice: BUCKET.meeting,
   // A bare @-mention row (channel.list_notifications, type='mention') carries no
   // category at all; a chat mention belongs to Chat.
   mention: BUCKET.chat,
@@ -290,6 +335,17 @@ function bucketOf(row) {
     return BUCKET.meeting;
   }
 
+  // A SCHEDULED meeting is a media node (room.book creates a `schedule` node),
+  // so notification_center_next rolls it up as an upload and it used to sit in
+  // Files reading "<organizer> uploaded <Meeting-name>" (Duy 2026-08-21).
+  //
+  // The `cnt <= 1` guard is load-bearing and MUST match the client's: the rollup
+  // groups per folder and reports MAX(item_filetype), so a folder holding a
+  // meeting AND an ordinary file arrives tagged 'schedule' with cnt > 1. Moving
+  // that row to Meeting would hide a real upload behind meeting copy, so a
+  // multi-item rollup keeps its existing Files behaviour untouched.
+  if (isScheduleRollup(row)) return BUCKET.meeting;
+
   const byCategory = lookup(BUCKET_BY_CATEGORY, row.category || row.event_type || row.type);
   if (byCategory) return byCategory;
 
@@ -309,6 +365,60 @@ function stampBuckets(rows) {
     if (r && r.bucket == null) r.bucket = bucketOf(r);
   }
   return rows;
+}
+
+// ---------------------------------------------------------------------------
+// Scheduled meetings arrive on TWO channels, and exactly one row must survive.
+//
+//   1. the media rollup for the meeting's `schedule` node — what every workspace
+//      member sees, reading "<Meeting-name> on <time>" (Figma's scheduled card);
+//   2. a targeted `meeting_notice` invitation — what an ATTENDEE sees, reading
+//      "<organizer> invited you to <Meeting-name>".
+//
+// Duy 2026-08-21 asked for the invitation to REPLACE the rollup row, so when
+// both are present for the same meeting the rollup is dropped. The two are
+// matched on (hub, title): notification_center_next does not carry the meeting
+// node's own id, so the title is the only key both channels share.
+//
+// Deciding this from the rows actually present — rather than from "is the viewer
+// an attendee" — is deliberate: room.js writes the notice best-effort, and a
+// failed write must never leave the attendee with NO notification at all.
+//
+// Shared by get_feed and unread_counts so the tab badge can never disagree with
+// the rows the tab shows.
+// ---------------------------------------------------------------------------
+function isScheduleRollup(r) {
+  return !!r
+    && r.item_filetype === 'schedule'
+    && (r.category === 'media' || r.category === 'mfs')
+    && (parseInt(r.cnt, 10) || 0) <= 1;
+}
+
+function meetingNoticeKeys(rows) {
+  const keys = new Set();
+  if (!Array.isArray(rows)) return keys;
+  for (const r of rows) {
+    if (!r || r.event !== 'meeting_notice') continue;
+    // Only an invitation stands in for the rollup. A "rescheduled" or
+    // "cancelled" notice is a different fact and must not hide it.
+    if (r.meeting_kind && r.meeting_kind !== 'invite') continue;
+    const title = r.meeting_title;
+    if (!title) continue;
+    keys.add(`${r.meeting_hub_id || r.hub_id || ''}:${title}`);
+  }
+  return keys;
+}
+
+function isCoveredByNotice(row, keys) {
+  if (!keys || !keys.size || !isScheduleRollup(row)) return false;
+  const title = row.item_filename;
+  // Defence-in-depth, not load-bearing: meetingNoticeKeys never adds a key for
+  // an empty title, so a nameless rollup could not match one anyway. Kept
+  // because the two functions are the only thing standing between "one row per
+  // meeting" and "a notification silently disappears", and a future change to
+  // either side must not be able to make an untitled row droppable.
+  if (!title) return false;
+  return keys.has(`${row.hub_id || ''}:${title}`);
 }
 
 // A caller-supplied bucket is only honoured when it names one of the 5 tabs;
@@ -476,12 +586,22 @@ class MfsActivity extends Entity {
     // the unscoped call has never cleared, which is a behaviour change to a path
     // that works today — so the capability is added only on the new code path.
     // Pre-existing unscoped behaviour stays untouched.
-    if (bucket === BUCKET.task) {
-      for (const proc of [
+    // Same rule, same reasoning, for the Meeting tab's scheduled-meeting
+    // notices: they are contact_activity rows, so the rollup loop above has
+    // never been able to clear them. Scoped to bucket === 'meeting' ONLY, so the
+    // pre-existing unscoped behaviour is untouched.
+    const CONTACT_CLEAR = {
+      [BUCKET.task]: [
         'contact_task_assigned_unread',
         'contact_task_mention_unread',
         'contact_task_column_change_unread',
-      ]) {
+      ],
+      [BUCKET.meeting]: [
+        'contact_meeting_notice_unread',
+      ],
+    };
+    if (bucket && lookup(CONTACT_CLEAR, bucket)) {
+      for (const proc of lookup(CONTACT_CLEAR, bucket)) {
         try {
           const rows = toArray(await this.yp.await_proc(proc, this.uid));
           for (const r of rows) {
@@ -490,7 +610,7 @@ class MfsActivity extends Entity {
             try {
               await this._callUserProc('contact_activity_dismiss', this.uid, activityId);
             } catch (e) {
-              this.warn('[MFS_ACTIVITY] mark_all_read: task dismiss failed', activityId, e && e.message);
+              this.warn('[MFS_ACTIVITY] mark_all_read: contact dismiss failed', bucket, activityId, e && e.message);
             }
           }
         } catch (e) {
@@ -707,6 +827,11 @@ class MfsActivity extends Entity {
             // Claim-reward term ending (offline/workers/rewardExpiryWorker.js).
             // Added with the event, not after it, per the note above.
             'contact_reward_expiry_unread',
+            // Scheduled-meeting notices (room.book/update/remove). Under Unread
+            // OFF these already arrive via activity_get_feed_all's generic
+            // contact branch, so the feature degrades to "visible with the
+            // toggle off" if this proc has not been applied yet.
+            'contact_meeting_notice_unread',
           ]) {
             try {
               const rows = toArray(await this.yp.await_proc(proc, this.uid));
@@ -735,6 +860,7 @@ class MfsActivity extends Entity {
     // assignments, mentions, and watched-column create/move notifications.
     flattenTaskFields(result);
     flattenTaskColumnChange(result);
+    flattenMeetingNotice(result);
 
     // Stamp the tab on every row, then (only when the caller asked for a tab)
     // narrow to it. Deliberately AFTER every merge above, so a row is judged by
@@ -751,6 +877,14 @@ class MfsActivity extends Entity {
     // it is cheaper here (one pass over the assembled page); it is independent
     // of bucketing either way.
     await this._stampFolderNames(result);
+    // The folder chip for task rows, and the two Round 3 enrichments Duy asked
+    // for on 2026-08-21. Each one is independently best-effort and each only
+    // ADDS fields (except the meeting rollup, which can drop a row that a
+    // targeted invitation already covers), so a failure anywhere leaves the feed
+    // exactly as it renders today.
+    await this._stampTaskFolderNames(result);
+    await this._stampChatMentions(result);
+    result = await this._stampMeetingRollups(result);
 
     stampBuckets(result);
     if (bucket) {
@@ -890,6 +1024,213 @@ class MfsActivity extends Entity {
   }
 
   /**
+   * Stamp `folder_name` on TASK rows, so the card can show which folder the
+   * task lives in (Duy 2026-08-21: "I don't know he has assigned me in which
+   * folder").
+   *
+   * _stampFolderNames above only looks at `media.*` events, and a task row is a
+   * yp.contact_activity row — so no task notification has ever carried a folder.
+   * The folder id IS on the row already (flattenTaskFields puts the task's `nid`
+   * there); only its NAME has to be resolved, and a task's nid points at the
+   * folder itself rather than at a parent.
+   *
+   * Deliberately mirrors _stampFolderNames' safety rules: one lookup per
+   * DISTINCT (hub, node), a hard cap on lookups, internal plumbing names
+   * withheld, never overwrites a name already present, and every failure
+   * swallowed — an absent chip is the pre-existing look, while throwing here
+   * would take out the whole feed.
+   *
+   * A workspace-level task (no nid) gets no chip: mfs_node_attr returns the
+   * WORKSPACE name for a hub root, which is what the chip should read, so a task
+   * whose nid IS the root resolves correctly; one with no nid at all has no
+   * container to name.
+   */
+  async _stampTaskFolderNames(rows) {
+    const MAX_LOOKUPS = 12;
+    if (!Array.isArray(rows) || !rows.length) return;
+    const TASK_EVENTS = new Set(['task_assigned', 'task_mention', 'task_column_change']);
+    const internal = (n) => !n || /^__.*__$/.test(n) || n.indexOf('__') === 0;
+
+    const wanted = new Map(); // "hub:node" -> { hub_id, nid }
+    const targets = [];
+    for (const r of rows) {
+      if (!r || r.folder_name) continue;
+      if (!TASK_EVENTS.has(String(r.event || ''))) continue;
+      // task_assigned / task_column_change flatten to task_hub_id + task_nid;
+      // task_mention flattens onto the top-level hub_id + nid (the two events
+      // have different client nav contracts — see flattenTaskFields).
+      const hubId = r.task_hub_id || r.hub_id;
+      const nid = r.task_nid || r.nid;
+      if (!hubId || !nid || `${nid}` === '0' || `${nid}` === 'null') continue;
+      const key = `${hubId}:${nid}`;
+      if (!wanted.has(key)) {
+        if (wanted.size >= MAX_LOOKUPS) continue;
+        wanted.set(key, { hub_id: hubId, nid });
+      }
+      targets.push([r, key]);
+    }
+    if (!wanted.size) return;
+
+    const names = new Map();
+    for (const [key, { hub_id, nid }] of wanted) {
+      try {
+        const a = toArray(
+          await this.yp.await_proc('forward_proc', hub_id, 'mfs_node_attr', `'${nid}'`)
+        )[0] || {};
+        if (a.filename && !internal(a.filename)) names.set(key, a.filename);
+      } catch (e) {
+        this.debug('[ACTIVITY] task folder lookup failed', key, e && e.message);
+      }
+    }
+    for (const [row, key] of targets) {
+      const name = names.get(key);
+      if (name) row.folder_name = name;
+    }
+  }
+
+  /**
+   * Turn a scheduled meeting's rollup row into a MEETING row (Duy 2026-08-21,
+   * issues 9 + 10).
+   *
+   * room.book() creates the meeting as a media node (`category: 'schedule'`), so
+   * notification_center_next rolls it up as an upload — which is why an
+   * invitation read "<organizer> uploaded <Meeting-name>" and sat in the Files
+   * tab. bucketOf already re-routes such a row to Meeting; this fills in what
+   * the sentence needs:
+   *
+   *   - `meeting_stime` → "…on Aug 14, 10:00 AM" (Figma's scheduled card).
+   *   - dropping the row when a targeted `meeting_notice` invitation for the SAME
+   *     meeting is already on this page, so an attendee sees exactly ONE row —
+   *     the invitation, which is what Duy asked to replace the upload row with.
+   *
+   * Why check for the notice instead of just checking attendance: dropping the
+   * rollup on attendance alone would rely on room.js's best-effort write having
+   * succeeded, and a failed write would leave the attendee with NO notification
+   * at all. Deciding from what is actually on the page can never lose a row.
+   *
+   * Resolution uses the EXISTING room_list_scheduled proc (one call per distinct
+   * hub, capped), so there is no schema change. It returns every scheduled
+   * meeting in the hub; the rollup identifies its meeting only by title, because
+   * notification_center_next does not carry the meeting node's own id. Duplicate
+   * titles in one workspace are therefore ambiguous — the earliest-starting match
+   * wins, which affects only the time shown, never which tab the row lands in.
+   *
+   * Returns the (possibly shorter) row array. Best-effort throughout.
+   */
+  async _stampMeetingRollups(rows) {
+    const MAX_LOOKUPS = 8;
+    if (!Array.isArray(rows) || !rows.length) return rows;
+
+    const pending = rows.filter(isScheduleRollup);
+    if (!pending.length) return rows;
+
+    // Meetings this user has already been told about by a targeted invitation.
+    const covered = meetingNoticeKeys(rows);
+    const drop = new Set(pending.filter((r) => isCoveredByNotice(r, covered)));
+    // Only the survivors need a time resolved — a dropped row is never rendered.
+    const needTime = pending.filter((r) => !drop.has(r));
+    if (!needTime.length) return rows.filter((r) => !drop.has(r));
+
+    const byHub = new Map(); // hub_id -> [meeting rows]
+    for (const r of needTime) {
+      if (!r.hub_id || byHub.has(r.hub_id)) continue;
+      if (byHub.size >= MAX_LOOKUPS) continue;
+      byHub.set(r.hub_id, null);
+    }
+    for (const hubId of [...byHub.keys()]) {
+      try {
+        const list = toArray(
+          await this.yp.await_proc('forward_proc', hubId, 'room_list_scheduled', 'NULL,NULL')
+        );
+        byHub.set(hubId, list);
+      } catch (e) {
+        this.debug('[ACTIVITY] room_list_scheduled failed', hubId, e && e.message);
+      }
+    }
+
+    for (const r of needTime) {
+      const list = byHub.get(r.hub_id);
+      if (!Array.isArray(list)) continue;
+      const title = String(r.item_filename || '');
+      // room_list_scheduled is ORDER BY stime ASC, so the first title match is
+      // the earliest-starting one.
+      const hit = list.find((m) => m && String(m.filename || '') === title);
+      if (!hit) continue;
+      if (hit.stime) r.meeting_stime = hit.stime;
+      if (hit.id) r.meeting_nid = String(hit.id);
+    }
+    if (!drop.size) return rows;
+    return rows.filter((r) => !drop.has(r));
+  }
+
+  /**
+   * Flag folder-chat rollups that contain an @-mention of the caller (Duy
+   * 2026-08-21, issue 12: "I only receive the noti 'memberA sent a message'").
+   *
+   * notification_center_next rolls team chat up per FOLDER and carries no
+   * mention information, so a message that named you was indistinguishable from
+   * any other. `channel_list_notifications(uid,'mention',…)` already knows
+   * exactly which unread messages mention you, and returns the folder as
+   * `scope_nid` — so the rollup can be annotated from it with no schema change.
+   *
+   * Annotating the rollup rather than surfacing the mention rows separately is
+   * deliberate: the panel would then show BOTH ("mentioned you in X" and "sent a
+   * message" for the same folder), which is the double-row this avoids.
+   *
+   * One call per DISTINCT hub that actually has a teamchat rollup on the page,
+   * capped, and best-effort: a failure leaves the row reading exactly as it does
+   * today.
+   */
+  async _stampChatMentions(rows) {
+    const MAX_LOOKUPS = 8;
+    if (!Array.isArray(rows) || !rows.length) return;
+    const pending = rows.filter((r) => r && r.category === 'teamchat' && !r.mentioned_in
+      // A rollup whose latest unread event is a meeting start/end renders (and
+      // buckets) as a meeting; a mention flag there would be ignored anyway.
+      && r.meeting_action !== 'start' && r.meeting_action !== 'end');
+    if (!pending.length) return;
+
+    const hubs = [];
+    for (const r of pending) {
+      if (!r.hub_id || hubs.includes(r.hub_id)) continue;
+      if (hubs.length >= MAX_LOOKUPS) break;
+      hubs.push(r.hub_id);
+    }
+
+    // "hub:folder" for every folder holding an unread mention. '' = a
+    // hub-level/legacy chat message, which the rollup groups with nid NULL.
+    const mentioned = new Set();
+    for (const hubId of hubs) {
+      try {
+        const list = toArray(
+          await this.yp.await_proc(
+            'forward_proc', hubId, 'channel_list_notifications',
+            `'${this.uid}','mention',1,1`
+          )
+        );
+        for (const m of list) {
+          if (!m) continue;
+          const scope = (m.scope_nid == null || m.scope_nid === 'null') ? '' : String(m.scope_nid);
+          mentioned.add(`${hubId}:${scope}`);
+        }
+      } catch (e) {
+        this.debug('[ACTIVITY] mention lookup failed', hubId, e && e.message);
+      }
+    }
+    if (!mentioned.size) return;
+
+    for (const r of pending) {
+      const scope = (r.nid == null || r.nid === 'null') ? '' : String(r.nid);
+      if (!mentioned.has(`${r.hub_id}:${scope}`)) continue;
+      // The name the sentence reads ("mentioned you in <Folder>"). `filename` is
+      // the folder for a teamchat rollup, already falling back to the workspace
+      // name for hub-level chat (notification_center_next COALESCEs h.name).
+      r.mentioned_in = r.folder_name || r.filename || '';
+      if (!r.mentioned_in) delete r.mentioned_in;
+    }
+  }
+
+  /**
    * List undismissed task assignments and watched-column notifications for the
    * pinned activity section + bell badge. Rows are shaped like
    * activity_get_feed_all's contact branch, with task metadata flattened so
@@ -916,6 +1257,22 @@ class MfsActivity extends Entity {
       rows.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
     } catch (e) {
       this.warn('[ACTIVITY] contact_task_column_change_unread failed', e && e.message);
+    }
+    // Scheduled-meeting notices ride this endpoint too. Not a task event, so the
+    // name no longer describes the whole payload — but this is the ONE call the
+    // panel makes for the bell badge's contact_activity share, and a notice that
+    // is missing here would make the Meeting tab badge exceed the bell. The
+    // panel filters by `event`, so an older client simply ignores these rows.
+    try {
+      const meetingRows = toArray(
+        await this.yp.await_proc('contact_meeting_notice_unread', this.uid),
+      );
+      flattenMeetingNotice(meetingRows);
+      rows = rows.concat(meetingRows);
+      rows.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+    } catch (e) {
+      // debug, not warn: the proc may not be applied yet during a rollout.
+      this.debug('[ACTIVITY] contact_meeting_notice_unread skipped', e && e.message);
     }
     // These rows are pinned into the panel alongside activity.list rows, so they
     // need the same `bucket` field or the client cannot filter them by tab. They
@@ -1174,31 +1531,47 @@ class MfsActivity extends Entity {
       if (Object.prototype.hasOwnProperty.call(counts, bucket)) counts[bucket] += 1;
     };
 
-    // 1. The rollup categories + hub invites + refused invitations + workspace
-    //    moves. Already bucket-stamped; bucketOf is idempotent on them.
-    try {
-      for (const r of await this._notificationRollups()) if (r) bump(r);
-    } catch (e) {
-      this.warn('[ACTIVITY] unread_counts: rollups failed', e && e.message);
-    }
-
-    // 2. yp.contact_activity unread rows. Task events land in Task; the system
-    //    alerts (storage, reward expiry) land in Other. Same proc list get_feed
-    //    merges, so the badge and the feed agree on what exists.
+    // 2. is counted BEFORE 1. on purpose: a scheduled meeting's rollup row is
+    //    dropped from the feed when a targeted invitation already covers it, so
+    //    the badge has to know about the invitations before it counts rollups —
+    //    otherwise the Meeting badge would read one higher than the rows the tab
+    //    actually shows. Collected here, counted below.
+    const contactRows = [];
     for (const proc of [
       'contact_task_assigned_unread',
       'contact_task_mention_unread',
       'contact_task_column_change_unread',
       'contact_storage_alert_unread',
       'contact_reward_expiry_unread',
+      // Scheduled-meeting notices → Meeting, via BUCKET_BY_EVENT. Listed here
+      // for the same reason as the rest: the tab badge and the feed must agree
+      // on what exists.
+      'contact_meeting_notice_unread',
     ]) {
       try {
-        for (const r of toArray(await this.yp.await_proc(proc, this.uid))) if (r) bump(r);
+        for (const r of toArray(await this.yp.await_proc(proc, this.uid))) if (r) contactRows.push(r);
       } catch (e) {
         // debug, not warn: a proc missing during a rollout window is expected
         // and must not spam the alert bot.
         this.debug(`[ACTIVITY] unread_counts: ${proc} skipped`, e && e.message);
       }
+    }
+    flattenMeetingNotice(contactRows);
+    for (const r of contactRows) bump(r);
+
+    // 1. The rollup categories + hub invites + refused invitations + workspace
+    //    moves. Already bucket-stamped; bucketOf is idempotent on them. A
+    //    scheduled-meeting rollup already covered by an invitation counted above
+    //    is skipped, exactly as get_feed drops it from the page.
+    try {
+      const covered = meetingNoticeKeys(contactRows);
+      for (const r of await this._notificationRollups()) {
+        if (!r) continue;
+        if (isCoveredByNotice(r, covered)) continue;
+        bump(r);
+      }
+    } catch (e) {
+      this.warn('[ACTIVITY] unread_counts: rollups failed', e && e.message);
     }
 
     // 3. Unread secure-share opens ("{email} opened {folder}") — Files, per the

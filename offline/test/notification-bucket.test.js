@@ -62,16 +62,52 @@ if (endIdx < 0) {
 const block = src.slice(startIdx, endIdx);
 // Sanity-check that we sliced what we think we did, so a silent mis-slice can
 // never masquerade as a passing run.
-for (const needed of ['function bucketOf', 'function stampBuckets', 'function lookup', 'function validBucket']) {
+for (const needed of [
+  'function bucketOf', 'function stampBuckets', 'function lookup', 'function validBucket',
+  // Round 3 / 2026-08-21: the scheduled-meeting helpers live in the same block
+  // and are shared by get_feed and unread_counts, so the badge cannot disagree
+  // with the rows. If they move out of the block, this slicer stops seeing the
+  // real code and the tests below would silently test nothing.
+  'function isScheduleRollup', 'function meetingNoticeKeys', 'function isCoveredByNotice',
+]) {
   if (!block.includes(needed)) {
     console.error(`FATAL: sliced block is missing ${needed} — slicer is wrong`);
     process.exit(1);
   }
 }
 
-const { bucketOf, stampBuckets, validBucket, BUCKET } = (new Function(
-  `${block}\nreturn { bucketOf, stampBuckets, validBucket, BUCKET };`
+const {
+  bucketOf, stampBuckets, validBucket, BUCKET,
+  isScheduleRollup, meetingNoticeKeys, isCoveredByNotice,
+} = (new Function(
+  `${block}\nreturn { bucketOf, stampBuckets, validBucket, BUCKET,`
+  + ` isScheduleRollup, meetingNoticeKeys, isCoveredByNotice };`
 ))();
+
+// flattenMeetingNotice sits with the other row-flatteners, above the bucket
+// block, so it is sliced on its own. unread_counts calls it, so the harness has
+// to supply the REAL one.
+const flattenMeetingNotice = (() => {
+  const M = '\nfunction flattenMeetingNotice(rows) {';
+  const i = src.indexOf(M);
+  if (i < 0) {
+    console.error('FATAL: could not find flattenMeetingNotice in the service module');
+    process.exit(1);
+  }
+  let d = 0;
+  let end = -1;
+  for (let j = src.indexOf('{', i + 1); j < src.length; j++) {
+    if (src[j] === '{') d++;
+    else if (src[j] === '}') { d--; if (d === 0) { end = j + 1; break; } }
+  }
+  if (end < 0) { console.error('FATAL: unbalanced braces slicing flattenMeetingNotice'); process.exit(1); }
+  const fnSrc = src.slice(i, end);
+  if (!fnSrc.includes("r.event !== 'meeting_notice'")) {
+    console.error('FATAL: sliced flattenMeetingNotice does not guard on the event — slicer is wrong');
+    process.exit(1);
+  }
+  return (new Function(`${fnSrc}\nreturn flattenMeetingNotice;`))();
+})();
 
 const TABS = ['files', 'task', 'meeting', 'chat', 'other'];
 
@@ -92,6 +128,12 @@ function ok(label, cond) { check(label, !!cond, true); }
 const CASES = [
   // --- Files -------------------------------------------------------------
   ['media rollup (upload)',            { category: 'media', event: 'media.new' },              'files'],
+  // A folder holding BOTH a meeting and a file rolls up as one row with cnt > 1
+  // and MAX(item_filetype) — treating that as a meeting would hide a real
+  // upload, so it must stay in Files.
+  ['mixed rollup tagged schedule',     { category: 'media', event: 'media.new', item_filetype: 'schedule', cnt: 2 }, 'files'],
+  ['mixed rollup, cnt as a string',    { category: 'media', event: 'media.new', item_filetype: 'schedule', cnt: '5' }, 'files'],
+  ['schedule filetype, not a rollup',  { event_type: 'mfs', event: 'media.new', item_filetype: 'schedule', cnt: 1 }, 'files'],
   ['media rollup, folder create',      { category: 'media', event: 'media.make_dir' },         'files'],
   ['feed row: mfs event_type',         { event_type: 'mfs', event: 'media.new' },              'files'],
   ['feed row: media.share',            { event_type: 'mfs', event: 'media.share' },            'files'],
@@ -120,6 +162,15 @@ const CASES = [
   ['conference event only',            { event: 'conference.start' },                            'meeting'],
   ['scheduled meeting push',           { event: 'room.scheduled' },                              'meeting'],
   ['meeting reminder push',            { event: 'room.reminder' },                               'meeting'],
+  // Round 3 / 2026-08-21. A scheduled meeting is a media node, so its rollup
+  // arrives looking exactly like an upload — that is why an invitation used to
+  // sit in Files reading "<organizer> uploaded <Meeting-name>".
+  ['scheduled meeting rollup',         { category: 'media', event: 'media.new', item_filetype: 'schedule', cnt: 1 }, 'meeting'],
+  ['scheduled meeting, cnt absent',    { category: 'media', event: 'media.new', item_filetype: 'schedule' },         'meeting'],
+  ['scheduled meeting, mfs category',  { category: 'mfs', event: 'media.new', item_filetype: 'schedule', cnt: '1' }, 'meeting'],
+  ['meeting notice (invited)',         { event_type: 'contact', event: 'meeting_notice' },        'meeting'],
+  ['meeting notice, no category',      { event: 'meeting_notice' },                               'meeting'],
+  ['meeting notice, category contact', { category: 'contact', event: 'meeting_notice' },          'meeting'],
 
   // --- Chat --------------------------------------------------------------
   ['p2p chat rollup',                  { category: 'chat', cnt: 3 },                             'chat'],
@@ -323,13 +374,17 @@ for (const [label, input] of [
   }
   if (mEnd < 0) { console.error('FATAL: unbalanced braces slicing unread_counts'); process.exit(1); }
   const methodSrc = src.slice(mStart, mEnd);
-  for (const needed of ['_notificationRollups', 'secure_share_list_requests', 'contact_task_assigned_unread']) {
+  for (const needed of ['_notificationRollups', 'secure_share_list_requests',
+    'contact_task_assigned_unread', 'contact_meeting_notice_unread']) {
     if (!methodSrc.includes(needed)) {
       console.error(`FATAL: sliced unread_counts is missing ${needed} — slicer is wrong`);
       process.exit(1);
     }
   }
-  const impl = (new Function('toArray', 'bucketOf', `return { ${methodSrc} };`))(toArray, bucketOf);
+  const impl = (new Function(
+    'toArray', 'bucketOf', 'flattenMeetingNotice', 'meetingNoticeKeys', 'isCoveredByNotice',
+    `return { ${methodSrc} };`,
+  ))(toArray, bucketOf, flattenMeetingNotice, meetingNoticeKeys, isCoveredByNotice);
 
   // Build a stub `this`. `procs` maps proc name -> rows, or a thrown Error.
   function harness({ rollups = [], procs = {} } = {}) {
@@ -423,6 +478,74 @@ for (const [label, input] of [
     check(`${label}: all`, got.all, 2);
   });
 
+  // Round 3 / 2026-08-21 — the tab badge must agree with the rows the tab shows.
+  // get_feed DROPS a scheduled meeting's rollup row when a targeted invitation
+  // already covers it, so counting both here would make the Meeting badge read
+  // one higher than the rows the user can actually see.
+  q('an invited meeting is counted ONCE, not twice', {
+    rollups: [
+      { category: 'media', item_filetype: 'schedule', item_filename: 'Sprint review', hub_id: 'h1', cnt: 1 },
+    ],
+    procs: {
+      contact_meeting_notice_unread: [{
+        id: 9, event: 'meeting_notice',
+        data: { kind: 'invite', title: 'Sprint review', hub_id: 'h1' },
+      }],
+    },
+  }, (label, got) => {
+    check(`${label}: meeting counted once`, got.meeting, 1);
+    check(`${label}: nothing leaked into files`, got.files, 0);
+    check(`${label}: all`, got.all, 1);
+  });
+
+  q('a meeting nobody invited you to is still counted', {
+    rollups: [
+      { category: 'media', item_filetype: 'schedule', item_filename: 'Sprint review', hub_id: 'h1', cnt: 1 },
+    ],
+  }, (label, got) => {
+    check(`${label}: the rollup counts on its own`, got.meeting, 1);
+    check(`${label}: all`, got.all, 1);
+  });
+
+  q('a cancellation does not hide the scheduled row from the count', {
+    rollups: [
+      { category: 'media', item_filetype: 'schedule', item_filename: 'Sprint review', hub_id: 'h1', cnt: 1 },
+    ],
+    procs: {
+      contact_meeting_notice_unread: [{
+        id: 9, event: 'meeting_notice',
+        data: { kind: 'cancelled', title: 'Sprint review', hub_id: 'h1' },
+      }],
+    },
+  }, (label, got) => {
+    check(`${label}: both are counted`, got.meeting, 2);
+  });
+
+  q('a mixed rollup tagged schedule is never deduped away from Files', {
+    rollups: [
+      { category: 'media', item_filetype: 'schedule', item_filename: 'Sprint review', hub_id: 'h1', cnt: 3 },
+    ],
+    procs: {
+      contact_meeting_notice_unread: [{
+        id: 9, event: 'meeting_notice',
+        data: { kind: 'invite', title: 'Sprint review', hub_id: 'h1' },
+      }],
+    },
+  }, (label, got) => {
+    check(`${label}: the upload rollup stays in Files`, got.files, 1);
+    check(`${label}: the invitation is its own Meeting row`, got.meeting, 1);
+    check(`${label}: all`, got.all, 2);
+  });
+
+  q('a missing meeting proc costs nothing', {
+    rollups: [{ category: 'media' }],
+    procs: { contact_meeting_notice_unread: new Error('ER_SP_DOES_NOT_EXIST') },
+  }, (label, got) => {
+    check(`${label}: files still counted`, got.files, 1);
+    check(`${label}: meeting is 0, not NaN`, got.meeting, 0);
+    check(`${label}: all`, got.all, 1);
+  });
+
   q('rollups failing entirely still returns a usable response', {
     rollups: new Error('rollup enumerate failed'),
     procs: { contact_task_assigned_unread: [{ id: 1, event: 'task_assigned' }] },
@@ -460,9 +583,10 @@ for (const [label, input] of [
   // resolves to Object's own constructor function and stringifies into a stray
   // 7th key on the response — a corrupt payload the client would render.
   {
-    const implHostile = (new Function('toArray', 'bucketOf', `return { ${methodSrc} };`))(
-      toArray, () => 'constructor',
-    );
+    const implHostile = (new Function(
+      'toArray', 'bucketOf', 'flattenMeetingNotice', 'meetingNoticeKeys', 'isCoveredByNotice',
+      `return { ${methodSrc} };`,
+    ))(toArray, () => 'constructor', flattenMeetingNotice, meetingNoticeKeys, isCoveredByNotice);
     let captured = null;
     const ctx = {
       uid: 'u1', warn() {}, debug() {},
