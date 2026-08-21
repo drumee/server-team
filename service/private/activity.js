@@ -421,6 +421,29 @@ function isCoveredByNotice(row, keys) {
   return keys.has(`${row.hub_id || ''}:${title}`);
 }
 
+// ---------------------------------------------------------------------------
+// Procedures that may not exist yet.
+//
+// Several of the merges below call an *_unread procedure that a given database
+// may not have applied. Each call is already wrapped in try/catch, so a missing
+// one degrades gracefully — but that is NOT enough: the mariadb driver logs
+// every SQL failure BEFORE the exception reaches us, so a missing procedure
+// writes an ER_SP_DOES_NOT_EXIST (1305) line on every single call. Measured on
+// the dev endpoint: 141 of them in one browsing session, and 1305 lines are
+// exactly what the PROD alert bot picks up (see the same warning in
+// service/lib/activity-mailer.js).
+//
+// So the first failure is remembered per procedure name, for the life of the
+// process, and the procedure is not called again. One log line instead of
+// hundreds, no behaviour change whatsoever while the procedure exists, and it
+// re-probes on the next restart — which a deploy or a schema patch does anyway.
+//
+// Process-wide rather than per-user on purpose: "this database has no such
+// routine" is a property of the database, not of the caller.
+// ---------------------------------------------------------------------------
+const MISSING_PROCS = new Set();
+const NO_SUCH_PROC = /does not exist|ER_SP_DOES_NOT_EXIST|\b1305\b/i;
+
 // A caller-supplied bucket is only honoured when it names one of the 5 tabs;
 // anything else (absent, empty, typo'd) means "no bucket scope" and every path
 // keeps its pre-existing, unscoped behaviour.
@@ -458,6 +481,30 @@ class MfsActivity extends Entity {
    * @param {string} procName - Procedure name
    * @param {...any} args - Procedure arguments
    */
+  /**
+   * Call an optional yp procedure. Returns [] instead of throwing when the
+   * routine is absent, and stops calling it after the first such failure — see
+   * MISSING_PROCS above for why the try/catch alone is not enough.
+   *
+   * Any OTHER error is re-thrown to the caller's own catch, so a real failure
+   * (a deadlock, a bad argument) is still reported exactly as before and is
+   * never mistaken for "not deployed yet".
+   */
+  async _optionalYpProc(name, ...args) {
+    if (MISSING_PROCS.has(name)) return [];
+    try {
+      return toArray(await this.yp.await_proc(name, ...args));
+    } catch (e) {
+      const msg = (e && (e.message || e.text || e.sqlMessage)) || '';
+      if (NO_SUCH_PROC.test(String(msg)) || e?.errno === 1305) {
+        MISSING_PROCS.add(name);
+        this.debug(`[ACTIVITY] ${name} is not deployed on this database; skipping it from now on`);
+        return [];
+      }
+      throw e;
+    }
+  }
+
   async _callUserProc(procName, ...args) {
     // const argsStr = args.map(arg => {
     //   if (typeof arg === 'string') return `'${arg}'`;
@@ -603,7 +650,7 @@ class MfsActivity extends Entity {
     if (bucket && lookup(CONTACT_CLEAR, bucket)) {
       for (const proc of lookup(CONTACT_CLEAR, bucket)) {
         try {
-          const rows = toArray(await this.yp.await_proc(proc, this.uid));
+          const rows = await this._optionalYpProc(proc, this.uid);
           for (const r of rows) {
             const activityId = parseInt(r && r.id);
             if (!activityId) continue;
@@ -834,7 +881,7 @@ class MfsActivity extends Entity {
             'contact_meeting_notice_unread',
           ]) {
             try {
-              const rows = toArray(await this.yp.await_proc(proc, this.uid));
+              const rows = await this._optionalYpProc(proc, this.uid);
               for (const r of rows) {
                 if (!r) continue;
                 if (r.timestamp == null) r.timestamp = r.ctime;
@@ -1264,9 +1311,7 @@ class MfsActivity extends Entity {
     // is missing here would make the Meeting tab badge exceed the bell. The
     // panel filters by `event`, so an older client simply ignores these rows.
     try {
-      const meetingRows = toArray(
-        await this.yp.await_proc('contact_meeting_notice_unread', this.uid),
-      );
+      const meetingRows = await this._optionalYpProc('contact_meeting_notice_unread', this.uid);
       flattenMeetingNotice(meetingRows);
       rows = rows.concat(meetingRows);
       rows.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
@@ -1549,7 +1594,7 @@ class MfsActivity extends Entity {
       'contact_meeting_notice_unread',
     ]) {
       try {
-        for (const r of toArray(await this.yp.await_proc(proc, this.uid))) if (r) contactRows.push(r);
+        for (const r of await this._optionalYpProc(proc, this.uid)) if (r) contactRows.push(r);
       } catch (e) {
         // debug, not warn: a proc missing during a rollout window is expected
         // and must not spam the alert bot.

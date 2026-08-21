@@ -531,6 +531,88 @@ const MeetingRollups = new Function(
 //     every FILE notification read as a side effect;
 //   * clearing Task must not touch the meeting notices, and vice versa;
 //   * an UNSCOPED call must behave exactly as it did before tabs existed.
+// The guard mark_all_read now routes its optional procs through: a not-yet-
+// deployed routine must be skipped after the FIRST failure, because the mariadb
+// driver logs an ER_SP_DOES_NOT_EXIST (1305) line before the exception ever
+// reaches our catch — 141 of them in one browsing session, measured live, and
+// 1305 is exactly what the PROD alert bot reports.
+function sliceGuard() {
+  const start = src.indexOf('\n  async _optionalYpProc(');
+  if (start < 0) throw new Error('_optionalYpProc not found');
+  let d = 0;
+  for (let i = src.indexOf('{', start); i < src.length; i++) {
+    if (src[i] === '{') d++;
+    else if (src[i] === '}' && --d === 0) return src.slice(start, i + 1);
+  }
+  throw new Error('unbalanced braces in _optionalYpProc');
+}
+const guardSrc = sliceGuard();
+ok(guardSrc.includes('MISSING_PROCS'), 'the sliced guard consults MISSING_PROCS');
+// Fresh cache per build: process-wide is right in production, but shared across
+// cases here it would let one verdict silence the rest.
+const mkGuard = () => (new Function(
+  'toArray', 'MISSING_PROCS', 'NO_SUCH_PROC',
+  `return { ${guardSrc.replace(/^\s*async /, 'async ')} };`,
+))(toArray, new Set(), /does not exist|ER_SP_DOES_NOT_EXIST|\b1305\b/i)._optionalYpProc;
+
+{
+  // The guard's own contract, exercised directly.
+  const calls = [];
+  const ctx = {
+    debug() {},
+    _optionalYpProc: mkGuard(),
+    yp: { async await_proc(n) {
+      calls.push(n);
+      if (n === 'gone') { const e = new Error('PROCEDURE yp.gone does not exist'); e.errno = 1305; throw e; }
+      if (n === 'broken') throw new Error('Deadlock found when trying to get lock');
+      return [{ id: 1 }];
+    } },
+  };
+  return_await((async () => {
+    deepEq(await ctx._optionalYpProc('fine'), [{ id: 1 }], 'a deployed proc returns its rows');
+    deepEq(await ctx._optionalYpProc('gone'), [], 'a missing proc degrades to no rows');
+    deepEq(await ctx._optionalYpProc('gone'), [], 'and again');
+    eq(calls.filter((n) => n === 'gone').length, 1,
+      'a missing proc is called ONCE, then never again — this is the alert-spam fix');
+    let rethrown = null;
+    try { await ctx._optionalYpProc('broken'); } catch (e) { rethrown = e.message; }
+    ok(/Deadlock/.test(rethrown || ''),
+      'a REAL error is re-thrown, never mistaken for "not deployed yet"');
+    eq(calls.filter((n) => n === 'broken').length, 1, 'and a real error does not blacklist the proc');
+    await ctx._optionalYpProc('broken').catch(() => {});
+    eq(calls.filter((n) => n === 'broken').length, 2, 'so it is retried next time');
+  })(), () => {});
+}
+
+// EVERY optional-procedure call site must go through the guard. This is a source
+// assertion on purpose: the stubs in these harnesses answer either route
+// identically, so behaviour cannot tell them apart — but a call site that
+// bypasses the guard silently reintroduces the 1305 log spam, which is the whole
+// reason the guard exists. The guard's own behaviour is covered above.
+{
+  const optionalProcs = [
+    'contact_task_assigned_unread',
+    'contact_task_mention_unread',
+    'contact_task_column_change_unread',
+    'contact_storage_alert_unread',
+    'contact_reward_expiry_unread',
+    'contact_meeting_notice_unread',
+  ];
+  // No optional proc may be reached through a bare yp.await_proc(proc, ...) loop.
+  const bareLoops = [...src.matchAll(/await this\.yp\.await_proc\(\s*proc\s*[,)]/g)];
+  eq(bareLoops.length, 0,
+    'an optional proc is still being called without the 1305 guard');
+  // And the one place that names the meeting proc directly must use the guard too.
+  const direct = [...src.matchAll(/_optionalYpProc\('contact_meeting_notice_unread'/g)];
+  ok(direct.length >= 1, 'list_task_assignments must call the meeting proc through the guard');
+  ok(!/await this\.yp\.await_proc\('contact_meeting_notice_unread'/.test(src),
+    'the meeting proc must never be called bare');
+  // Sanity: the procs really are referenced somewhere, so this is not vacuous.
+  for (const name of optionalProcs) {
+    ok(src.includes(name), `${name} is no longer referenced — update this list`);
+  }
+}
+
 // The real helpers, sliced from source: validBucket decides whether a caller's
 // bucket is honoured at all, and bucketOf decides which tab owns each rollup.
 const bucketHelpers = new Function(
@@ -544,7 +626,7 @@ const bucketHelpers = new Function(
 
 {
   const Klass = new Function(
-    'toArray', 'validBucket', 'bucketOf', 'BUCKET', 'lookup',
+    'toArray', 'validBucket', 'bucketOf', 'BUCKET', 'lookup', 'GUARD',
     `class R {
        constructor(bucket, rollups) {
          this.uid = 'u1';
@@ -573,11 +655,12 @@ const bucketHelpers = new Function(
            return [];
          } };
        }
+       _optionalYpProc = GUARD;
        ${sliceMethod('mark_all_read')}
      }
      return R;`,
   )(toArray, bucketHelpers.validBucket, bucketHelpers.bucketOf,
-    bucketHelpers.BUCKET, bucketHelpers.lookup);
+    bucketHelpers.BUCKET, bucketHelpers.lookup, mkGuard());
 
   {
     const r = new Klass('meeting');

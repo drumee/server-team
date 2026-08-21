@@ -374,6 +374,25 @@ for (const [label, input] of [
   }
   if (mEnd < 0) { console.error('FATAL: unbalanced braces slicing unread_counts'); process.exit(1); }
   const methodSrc = src.slice(mStart, mEnd);
+  // unread_counts calls _optionalYpProc, the guard that stops a not-yet-deployed
+  // procedure from logging an ER_SP_DOES_NOT_EXIST (1305) line on every call.
+  // Sliced in for real so the guard is exercised rather than stubbed away.
+  const guardStart = src.indexOf('\n  async _optionalYpProc(');
+  if (guardStart < 0) {
+    console.error('FATAL: _optionalYpProc not found in the service module');
+    process.exit(1);
+  }
+  let gd = 0;
+  let guardEnd = -1;
+  for (let i = src.indexOf('{', guardStart); i < src.length; i++) {
+    if (src[i] === '{') gd++;
+    else if (src[i] === '}') { gd--; if (gd === 0) { guardEnd = i + 1; break; } }
+  }
+  const guardSrc = src.slice(guardStart, guardEnd);
+  if (!guardSrc.includes('MISSING_PROCS')) {
+    console.error('FATAL: sliced _optionalYpProc does not consult MISSING_PROCS');
+    process.exit(1);
+  }
   for (const needed of ['_notificationRollups', 'secure_share_list_requests',
     'contact_task_assigned_unread', 'contact_meeting_notice_unread']) {
     if (!methodSrc.includes(needed)) {
@@ -381,10 +400,20 @@ for (const [label, input] of [
       process.exit(1);
     }
   }
-  const impl = (new Function(
+  const mkImpl = (bucketFn) => (new Function(
     'toArray', 'bucketOf', 'flattenMeetingNotice', 'meetingNoticeKeys', 'isCoveredByNotice',
     `return { ${methodSrc} };`,
-  ))(toArray, bucketOf, flattenMeetingNotice, meetingNoticeKeys, isCoveredByNotice);
+  ))(toArray, bucketFn, flattenMeetingNotice, meetingNoticeKeys, isCoveredByNotice);
+  const impl = mkImpl(bucketOf);
+
+  // The guard the method calls, built fresh per case: MISSING_PROCS is
+  // process-wide in production (a missing routine is a property of the database),
+  // but sharing one Set across cases here would let a single "not deployed"
+  // verdict silence every later case.
+  const mkGuard = () => (new Function(
+    'toArray', 'MISSING_PROCS', 'NO_SUCH_PROC',
+    `return { ${guardSrc.replace(/^\s*async /, 'async ')} };`,
+  ))(toArray, new Set(), /does not exist|ER_SP_DOES_NOT_EXIST|\b1305\b/i)._optionalYpProc;
 
   // Build a stub `this`. `procs` maps proc name -> rows, or a thrown Error.
   function harness({ rollups = [], procs = {} } = {}) {
@@ -404,6 +433,7 @@ for (const [label, input] of [
         if (rollups instanceof Error) throw rollups;
         return rollups;
       },
+      _optionalYpProc: mkGuard(),
     };
     return impl.unread_counts.call(ctx).then(() => captured);
   }
@@ -583,16 +613,14 @@ for (const [label, input] of [
   // resolves to Object's own constructor function and stringifies into a stray
   // 7th key on the response — a corrupt payload the client would render.
   {
-    const implHostile = (new Function(
-      'toArray', 'bucketOf', 'flattenMeetingNotice', 'meetingNoticeKeys', 'isCoveredByNotice',
-      `return { ${methodSrc} };`,
-    ))(toArray, () => 'constructor', flattenMeetingNotice, meetingNoticeKeys, isCoveredByNotice);
+    const implHostile = mkImpl(() => 'constructor');
     let captured = null;
     const ctx = {
       uid: 'u1', warn() {}, debug() {},
       output: { data(o) { captured = o; } },
       yp: { async await_proc() { return []; } },
       async _notificationRollups() { return [{ category: 'chat' }, { category: 'media' }]; },
+      _optionalYpProc: mkGuard(),
     };
     results.push(implHostile.unread_counts.call(ctx).then(() => {
       const keys = Object.keys(captured).sort();
