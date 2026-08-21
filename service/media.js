@@ -118,6 +118,101 @@ const DATA_ROOT = new RegExp(`^${data_dir}`);
 const SPAWN_OPT = { detached: true, stdio: ["ignore", "ignore", "ignore"] };
 const OFFLINE_DIR = resolve(__dirname, "..", "offline", "media");
 
+const SEARCH_NAMES_DB_TIMEOUT_MS = 500;
+const SEARCH_NAMES_PROCESS_LIMIT = 8;
+const SEARCH_NAMES_PROJECTION_NOT_READY = "SEARCH_NAMES_PROJECTION_NOT_READY";
+const SEARCH_NAMES_PROJECTION_SIGNAL_ALIASES = new Set([
+  SEARCH_NAMES_PROJECTION_NOT_READY,
+  // The schema package uses the shorter internal signal while the public
+  // media contract intentionally keeps the SEARCH_NAMES_ prefix.
+  "SEARCH_PROJECTION_NOT_READY",
+  "SEARCH_PROJECTION_DISABLED",
+  "SEARCH_PROJECTION_BUSY",
+  "SEARCH_NAMES_PROJECTION_BUSY",
+]);
+const SEARCH_NAMES_TYPED_SQL_ERRORS = new Set([
+  "TREE_CYCLE",
+  "TREE_DEPTH_EXCEEDED",
+  "MENTION_PATH_TOO_LONG",
+  "SEARCH_PROJECTION_TREE_CYCLE",
+  "SEARCH_PROJECTION_DEPTH_EXCEEDED",
+  "SEARCH_PROJECTION_PATH_TOO_LONG",
+  "SEARCH_PROJECTION_NODE_INVALID",
+  SEARCH_NAMES_PROJECTION_NOT_READY,
+]);
+const activeSearchNameScopes = new Set();
+let activeSearchNames = 0;
+
+function acquireSearchNamesScope(scopeKey) {
+  if (!scopeKey || activeSearchNameScopes.has(scopeKey)) return false;
+  if (activeSearchNames >= SEARCH_NAMES_PROCESS_LIMIT) return false;
+  activeSearchNameScopes.add(scopeKey);
+  activeSearchNames += 1;
+  return true;
+}
+
+function releaseSearchNamesScope(scopeKey) {
+  if (!activeSearchNameScopes.delete(scopeKey)) return;
+  activeSearchNames = Math.max(0, activeSearchNames - 1);
+}
+
+/**
+ * A projection is deliberately fail-closed.  The routine normally emits the
+ * stable signal below when its local state row is absent, BUILDING, FAILED,
+ * or from an incompatible contract generation.  During a mixed-version
+ * rollout the routine (or one of its additive tables) can also be missing;
+ * classify only errors that identify the search projection, and leave all
+ * unrelated database failures observable.  In particular, do not classify
+ * MariaDB's query-interrupted errno (1317) as a projection/readiness result.
+ */
+function isSearchNamesProjectionNotReady(error) {
+  if (!error) return false;
+  const message = String(error.sqlMessage || error.message || "");
+  for (const signal of SEARCH_NAMES_PROJECTION_SIGNAL_ALIASES) {
+    if (message.includes(signal)) return true;
+  }
+
+  if (error.code === "ER_SP_DOES_NOT_EXIST") {
+    return /mfs_search_names/i.test(message);
+  }
+  if (error.code === "ER_NO_SUCH_TABLE") {
+    return /mfs_search_(?:state|node|closure)/i.test(message);
+  }
+  if (error.code === "ER_BAD_FIELD_ERROR") {
+    return /mfs_search_(?:state|node|closure)|contract_version|generation|readiness/i.test(message);
+  }
+  return false;
+}
+
+async function runSearchNamesQuery(db, args) {
+  const values = ["mfs_search_names", ...args];
+  const sql = db.statement(values, "call");
+  const connection = db.connection();
+  if (!connection || typeof connection.query !== "function") {
+    const error = new Error("Search names database connection is unavailable");
+    error.code = "SEARCH_NAMES_DB_CONNECTION_UNAVAILABLE";
+    throw error;
+  }
+
+  await connection.beginTransaction();
+  try {
+    const rows = await connection.query({
+      sql,
+      timeout: SEARCH_NAMES_DB_TIMEOUT_MS,
+      logParam: false,
+    }, values);
+    await connection.commit();
+    return rows && typeof rows.get_rows === "function" ? rows.get_rows() : rows;
+  } catch (error) {
+    try {
+      await connection.rollback();
+    } catch (_) {
+      // Preserve the query error; rollback failure must not hide its cause.
+    }
+    throw error;
+  }
+}
+
 class __media extends Mfs {
   /**
    *
@@ -1707,6 +1802,104 @@ class __media extends Mfs {
 
       // Return empty list on error instead of throwing exception
       this.output.list([]);
+    }
+  }
+
+  /**
+   * Search live names below the read-authorized source folder.
+   * Service: media.search_names
+   */
+  async search_names() {
+    const rawToken = this.input.get(Attr.token) || this.input.get("mfs_token");
+    const secureShareSession = this.user.get("is_secure_share_session");
+    const dmzHubCopy = this.user.get("is_dmz_hub_copy");
+    const shareContext = secureShareSession === true ||
+      Number(secureShareSession) === 1 ||
+      this.user.get("dmz_token") ||
+      dmzHubCopy === "yes" ||
+      dmzHubCopy === true ||
+      Number(dmzHubCopy) === 1 ||
+      this.user.get("connection") === "token";
+
+    if (rawToken || shareContext) {
+      return this.exception.user("SEARCH_NAMES_UNSUPPORTED_CONTEXT");
+    }
+    if (this.session.isAnonymous()) return this.exception.forbiden();
+
+    const granted = this.source_granted();
+    const node = granted && granted.node;
+    const filetype = node && (node.filetype || node.category || node.ftype);
+    // mfs_access_node represents the workspace root as `root`, while a folder
+    // window may legitimately be opened at that root. Only accept the caller's
+    // actual home root; arbitrary root-like media nodes remain invalid scopes.
+    const isScopeContainer = filetype === "folder" ||
+      (filetype === "root" && node.id === node.actual_home_id);
+    const hidden = node && (node.status === "hidden" || node.status === "deleted");
+    const linked = node && (node.isalink === true || Number(node.isalink) === 1);
+    if (!granted || !granted.id || !node || !isScopeContainer || hidden || linked ||
+      (Number(granted.privilege) & 2) !== 2) {
+      return this.exception.forbiden();
+    }
+
+    const inputQuery = this.input.get(Attr.query);
+    if (typeof inputQuery !== "string") {
+      return this.exception.user("INVALID_SEARCH_QUERY");
+    }
+    const query = inputQuery.trim().replace(/\s+/g, " ");
+    if (query.length < 1 || query.length > 128) {
+      return this.exception.user("INVALID_SEARCH_QUERY");
+    }
+
+    const requestedLimit = Number(this.input.use(Attr.limit, 6));
+    const limit = Number.isFinite(requestedLimit) ?
+      Math.min(6, Math.max(1, Math.trunc(requestedLimit))) : 6;
+    const hubId = this.hub.get(Attr.id);
+    if (!this.uid || !hubId) return this.exception.forbiden();
+
+    const scopeKey = `${this.uid}\u0000${hubId}`;
+    if (!acquireSearchNamesScope(scopeKey)) {
+      return this.exception.user("SEARCH_NAMES_BUSY");
+    }
+
+    try {
+      const rows = await runSearchNamesQuery(this.db, [
+        this.uid,
+        granted.id,
+        query,
+        limit,
+      ]);
+      return this.output.list(rows || []);
+    } catch (error) {
+      if (error && Number(error.errno) === 1969) {
+        return this.exception.user("SEARCH_NAMES_TIMEOUT");
+      }
+      if (isSearchNamesProjectionNotReady(error)) {
+        return this.exception.user(SEARCH_NAMES_PROJECTION_NOT_READY);
+      }
+      const sqlSignal = error && (error.sqlMessage || error.message);
+      const isSqlSignal = error &&
+        (error.errno === 1644 || error.code === "ER_SIGNAL_EXCEPTION");
+      if (isSqlSignal && SEARCH_NAMES_PROJECTION_SIGNAL_ALIASES.has(sqlSignal)) {
+        return this.exception.user(SEARCH_NAMES_PROJECTION_NOT_READY);
+      }
+      if (isSqlSignal && SEARCH_NAMES_TYPED_SQL_ERRORS.has(sqlSignal)) {
+        const publicSignal = {
+          SEARCH_PROJECTION_TREE_CYCLE: "TREE_CYCLE",
+          SEARCH_PROJECTION_DEPTH_EXCEEDED: "TREE_DEPTH_EXCEEDED",
+          SEARCH_PROJECTION_PATH_TOO_LONG: "MENTION_PATH_TOO_LONG",
+          SEARCH_PROJECTION_NODE_INVALID: "FORBIDDEN",
+        }[sqlSignal] || sqlSignal;
+        return this.exception.user(publicSignal);
+      }
+      if (isSqlSignal && sqlSignal === "SEARCH_NAMES_SCOPE_INVALID") {
+        return this.exception.forbiden();
+      }
+      if (isSqlSignal && sqlSignal === "SEARCH_NAMES_QUERY_INVALID") {
+        return this.exception.user("INVALID_SEARCH_QUERY");
+      }
+      throw error;
+    } finally {
+      releaseSearchNamesScope(scopeKey);
     }
   }
 

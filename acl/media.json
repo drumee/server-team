@@ -874,6 +874,99 @@
         }
       }
     },
+    "search_names": {
+      "doc": "Search up to six live, readable filenames or relative paths below an authorized folder using the local readiness-checked projection",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "params": {
+        "nid": {
+          "type": "string",
+          "required": true,
+          "doc": "Authorized folder node ID that bounds the live subtree search"
+        },
+        "query": {
+          "type": "string",
+          "required": true,
+          "minLength": 1,
+          "maxLength": 128,
+          "doc": "Literal filename or current relative-path filter"
+        },
+        "limit": {
+          "type": "number",
+          "required": false,
+          "default": 6,
+          "min": 1,
+          "max": 6,
+          "doc": "Maximum ranked suggestions returned"
+        }
+      },
+      "returns": {
+        "items": {
+          "type": "array",
+          "doc": "Deterministically ranked current descendants",
+          "items": {
+            "type": "object",
+            "properties": {
+              "nid": { "type": "string", "doc": "Node ID" },
+              "hub_id": { "type": "string", "doc": "Authoritative hub ID" },
+              "parent_id": { "type": "string", "doc": "Current parent node ID" },
+              "filename": { "type": "string", "doc": "Current filename without extension" },
+              "filetype": { "type": "string", "doc": "Renderer file type" },
+              "ext": { "type": "string", "doc": "Filename extension" },
+              "mimetype": { "type": "string", "doc": "Media MIME type" },
+              "capability": { "type": "string", "doc": "Renderer capability" },
+              "area": { "type": "string", "doc": "Authoritative hub area" },
+              "isalink": { "type": "number", "doc": "Whether the row is a link" },
+              "mention_path": { "type": "string", "doc": "Current relative path from the scoped folder" }
+            }
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "INVALID_SEARCH_QUERY",
+          "message": "Query must contain between 1 and 128 normalized characters",
+          "http_status": 400
+        },
+        {
+          "code": "SEARCH_NAMES_UNSUPPORTED_CONTEXT",
+          "message": "Live projected name search is unavailable in this share context",
+          "http_status": 409
+        },
+        {
+          "code": "SEARCH_NAMES_BUSY",
+          "message": "The live name-search capacity is busy",
+          "http_status": 429
+        },
+        {
+          "code": "SEARCH_NAMES_TIMEOUT",
+          "message": "The live name search exceeded its database time budget",
+          "http_status": 504
+        },
+        {
+          "code": "SEARCH_NAMES_PROJECTION_NOT_READY",
+          "message": "The live name-search projection is not ready for this database generation",
+          "http_status": 503
+        },
+        {
+          "code": "TREE_CYCLE",
+          "message": "The scoped media tree contains a cycle",
+          "http_status": 409
+        },
+        {
+          "code": "TREE_DEPTH_EXCEEDED",
+          "message": "The scoped media tree exceeds the supported depth",
+          "http_status": 422
+        },
+        {
+          "code": "MENTION_PATH_TOO_LONG",
+          "message": "A scoped media path exceeds the supported length",
+          "http_status": 422
+        }
+      ]
+    },
     "get_by_type": {
       "doc": "Get paginated list of files filtered by category",
       "scope": "hub",

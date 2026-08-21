@@ -171,10 +171,31 @@ const invariants = [
     );
   }],
 
-  ['#3 dmz.js: cookie_touch AND ceiling are both gated on !_isAuthSession', async () => {
+  ['#3 dmz.js: share binding and marker are atomic, auth-session gated, and fail closed', async () => {
     const dmz = src('service/dmz.js');
-    const gated = (dmz.match(/bindUid\s*&&\s*!_isAuthSession/g) || []).length;
-    assert.ok(gated >= 2, `expected both bind + ceiling blocks gated on !_isAuthSession, found ${gated}`);
+    const method = dmz.slice(dmz.indexOf('async _loginSecureShare('), dmz.indexOf('\n  /**', dmz.indexOf('async _loginSecureShare(')));
+    assert.ok(
+      /if \(bindUid && !_isAuthSession\)[\s\S]{0,900}await this\.yp\.await_proc\('set_session_share_context', \{[\s\S]{0,500}sid\s*:\s*this\.input\.sid\(\)[\s\S]{0,500}uid\s*:\s*bindUid[\s\S]{0,500}socket_id[\s\S]{0,500}priv_ceiling\s*:\s*ceilingToStamp/.test(method),
+      'isolated share cookie binding, socket rebinding, ceiling, and marker must use one atomic procedure'
+    );
+    assert.ok(
+      /secure_share session context update failed[\s\S]{0,300}return this\.exception\.user\('SECURE_SHARE_SESSION_CONTEXT_FAILED'\)/.test(method),
+      'a failed context write must fail the share login instead of leaving an unmarked bound cookie'
+    );
+    assert.ok(
+      /const contextResult\s*=\s*await this\.yp\.await_proc\('set_session_share_context'/.test(method)
+        && /contextResult\s*==\s*null\s*\|\|\s*contextResult\.failed\s*===\s*1/.test(method),
+      'a swallowed await_proc failure (undefined/failed envelope) must still fail the share login'
+    );
+    assert.ok(
+      !/await this\.yp\.await_proc\('cookie_touch'/.test(method),
+      'secure-share login must not bind the cookie separately from its marker'
+    );
+    const loginAcl = JSON.parse(src('acl/dmz.json')).services.login;
+    assert.ok(
+      loginAcl.errors.some(({ code }) => code === 'SECURE_SHARE_SESSION_CONTEXT_FAILED'),
+      'the fail-closed share-session response must be documented on dmz.login'
+    );
   }],
 
   ['#3 dmz.js: legacy login() also guards the regsid rebind', async () => {

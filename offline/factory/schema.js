@@ -31,6 +31,7 @@ class __schema extends Logger {
     this.initialize = this.initialize.bind(this);
     this.create_media_root = this.create_media_root.bind(this);
     this.create_vfs_root = this.create_vfs_root.bind(this);
+    this.publish_search_projection = this.publish_search_projection.bind(this);
     this.create_entity = this.create_entity.bind(this);
     this.delete_entity = this.delete_entity.bind(this);
     this.load_sql = this.load_sql.bind(this);
@@ -112,6 +113,30 @@ class __schema extends Logger {
     return true;
   }
 
+  /**
+   * Build the synchronous file-name search projection before this database is
+   * advertised as a clean pool entity. The template intentionally starts in
+   * BUILDING generation 0; media-root creation is the first authoritative
+   * write, so publication must happen after that write succeeds.
+   *
+   * @returns {Promise<boolean>}
+   */
+  async publish_search_projection() {
+    const result = await this.db.await_proc("mfs_search_projection_rebuild");
+    const projection = Array.isArray(result) ? result[0] : result;
+    const generation = Number(projection && projection.generation);
+    if (
+      !projection ||
+      projection.state !== "READY" ||
+      !Number.isSafeInteger(generation) ||
+      generation < 1
+    ) {
+      console.error("FAILED TO PUBLISH FILE-NAME SEARCH PROJECTION");
+      return false;
+    }
+    return true;
+  }
+
   // ========================
   // create_entity
   // ========================
@@ -130,6 +155,9 @@ class __schema extends Logger {
       res = await this.load_sql();
       if (!res) return;
       res = await this.create_vfs_root();
+      if (!res) return;
+      res = await this.publish_search_projection();
+      if (!res) return;
     }
     const { id, db_name, home_id } = this.entity;
     let sql = `UPDATE entity SET settings=JSON_SET(settings, "$.pool_state", "clean") WHERE id='${id}'`;

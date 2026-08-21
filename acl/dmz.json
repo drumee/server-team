@@ -116,6 +116,11 @@
           "code": "MISSING_PARAM",
           "message": "token is required",
           "http_status": 400
+        },
+        {
+          "code": "SECURE_SHARE_SESSION_CONTEXT_FAILED",
+          "message": "The isolated secure-share session could not be established safely",
+          "http_status": 503
         }
       ]
     },

@@ -37,3 +37,7 @@ jobs:
         run: node offline/test/move-plan.test.js
       - name: Run file-thread access event regression test
         run: node offline/test/file-thread-access-events.test.js
+      - name: Run media name-search regression test
+        run: node offline/test/media-search-names.test.js
+      - name: Run factory projection-readiness regression test
+        run: node --test offline/test/factory-projection-readiness.test.js
