@@ -411,9 +411,9 @@ for (const [label, input] of [
   // but sharing one Set across cases here would let a single "not deployed"
   // verdict silence every later case.
   const mkGuard = () => (new Function(
-    'toArray', 'MISSING_PROCS', 'NO_SUCH_PROC',
+    'toArray', 'MISSING_PROCS', 'PROC_RETRY_MS',
     `return { ${guardSrc.replace(/^\s*async /, 'async ')} };`,
-  ))(toArray, new Set(), /does not exist|ER_SP_DOES_NOT_EXIST|\b1305\b/i)._optionalYpProc;
+  ))(toArray, new Map(), 60000)._optionalYpProc;
 
   // Build a stub `this`. `procs` maps proc name -> rows, or a thrown Error.
   function harness({ rollups = [], procs = {} } = {}) {

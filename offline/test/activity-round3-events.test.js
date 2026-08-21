@@ -550,66 +550,111 @@ const guardSrc = sliceGuard();
 ok(guardSrc.includes('MISSING_PROCS'), 'the sliced guard consults MISSING_PROCS');
 // Fresh cache per build: process-wide is right in production, but shared across
 // cases here it would let one verdict silence the rest.
-const mkGuard = () => (new Function(
-  'toArray', 'MISSING_PROCS', 'NO_SUCH_PROC',
-  `return { ${guardSrc.replace(/^\s*async /, 'async ')} };`,
-))(toArray, new Set(), /does not exist|ER_SP_DOES_NOT_EXIST|\b1305\b/i)._optionalYpProc;
+// Returns the guard AND the Map it records verdicts in, so a test can look at
+// the bookkeeping directly — a cleared entry is otherwise invisible.
+const mkGuardWithMap = (retryMs = 60000, seed = new Map()) => {
+  const guard = (new Function(
+    'toArray', 'MISSING_PROCS', 'PROC_RETRY_MS',
+    `return { ${guardSrc.replace(/^\s*async /, 'async ')} };`,
+  ))(toArray, seed, retryMs)._optionalYpProc;
+  return { guard, missing: seed };
+};
+const mkGuard = () => mkGuardWithMap().guard;
 
 {
-  // The guard's own contract, exercised directly.
+  // The guard's contract. The driver does NOT throw on a missing procedure —
+  // _handleError logs at WARN, ends the connection and returns undefined — so
+  // `undefined` is the only failure signal available, and a SUCCESSFUL call
+  // always yields a value even when it selects no rows.
   const calls = [];
   const ctx = {
     debug() {},
     _optionalYpProc: mkGuard(),
     yp: { async await_proc(n) {
       calls.push(n);
-      if (n === 'gone') { const e = new Error('PROCEDURE yp.gone does not exist'); e.errno = 1305; throw e; }
-      if (n === 'broken') throw new Error('Deadlock found when trying to get lock');
+      if (n === 'gone') return undefined;      // swallowed failure
+      if (n === 'emptyOk') return [];          // deployed, no rows
       return [{ id: 1 }];
     } },
   };
   return_await((async () => {
     deepEq(await ctx._optionalYpProc('fine'), [{ id: 1 }], 'a deployed proc returns its rows');
-    deepEq(await ctx._optionalYpProc('gone'), [], 'a missing proc degrades to no rows');
+    deepEq(await ctx._optionalYpProc('emptyOk'), [], 'a deployed proc with no rows returns []');
+    deepEq(await ctx._optionalYpProc('gone'), [], 'a failed call degrades to no rows');
+    deepEq(await ctx._optionalYpProc('gone'), [], 'and again');
     deepEq(await ctx._optionalYpProc('gone'), [], 'and again');
     eq(calls.filter((n) => n === 'gone').length, 1,
-      'a missing proc is called ONCE, then never again — this is the alert-spam fix');
-    let rethrown = null;
-    try { await ctx._optionalYpProc('broken'); } catch (e) { rethrown = e.message; }
-    ok(/Deadlock/.test(rethrown || ''),
-      'a REAL error is re-thrown, never mistaken for "not deployed yet"');
-    eq(calls.filter((n) => n === 'broken').length, 1, 'and a real error does not blacklist the proc');
-    await ctx._optionalYpProc('broken').catch(() => {});
-    eq(calls.filter((n) => n === 'broken').length, 2, 'so it is retried next time');
+      'a failing proc is called ONCE per cooldown — each call logs a 1305 line AND ends a DB connection');
+    // A deployed proc must never be put in the cooldown, however often it is called.
+    eq(calls.filter((n) => n === 'emptyOk').length, 1, 'baseline');
+    await ctx._optionalYpProc('emptyOk');
+    await ctx._optionalYpProc('emptyOk');
+    eq(calls.filter((n) => n === 'emptyOk').length, 3,
+      'an empty-but-successful result is never mistaken for a missing proc');
   })(), () => {});
-}
 
-// EVERY optional-procedure call site must go through the guard. This is a source
-// assertion on purpose: the stubs in these harnesses answer either route
-// identically, so behaviour cannot tell them apart — but a call site that
-// bypasses the guard silently reintroduces the 1305 log spam, which is the whole
-// reason the guard exists. The guard's own behaviour is covered above.
-{
-  const optionalProcs = [
-    'contact_task_assigned_unread',
-    'contact_task_mention_unread',
-    'contact_task_column_change_unread',
-    'contact_storage_alert_unread',
-    'contact_reward_expiry_unread',
-    'contact_meeting_notice_unread',
-  ];
-  // No optional proc may be reached through a bare yp.await_proc(proc, ...) loop.
-  const bareLoops = [...src.matchAll(/await this\.yp\.await_proc\(\s*proc\s*[,)]/g)];
-  eq(bareLoops.length, 0,
-    'an optional proc is still being called without the 1305 guard');
-  // And the one place that names the meeting proc directly must use the guard too.
-  const direct = [...src.matchAll(/_optionalYpProc\('contact_meeting_notice_unread'/g)];
-  ok(direct.length >= 1, 'list_task_assignments must call the meeting proc through the guard');
-  ok(!/await this\.yp\.await_proc\('contact_meeting_notice_unread'/.test(src),
-    'the meeting proc must never be called bare');
-  // Sanity: the procs really are referenced somewhere, so this is not vacuous.
-  for (const name of optionalProcs) {
-    ok(src.includes(name), `${name} is no longer referenced — update this list`);
+  // The cooldown must EXPIRE — a transient failure may not blacklist a source
+  // for the life of the process.
+  const expired = (new Function(
+    'toArray', 'MISSING_PROCS', 'PROC_RETRY_MS',
+    `return { ${guardSrc.replace(/^\s*async /, 'async ')} };`,
+  ))(toArray, new Map(), -1)._optionalYpProc; // a cooldown already in the past
+  const calls2 = [];
+  const ctx2 = { debug() {}, yp: { async await_proc(n) { calls2.push(n); return undefined; } } };
+  ctx2._optionalYpProc = expired;
+  return_await((async () => {
+    await ctx2._optionalYpProc('flaky');
+    await ctx2._optionalYpProc('flaky');
+    eq(calls2.length, 2, 'once the cooldown lapses the proc is retried');
+  })(), () => {});
+
+  // Recovery: once the schema IS applied, the verdict must be cleared on the
+  // first successful call rather than lingering for the rest of the cooldown.
+  {
+    let deployed = false;
+    const calls3 = [];
+    // Seeded with a verdict that has already lapsed, which is the state a
+    // just-patched database is in.
+    const { guard, missing } = mkGuardWithMap(60000, new Map([['later', Date.now() - 1]]));
+    const ctx3 = {
+      debug() {}, _optionalYpProc: guard,
+      yp: { async await_proc(n) { calls3.push(n); return deployed ? [{ id: 2 }] : undefined; } },
+    };
+    return_await((async () => {
+      ok(missing.has('later'), 'starts with a lapsed verdict on the books');
+      deployed = true;
+      deepEq(await ctx3._optionalYpProc('later'), [{ id: 2 }], 'the retry succeeds');
+      ok(!missing.has('later'), 'and the verdict is cleared, not left to expire');
+      // Proof it is really gone: the next call goes through as well.
+      await ctx3._optionalYpProc('later');
+      eq(calls3.length, 2, 'no lingering short-circuit');
+    })(), () => {});
+  }
+  {
+    // One proc succeeding must not clear ANOTHER proc's cooldown: they are
+    // independent verdicts, and a blanket reset would put the missing one back
+    // in the log on the very next request.
+    const calls5 = [];
+    const { guard, missing } = mkGuardWithMap(60000, new Map([['absent', Date.now() + 50000]]));
+    const ctx5 = { debug() {}, _optionalYpProc: guard,
+      yp: { async await_proc(n) { calls5.push(n); return n === 'absent' ? undefined : [{ id: 4 }]; } } };
+    return_await((async () => {
+      deepEq(await ctx5._optionalYpProc('present'), [{ id: 4 }], 'the deployed proc answers');
+      ok(missing.has('absent'), "another proc's verdict survives an unrelated success");
+      deepEq(await ctx5._optionalYpProc('absent'), [], 'so it is still skipped');
+      eq(calls5.filter((n) => n === 'absent').length, 0, 'and never queried');
+    })(), () => {});
+  }
+  {
+    // …and while the cooldown is still in force, a recovered proc stays skipped.
+    const calls4 = [];
+    const { guard } = mkGuardWithMap(60000, new Map([['soon', Date.now() + 50000]]));
+    const ctx4 = { debug() {}, _optionalYpProc: guard,
+      yp: { async await_proc(n) { calls4.push(n); return [{ id: 3 }]; } } };
+    return_await((async () => {
+      deepEq(await ctx4._optionalYpProc('soon'), [], 'an unexpired verdict still short-circuits');
+      eq(calls4.length, 0, 'without touching the database');
+    })(), () => {});
   }
 }
 

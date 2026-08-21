@@ -424,25 +424,30 @@ function isCoveredByNotice(row, keys) {
 // ---------------------------------------------------------------------------
 // Procedures that may not exist yet.
 //
-// Several of the merges below call an *_unread procedure that a given database
-// may not have applied. Each call is already wrapped in try/catch, so a missing
-// one degrades gracefully — but that is NOT enough: the mariadb driver logs
-// every SQL failure BEFORE the exception reaches us, so a missing procedure
-// writes an ER_SP_DOES_NOT_EXIST (1305) line on every single call. Measured on
-// the dev endpoint: 141 of them in one browsing session, and 1305 lines are
-// exactly what the PROD alert bot picks up (see the same warning in
+// Several merges below call an *_unread procedure that a given database may not
+// have applied. The try/catch around each one does NOT cover that case, and it
+// never did: @drumee/server-essentials' `_handleError` (lib/mariadb.js) logs the
+// failure at WARN, rolls back, calls `this.end()` on the connection and returns
+// UNDEFINED — it only re-throws when `throwOnError` is set or the error is
+// fatal. So a missing procedure never raises; it just logs and drops a
+// connection, on every single call.
+//
+// Measured on the dev endpoint with contact_meeting_notice_unread deliberately
+// unapplied: an ER_SP_DOES_NOT_EXIST (1305) line per call, and 1305 is exactly
+// the signature the PROD alert bot reports (same warning in
 // service/lib/activity-mailer.js).
 //
-// So the first failure is remembered per procedure name, for the life of the
-// process, and the procedure is not called again. One log line instead of
-// hundreds, no behaviour change whatsoever while the procedure exists, and it
-// re-probes on the next restart — which a deploy or a schema patch does anyway.
+// `undefined` is therefore the failure signal — a SUCCESSFUL call always yields
+// a result value, even when it selects no rows. Recording it lets the procedure
+// be skipped for a short cooldown instead of retried on every request.
 //
-// Process-wide rather than per-user on purpose: "this database has no such
-// routine" is a property of the database, not of the caller.
+// The cooldown is short on purpose: "not deployed" and "one transient failure"
+// are indistinguishable from here, so a real hiccup must cost this one optional
+// source a minute, never a permanent blackout. Process-wide rather than
+// per-user, because whether a routine exists is a property of the database.
 // ---------------------------------------------------------------------------
-const MISSING_PROCS = new Set();
-const NO_SUCH_PROC = /does not exist|ER_SP_DOES_NOT_EXIST|\b1305\b/i;
+const MISSING_PROCS = new Map(); // proc name -> epoch ms to retry after
+const PROC_RETRY_MS = 60 * 1000;
 
 // A caller-supplied bucket is only honoured when it names one of the 5 tabs;
 // anything else (absent, empty, typo'd) means "no bucket scope" and every path
@@ -491,18 +496,22 @@ class MfsActivity extends Entity {
    * never mistaken for "not deployed yet".
    */
   async _optionalYpProc(name, ...args) {
-    if (MISSING_PROCS.has(name)) return [];
-    try {
-      return toArray(await this.yp.await_proc(name, ...args));
-    } catch (e) {
-      const msg = (e && (e.message || e.text || e.sqlMessage)) || '';
-      if (NO_SUCH_PROC.test(String(msg)) || e?.errno === 1305) {
-        MISSING_PROCS.add(name);
-        this.debug(`[ACTIVITY] ${name} is not deployed on this database; skipping it from now on`);
-        return [];
-      }
-      throw e;
+    const now = Date.now();
+    const retryAfter = MISSING_PROCS.get(name);
+    if (retryAfter && now < retryAfter) return [];
+    // Not wrapped in try/catch on purpose: this path does not raise (see
+    // MISSING_PROCS above). A caller that DOES want to catch still can — the
+    // callers all keep their own try/catch for the fatal/throwOnError cases.
+    const rows = await this.yp.await_proc(name, ...args);
+    if (rows === undefined) {
+      MISSING_PROCS.set(name, now + PROC_RETRY_MS);
+      this.debug(`[ACTIVITY] ${name} failed or is not deployed; skipping it for ${PROC_RETRY_MS / 1000}s`);
+      return [];
     }
+    // A successful call clears any earlier verdict immediately, so applying the
+    // schema takes effect on the next request rather than after the cooldown.
+    if (retryAfter) MISSING_PROCS.delete(name);
+    return toArray(rows);
   }
 
   async _callUserProc(procName, ...args) {
