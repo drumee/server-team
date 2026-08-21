@@ -80,6 +80,18 @@
             "label_ids": {
               "type": "string",
               "doc": "Comma-separated list of label IDs attached to the task, null if none"
+            },
+            "parent_task_id": {
+              "type": "string",
+              "doc": "Id of the parent task when this row is a subtask, null otherwise."
+            },
+            "subtask_total": {
+              "type": "number",
+              "doc": "Number of subtasks under this task (0 for a subtask, which cannot have children)."
+            },
+            "subtask_done": {
+              "type": "number",
+              "doc": "How many of those subtasks sit in a column flagged is_done. Drives the done/total badge; computed server-side so client filters cannot skew it."
             }
           }
         }
@@ -155,6 +167,11 @@
           "items": {
             "type": "string"
           }
+        },
+        "parent_task_id": {
+          "type": "string",
+          "required": false,
+          "doc": "Id of the task this one is a subtask of. Absent/null = a normal top-level task. The parent must exist and must not itself be a subtask (one level of nesting only). The new task inherits the PARENT's nid, so any nid sent alongside this is ignored."
         }
       },
       "returns": {
@@ -170,6 +187,16 @@
         {
           "code": "INVALID_REPORTER",
           "message": "reporter_uid must be an existing user",
+          "http_status": 400
+        },
+        {
+          "code": "PARENT_TASK_NOT_FOUND",
+          "message": "parent_task_id does not reference an existing task",
+          "http_status": 404
+        },
+        {
+          "code": "SUBTASK_NESTING_DENIED",
+          "message": "cannot add a subtask to a task that is itself a subtask",
           "http_status": 400
         }
       ]
@@ -249,7 +276,7 @@
       ]
     },
     "update_status": {
-      "doc": "Move a task to a different Kanban column. The task is placed at the bottom of the destination column.",
+      "doc": "Move a task to a different Kanban column. The task is placed at the bottom of the destination column. When the moved task is a subtask and this move leaves every sibling in a done column, the PARENT is auto-completed and returned as `parent` on the response.",
       "scope": "hub",
       "permission": {
         "src": "write"
@@ -268,7 +295,7 @@
       },
       "returns": {
         "type": "object",
-        "doc": "Updated task object with new status and rank"
+        "doc": "Updated task object with new status and rank. Carries an extra `parent` key holding the parent's updated row when a subtask rollup auto-completed it; absent otherwise."
       },
       "errors": [
         {
@@ -327,7 +354,7 @@
       ]
     },
     "delete": {
-      "doc": "Delete a task permanently. All linked file and label associations are removed.",
+      "doc": "Delete a task permanently, together with any subtasks. All linked file and label associations are removed.",
       "scope": "hub",
       "permission": {
         "src": "write"
@@ -341,7 +368,7 @@
       },
       "returns": {
         "type": "object",
-        "doc": "Deleted task ID and affected row count",
+        "doc": "Deleted task ID, affected row count (the task PLUS its cascaded subtasks) and the ids of those subtasks.",
         "properties": {
           "id": {
             "type": "string",
@@ -354,6 +381,13 @@
           "reporter_uid": {
             "type": "string",
             "doc": "UID of the reporter. Editable, unlike created_by; falls back to created_by for tasks predating the reporter field."
+          },
+          "subtask_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "doc": "Ids of the subtasks removed with the parent, so callers can prune them locally. Empty when it had none."
           }
         }
       }
