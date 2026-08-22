@@ -520,6 +520,70 @@ const MeetingRollups = new Function(
   });
 }
 
+// ── READ (old) rows get the identical treatment ───────────────────────────
+//
+// Duy 2026-08-21: "check and sync with the read (old) notis also". The fixes are
+// recomputed on every read, so an already-read row is enriched exactly like an
+// unread one — but only because every enrichment runs AFTER the Unread branch,
+// on the assembled page. If one ever moved inside `if (unreadOnly)`, read rows
+// would silently stop being fixed, with nothing failing.
+{
+  const src2 = src;
+  const gf = src2.slice(src2.indexOf('  async get_feed()'), src2.indexOf('  async _resolveOpeners'));
+  const iBranch = gf.indexOf('if (unreadOnly) {');
+  ok(iBranch > -1, 'the unread branch is still where it was');
+  for (const call of [
+    'flattenTaskFields(result);',
+    'flattenTaskColumnChange(result);',
+    'flattenMeetingNotice(result);',
+    'await this._stampFolderNames(result);',
+    'await this._stampTaskFolderNames(result);',
+    'await this._stampChatMentions(result);',
+    'result = await this._stampMeetingRollups(result);',
+    'stampBuckets(result);',
+  ]) {
+    const at = gf.indexOf(call);
+    ok(at > iBranch, `${call.trim()} must run AFTER the unread branch, not inside it`);
+  }
+  // …and none of them may be gated on the toggle.
+  ok(!/if \(unreadOnly\)[\s\S]{0,400}_stampTaskFolderNames/.test(gf),
+    'the task folder chip must not be gated on the unread toggle');
+  ok(!/if \(unreadOnly\)[\s\S]{0,400}_stampMeetingRollups/.test(gf),
+    'the meeting rollup must not be gated on the unread toggle');
+}
+
+{
+  // Behavioural: is_read makes no difference to any enrichment.
+  const readRows = [
+    { event: 'task_assigned', task_hub_id: 'h1', task_nid: 'n1', is_read: 1 },
+    { event: 'task_mention', hub_id: 'h1', nid: 'n1', is_read: 1 },
+  ];
+  const t = new TaskFolders({ 'h1:n1': 'Marketing' });
+  return_await(t._stampTaskFolderNames(readRows), () => {
+    eq(readRows[0].folder_name, 'Marketing', 'a READ task_assigned row still gets its chip');
+    eq(readRows[1].folder_name, 'Marketing', 'a READ task_mention row too');
+  });
+
+  // The pure shapers ignore is_read entirely.
+  const rd = [{ event: 'meeting_notice', is_read: 1, data: { kind: 'cancelled', title: 'Old' } }];
+  flattenMeetingNotice(rd);
+  eq(rd[0].meeting_title, 'Old', 'a READ meeting notice is still flattened');
+  const rt = [{ event: 'task_mention', is_read: 1, data: { kind: 'moved', title: 'T', column_key: 'todo' } }];
+  flattenTaskFields(rt);
+  eq(rt[0].column_key, 'todo', 'a READ task row is still flattened');
+  ok(isScheduleRollup({ category: 'media', item_filetype: 'schedule', cnt: 1, is_read: 1 }),
+    'a READ schedule rollup is still a meeting');
+
+  const m = new MeetingRollups({ h1: [{ id: 'm1', filename: 'Sprint review', stime: 42 }] });
+  const readSched = [{
+    category: 'media', item_filetype: 'schedule', item_filename: 'Sprint review',
+    hub_id: 'h1', cnt: 1, is_read: 1,
+  }];
+  return_await(m._stampMeetingRollups(readSched), (out) => {
+    eq(out[0].meeting_stime, 42, 'a READ scheduled meeting still resolves its time');
+  });
+}
+
 // ── mark_all_read: clearing the tab the user is looking at ────────────────
 //
 // A notification that cannot be cleared is worse than one that never arrived,
