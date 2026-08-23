@@ -2,13 +2,13 @@ name: CD - deploy server-team
 
 on:
   push:
-    branches: [preview, test]
+    branches: [preview, test, staging]
   workflow_dispatch:
     inputs:
       target:
         description: 'Deploy target environment'
         type: choice
-        options: [UAT, TEST, PROD]
+        options: [UAT, TEST, PROD, STAGING]
         default: UAT
 
 concurrency:
@@ -39,6 +39,7 @@ jobs:
             case "${{ github.ref_name }}" in
               test)    TARGET=TEST ;;
               preview) TARGET=UAT ;;
+              staging) TARGET=STAGING ;;
               *) echo "Unsupported push branch: ${{ github.ref_name }}"; exit 1 ;;
             esac
           else
@@ -50,8 +51,13 @@ jobs:
             PROD) ENV_FILE=production; EP=main;    PORT=24000; BRANCH=main; MODE=container ;;
             TEST) ENV_FILE=deploy;     EP=main;    PORT=24000; BRANCH=test;    MODE=stage ;;
             UAT)  ENV_FILE=deploy;     EP=preview; PORT=24001; BRANCH=preview; MODE=container ;;
+            STAGING) ENV_FILE=production; EP=main; PORT=24000; BRANCH=staging; MODE=container ;;
             *) echo "Unknown target: $TARGET"; exit 1 ;;
           esac
+          if [ "$TARGET" = "STAGING" ]; then
+            echo "SGP_HOST=vps-1b631265.vps.ovh.net" >> "$GITHUB_ENV"
+            echo "CONTAINER=drumee-uat" >> "$GITHUB_ENV"
+          fi
           echo "env_file=$ENV_FILE" >> "$GITHUB_OUTPUT"
           echo "endpoint=$EP"       >> "$GITHUB_OUTPUT"
           echo "port=$PORT"         >> "$GITHUB_OUTPUT"
