@@ -109,13 +109,26 @@ class conference extends __yp {
     // properly needs a persistent (uid, room_id) record, which is a second
     // table for a rounding error on one card.
     //
-    // AFTER the permission check: a refused join is not attendance. Guests
-    // fall out earlier, at the `who` guard inside the helper -- a DMZ guest
-    // has no drumate row and no adoption to report.
-    markFeatureUsage(this, "meeting", {
-      uid: metadata.uid,
-      dedupe: room_id || "unknown",
-    });
+    // AFTER the permission check: a refused join is not attendance.
+    //
+    // GUESTS DO NOT FALL OUT ON THEIR OWN -- this explicit skip is required.
+    // The `who` guard inside markFeatureUsage only catches a FALSY uid, but
+    // the DMZ guest account is a real, truthy `yp.drumate` row (id = the
+    // guest_id sysconf value), and metadata.uid = regUser.id || this.uid
+    // resolves to exactly that id for an anonymous join. conference.join is
+    // declared "src": "anonymous" in acl/conference.json, so this is the
+    // common path for a DMZ join, not an edge case: without the skip below,
+    // every anonymous participant's join gets attributed to the one shared
+    // guest account, and "Avg meetings/user" is distorted by one row with an
+    // enormous hits count. nobody_id is excluded for the same reason, should
+    // it ever reach here.
+    const _extUids = [Cache.getSysConf(Attr.guest_id), Cache.getSysConf("nobody_id")];
+    if (!_extUids.includes(metadata.uid)) {
+      markFeatureUsage(this, "meeting", {
+        uid: metadata.uid,
+        dedupe: room_id || "unknown",
+      });
+    }
 
     let user = {};
     let host = null;

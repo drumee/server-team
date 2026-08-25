@@ -75,6 +75,17 @@ function flush() {
   for (const e of batch) {
     if (!e.hits && !e.volume) continue;
     try {
+      // This .catch is defensive, not the primary error path -- keep it.
+      // Mariadb._run ends in .catch(this._handleError), and _handleError
+      // WARNS, ROLLS BACK, TRIGGERS ERROR AND ENDS THE CONNECTION rather than
+      // rejecting, for the default (non-throwOnError, non-fatal) case. So for
+      // an ordinary failure -- e.g. `feature_mark` missing from
+      // information_schema.routines -- this .catch essentially never fires
+      // and "[feature] mark failed" essentially never gets logged. What you
+      // see instead is the shared `yp` connection desyncing/ending, which
+      // shows up elsewhere as stalled or hanging concurrent requests, not as
+      // a warning here. This .catch still matters for the paths that do
+      // reject (throwOnError set, e.fatal, a thrown non-DB error).
       e.ctx.yp
         .await_proc("feature_mark", e.uid, e.feature, e.hits, e.volume)
         .catch((err) => {
