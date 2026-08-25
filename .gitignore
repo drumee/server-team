@@ -32,4 +32,4 @@ package-lock.json
 
 # BMad (bmad-method) — generated, do not commit
 _bmad/
-_bmad-output/
+_bmad-output/.superpowers/
