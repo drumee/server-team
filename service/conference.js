@@ -20,6 +20,7 @@ const { isArray, isEmpty, map } = require("lodash");
 
 const __yp = require("./yp");
 const { roomDeadline, clearRoomStart } = require("./lib/meeting-limit");
+const { markFeatureUsage } = require("./lib/feature-usage");
 class conference extends __yp {
 
   /**
@@ -95,6 +96,26 @@ class conference extends __yp {
     }
 
     ({ room_id } = p[0]);
+
+    // Core function -> the Meeting bar and Avg meetings/user.
+    //
+    // DEDUPED PER ROOM, and this is the whole subtlety. conference.join is
+    // per SOCKET: a participant who reloads the tab joins again, and so does
+    // one whose connection drops and recovers. Counting raw joins reports
+    // several meetings for one meeting attended. The dedupe key collapses
+    // them for as long as the batch window holds -- which does not span a
+    // meeting that outlives it, so a very long call rejoined an hour later
+    // will count twice. That is a known and bounded over-count; closing it
+    // properly needs a persistent (uid, room_id) record, which is a second
+    // table for a rounding error on one card.
+    //
+    // AFTER the permission check: a refused join is not attendance. Guests
+    // fall out earlier, at the `who` guard inside the helper -- a DMZ guest
+    // has no drumate row and no adoption to report.
+    markFeatureUsage(this, "meeting", {
+      uid: metadata.uid,
+      dedupe: room_id || "unknown",
+    });
 
     let user = {};
     let host = null;
