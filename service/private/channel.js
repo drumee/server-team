@@ -23,6 +23,7 @@ const { remove_node, move_node, copy_node } = MfsTools;
 const { stampAuthorIdentity } = require("../lib/message-author");
 const { movePlanRows } = require("./_move-plan");
 const { memberCan, CAN_CHAT } = require("../lib/member-capability");
+const { markFeatureUsage } = require("../lib/feature-usage");
 
 const { stringify, parse: jsonParse } = JSON;
 const { isEmpty } = require("lodash");
@@ -1641,6 +1642,9 @@ class __private_channel extends Entity {
     }
 
     this.output.data(data);
+    // Core function -> the Chat bar. Same feature as chat.js post(): a
+    // workspace message is a message. See feature-usage.js.
+    markFeatureUsage(this, "chat");
   }
 
   /**
@@ -2153,6 +2157,12 @@ class __private_channel extends Entity {
     }
 
     this.output.data(data);
+    // Core function -> the Chat bar. A file-thread reply is a message and
+    // counts here. It ALSO belongs to the Aha-moment page's "chat threads in
+    // files" metric, which is a different question over the same event --
+    // that page is still a mockup, and when it is wired it needs its own
+    // signal rather than borrowing this one.
+    markFeatureUsage(this, "chat");
   }
 
   /**
