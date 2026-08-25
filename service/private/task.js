@@ -19,6 +19,7 @@ const { Attr, RedisStore, toArray } = require('@drumee/server-essentials');
 const { isEmpty } = require('lodash');
 const { Entity } = require('@drumee/server-core');
 const { notifyTaskEvent } = require('../lib/activity-mailer');
+const { markFeatureUsage } = require('../lib/feature-usage');
 
 // Built-in Kanban columns. Custom columns live in the task_column table and
 // use their row id as the task.status key — see _isValidStatus().
@@ -576,6 +577,11 @@ class __private_task extends Entity {
     // Notify watchers of the column where the task was created.
     const created = Array.isArray(data) ? data[0] : data;
     await this._notifyColumnWatchers(created, created && created.status, 'created');
+    // Core function -> the Task tracker bar and Avg tasks/user. CREATE only:
+    // moving a card between columns is not a new task, and counting updates
+    // would make "avg tasks/user" a measure of fiddling rather than of work
+    // tracked. Subtasks DO count -- they are rows a user chose to create.
+    markFeatureUsage(this, "task");
     this.output.data(data);
   }
 
