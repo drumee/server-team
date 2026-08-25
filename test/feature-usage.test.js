@@ -7,6 +7,11 @@ function test(name, fn) {
   catch (e) { console.log(`  FAIL ${name}: ${e.message}`); failed++; }
 }
 
+async function asyncTest(name, fn) {
+  try { await fn(); console.log(`  ok  ${name}`); passed++; }
+  catch (e) { console.log(`  FAIL ${name}: ${e.message}`); failed++; }
+}
+
 const lib = require("../service/lib/feature-usage");
 
 /** A stand-in handler: records the calls feature_mark would have received. */
@@ -75,5 +80,46 @@ test("a failed flush does not throw at the caller", () => {
   assert.doesNotThrow(() => lib._flushNow());
 });
 
-console.log(`\n${passed} passed, ${failed} failed`);
-process.exit(failed ? 1 : 0);
+test("a second flush posts only the new increment, not a cumulative total", () => {
+  lib._reset();
+  const ctx = fakeCtx();
+  lib.markFeatureUsage(ctx, "upload", { hits: 1, volume: 100 });
+  lib._flushNow();
+  lib.markFeatureUsage(ctx, "upload", { hits: 1, volume: 50 });
+  lib._flushNow();
+  assert.strictEqual(ctx.calls.length, 2);
+  assert.deepStrictEqual(ctx.calls[1], ["feature_mark", "u1", "upload", 1, 50]);
+});
+
+async function main() {
+  // The synchronous "does not throw" test above only proves _flushNow()
+  // itself doesn't throw -- it says nothing about a .catch()-less rejected
+  // promise inside flush(), which surfaces asynchronously (as an
+  // unhandledRejection) after _flushNow() has already returned. Trap that
+  // explicitly and let pending microtasks settle before asserting.
+  await asyncTest("a failed flush's rejection does not surface as unhandled", async () => {
+    lib._reset();
+    const ctx = fakeCtx();
+    ctx.yp.await_proc = () => Promise.reject(new Error("db down"));
+    lib.markFeatureUsage(ctx, "chat", { hits: 1 });
+
+    let trapped = null;
+    const onUnhandledRejection = (err) => { trapped = err; };
+    process.on("unhandledRejection", onUnhandledRejection);
+
+    try {
+      assert.doesNotThrow(() => lib._flushNow());
+      // Give the rejected promise a turn of the microtask queue to surface
+      // as an unhandledRejection before we check whether it did.
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.strictEqual(trapped, null, "flush left an unhandled rejection");
+    } finally {
+      process.removeListener("unhandledRejection", onUnhandledRejection);
+    }
+  });
+
+  console.log(`\n${passed} passed, ${failed} failed`);
+  process.exit(failed ? 1 : 0);
+}
+
+main();
