@@ -110,9 +110,12 @@ function markFeatureUsage(ctx, feature, opts) {
   const o = opts || {};
   if (!ctx || !ctx.yp || typeof ctx.yp.await_proc !== "function") return;
   const who = o.uid || ctx.uid;
-  // No uid means no account: conference.join is reachable by a DMZ guest, and
-  // a guest is not a signup. feature_mark ignores these too -- this is the
-  // cheap half of the same guard.
+  // This only catches a genuinely absent uid (e.g. a system actor with no
+  // account at all). It does NOT catch the DMZ guest: the shared guest
+  // account (guest@local.drumee) is a real, truthy `yp.drumate` row, so `who`
+  // is truthy for it and this guard lets it through. Guests are skipped at
+  // the call site instead -- see the explicit guest/nobody check in
+  // conference.js before it calls markFeatureUsage.
   if (!who) return;
 
   const key = `${who}:${feature}`;
