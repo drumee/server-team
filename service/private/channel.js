@@ -1406,6 +1406,28 @@ class __private_channel extends Entity {
   /**
    *
    */
+  /**
+   * Display name of the folder a chat message belongs to, for the real-time
+   * toast's location chip. Mirrors room.js `_meeting_folder_name`:
+   * `mfs_node_attr` answers with the WORKSPACE name when the node is the hub
+   * root, which is the right label for a workspace-level chat.
+   *
+   * Internal plumbing names (`__like_this__`) are withheld, and any failure
+   * yields null rather than disturbing the post.
+   */
+  async _chat_folder_name(nid) {
+    try {
+      const id = nid || this.hub.get(Attr.id);
+      if (!id || `${id}` === '0') return null;
+      const a = await this.db.await_proc('mfs_node_attr', id);
+      const name = a && a.filename;
+      if (!name || /^__.*__$/.test(name) || name.indexOf('__') === 0) return null;
+      return name;
+    } catch (e) {
+      return null;
+    }
+  }
+
   async post() {
     // Chat starts at the "View & chat" tier: view (privilege 3) must not post,
     // chat (7) / edit (15) / admin (31) / owner (63) may. acl/channel.json asks
@@ -1604,6 +1626,18 @@ class __private_channel extends Entity {
     stampAuthorIdentity(this.user, data);
     data.hub_id = this.hub.get(Attr.id);
     if (nid) data.nid = nid;
+    // Name the folder on the push itself. The Round 3 chat toast shows WHERE a
+    // message came from, and the recipient has no way to work that out: the
+    // payload carried only ids, the server's normalized `folder_name` exists
+    // solely on FEED rows, and resolving it client-side meant a per-recipient
+    // round trip that silently yielded nothing whenever the lookup was denied
+    // or the node was not readable from the panel's scope.
+    //
+    // One `mfs_node_attr` per posted message, at human typing rate, in exchange
+    // for a deterministic label. Best-effort by design: a failure here must
+    // never cost someone their message, so it is caught and dropped, and the
+    // client keeps its own fallbacks for a server that predates this.
+    data.folder_name = await this._chat_folder_name(nid);
     data.echoId = this.input.get("echoId");
     const meetingMatch = /^\[\[MEETING:\s*(start|end)\s*:/.exec(data.message);
     if (meetingMatch) data.message_type = `meeting.${meetingMatch[1]}`;
