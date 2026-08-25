@@ -63,7 +63,9 @@ class __signup extends Mfs {
       otp: 0,
       category: "trial",
       profile_type: "trial",
-      lang: this.user.language() || this.input.app_language(),
+      // Product default is English — never derive a new account's language
+      // from the request (session/Xlang/accept-language).
+      lang: 'en',
       firstname: "",
       lastname: "",
       email,

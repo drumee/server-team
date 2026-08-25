@@ -24,6 +24,7 @@ const { writeAudit } = require("./private/_audit");
 const { secureShareWriteVerdict, secureShareCapVerdict, secureShareCapPrivilege } = require("./lib/secure-share-write-guard");
 const { memberCan, CAN_DOWNLOAD } = require("./lib/member-capability");
 const { notifyHubActivity } = require("./lib/activity-mailer");
+const { markFunnelMilestone } = require("./lib/funnel-milestone");
 const { DENIED } = Events;
 const {
   BATCH_FILE,
@@ -445,6 +446,23 @@ class __media extends Mfs {
       node = await this.db.await_proc("mfs_access_node", uid, node.nid);
     }
     await this.changelog_write({ src: node, event: "media.new" });
+
+    // Activation funnel -> "Create folder". Reported AFTER the changelog write,
+    // like the upload leg in store(), so the two stages are recorded in the
+    // same order the user performed them.
+    //
+    // EVERY folder create reports; the first one is the only one that lands.
+    // yp.funnel_milestone is keyed (uid, milestone), so this is idempotent in
+    // the database rather than guarded here.
+    //
+    // The folders an account is BORN with are not counted, and need no
+    // exclusion: Photos/Documents/Videos/Musics come from the drumate factory
+    // template and "Personal Workspace" from loby's make_default_folers, all
+    // of which call mfs_make_dir procedure-to-procedure and never reach this
+    // service at all. Only a folder a user actually asked for gets here.
+    //
+    // Never awaited: the folder already exists and its response is owed.
+    markFunnelMilestone(this, "folder");
 
     if (/^(.|.+\/.+| )$/.test(dirname)) {
       this.exception.user("INVALID_FILENAME");
@@ -1225,6 +1243,22 @@ class __media extends Mfs {
     // media.replace is not an upload the board counts, so it is not reported.
     if (service === "media.new") {
       require('./private/_referral_live').pushReferralLive(this, this.uid);
+      // Activation funnel -> "Upload file", and -> "Activated" if this user
+      // had already created a folder. Which of those two it is, is decided by
+      // yp.funnel_mark, not here. Inside the media.new branch for the same
+      // reason the referral push is: a replace is not a first upload.
+      //
+      // THE /__chat__/ TEST IS THE SAME ONE changelog_write APPLIES, repeated
+      // rather than inherited. Chat attachments are stored by this very
+      // store(), so they arrive here like any other file; changelog_write
+      // returns early for them and leaves no upload row, and the funnel has to
+      // agree with that or the two would count different populations. The
+      // stage means "put a file in their workspace", which sending one in a
+      // chat message is not.
+      const ownpth = (res && (res.ownpth || res.ownpath)) || "";
+      if (!/^\/__chat__\//.test(ownpth)) {
+        markFunnelMilestone(this, "upload");
+      }
     }
 
     let hub_id = this.hub.get(Attr.id);

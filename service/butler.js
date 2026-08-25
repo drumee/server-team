@@ -596,7 +596,10 @@ class __butler extends Mfs {
       otp: 0,
       category: "trial",
       profile_type: "trial",
-      lang: this.user.language() || this.input.app_language(),
+      // Product default is English — never derive a new account's language
+      // from the request (session/Xlang/accept-language); that is how
+      // fresh signups kept getting stamped lang=fr.
+      lang: 'en',
       firstname,
       lastname,
       email,

@@ -19,6 +19,7 @@ const { Attr, RedisStore, Cache, toArray } = require("@drumee/server-essentials"
 const { isArray, isEmpty, map } = require("lodash");
 
 const __yp = require("./yp");
+const { roomDeadline, clearRoomStart } = require("./lib/meeting-limit");
 class conference extends __yp {
 
   /**
@@ -213,6 +214,20 @@ class conference extends __yp {
       attendees,
       user
     }
+
+    // Group-meeting duration cap. Absent for 1:1 calls, unlimited plans, and
+    // any install that does not sell — so the three extra keys appear only
+    // when a cap genuinely applies, and a client that gets none simply has no
+    // deadline. Governed by the WORKSPACE OWNER's plan, which is what gives
+    // every participant (a DMZ guest included, who has no plan of their own)
+    // the same answer. See service/lib/meeting-limit.
+    const deadline = await roomDeadline(this, {
+      room_id,
+      type: room_type,
+      owner_id: this.hub.get(Attr.owner_id),
+    });
+    if (deadline) Object.assign(data, deadline);
+
     //this.debug("AAA:159", data)
     this.output.data(data);
 
@@ -259,6 +274,18 @@ class conference extends __yp {
       } catch (e) {
         if (this.warn) this.warn("conference.leave: notify peers failed", e && e.message);
       }
+    } else {
+      // LAST ONE OUT — the room is now empty, so drop its duration-cap start
+      // time. `room_id` for a workspace meeting is the workspace node id and
+      // is reused by every meeting that workspace ever holds, so a start time
+      // left behind here is inherited by the next one: it would open already
+      // past its deadline and be killed on the spot. See
+      // service/lib/meeting-limit (clearRoomStart).
+      //
+      // `remaining` is conference_leave's own answer about who is still in the
+      // room, minus this caller — the same list the notify above uses — so
+      // "nobody to tell" and "nobody left" are by definition the same fact.
+      await clearRoomStart(room_id);
     }
     let peers;
     if (!r) {

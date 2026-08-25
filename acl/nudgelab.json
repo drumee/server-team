@@ -1,0 +1,30 @@
+{
+  "services": {
+    "state": {
+      "doc": "Nudge Lab (tester tool, gated by the nudge_lab flag in myDrumee.json -- off everywhere but test boxes). Reads the CALLER's own upgrade-nudge picture: scope (org workspace or personal account), plan, storage used/limit, seats used/cap, workspace age and the raw $.upgrade_nudge block, so a tester can see what the next desk load will decide without touching the database by hand.",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "params": {}
+    },
+    "scenario": {
+      "doc": "Nudge Lab: applies one named test scenario to the CALLER's own org/account -- fake storage percentage, seat-cap squeeze, workspace age, plan flip, fresh daily-cap day, reset, or full cleanup. Every write is limited to the caller's own rows (their org's disk_usage/quota/metadata, or their own drumate profile and lab-tagged fixtures); nothing can reach another tenant. Hard-gated by the nudge_lab flag: when off, both services answer enabled:0 and write nothing.",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "params": {
+        "name": {
+          "type": "string",
+          "required": true,
+          "doc": "Scenario name: storage_70 | storage_80 | storage_90 | storage_low | seats_70 | seats_90 | seats_off | age_14d | age_30d | age_reset | plan_up | plan_restore | new_day | reset | cleanup"
+        }
+      }
+    }
+  },
+  "modules": {
+    "private": "service/private/nudgelab",
+    "public": "service/private/nudgelab"
+  }
+}
