@@ -25,6 +25,7 @@ const { secureShareWriteVerdict, secureShareCapVerdict, secureShareCapPrivilege 
 const { memberCan, CAN_DOWNLOAD } = require("./lib/member-capability");
 const { notifyHubActivity } = require("./lib/activity-mailer");
 const { markFunnelMilestone } = require("./lib/funnel-milestone");
+const { markFeatureUsage } = require("./lib/feature-usage");
 const { DENIED } = Events;
 const {
   BATCH_FILE,
@@ -1258,6 +1259,16 @@ class __media extends Mfs {
       const ownpth = (res && (res.ownpth || res.ownpath)) || "";
       if (!/^\/__chat__\//.test(ownpth)) {
         markFunnelMilestone(this, "upload");
+        // Core function -> the Upload bar, Total uploads and the GB figure.
+        // INSIDE the same /__chat__/ guard on purpose: the funnel stage and
+        // the adoption bar have to count one population, or the two pages
+        // disagree about who has uploaded. `volume` is the file's own size --
+        // cumulative bytes uploaded, which is what the page reports, and NOT
+        // a live disk footprint (a later delete does not take it back).
+        markFeatureUsage(this, "upload", {
+          hits: 1,
+          volume: Number(res && res.filesize) || 0,
+        });
       }
     }
 
