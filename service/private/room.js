@@ -269,6 +269,19 @@ class __private_room extends __public_room {
       }, 1);
     // In-app popup for newly-invited workspace members (fire-and-forget).
     if (addedUids.length) {
+      // The invitation card names WHERE the meeting is ("<organizer> invited
+      // you joining the meeting in <folder>"), and the invitee cannot work
+      // that out from ids alone. Resolved here rather than in the client for
+      // the same reason the chat toast's chip is: a per-recipient lookup
+      // fails silently and is undiagnosable. mfs_node_attr answers with the
+      // WORKSPACE name when the meeting sits at the hub root, which is where
+      // room.book files them by default.
+      //
+      // The durable-notice block below resolves this again for its own
+      // payload; that costs a second lightweight proc only when someone is
+      // BOTH invited and rescheduled in one edit, which is rare enough not to
+      // be worth threading a shared value through two different conditions.
+      const folder_name = await this._meeting_folder_name(node && node.parent_id);
       this._notify_invitees(addedUids, {
         type: 'meeting_scheduled',
         nid,
@@ -277,6 +290,7 @@ class __private_room extends __public_room {
         stime,
         recur,
         from: name,
+        folder_name,
       });
     }
 
