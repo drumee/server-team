@@ -291,6 +291,11 @@ class __private_room extends __public_room {
         recur,
         from: name,
         folder_name,
+        // The card's meta line counts who is invited ("N invited") and shows
+        // their faces, exactly as the reminder's does. `attendees` is already
+        // the normalised { uid, name } list built above, so this costs
+        // nothing extra — it simply was never sent.
+        attendees,
       });
     }
 
