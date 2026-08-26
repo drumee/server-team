@@ -597,10 +597,10 @@
     },
 
     "mute_set": {
-      "doc": "Mute or unmute the notification popups for one workspace or for all of them. Popup channel only - the feed and the unread badge are never affected. Muting globally clears the per-workspace mutes, and unmuting globally clears everything, so the stored state always has one interpretation. Returns the full resulting state so the client can refresh its cache from the write itself.",
+      "doc": "Mute or unmute the notification popups for one workspace or for all of them. Popup channel only - the feed and the unread badge are never affected. Muting globally clears the per-workspace mutes, and unmuting globally clears everything, so the stored state always has one interpretation. Returns the full resulting state so the client can refresh its cache from the write itself. Allowed to all members, like dismiss_rollup: this writes the CALLER'S OWN preference row, keyed on the session uid, and changes nothing about the workspace - so a read-only member must still be able to silence a workspace that is shouting at them.",
       "scope": "hub",
       "permission": {
-        "src": "write"
+        "src": "read"
       },
       "params": {
         "hub_id": {

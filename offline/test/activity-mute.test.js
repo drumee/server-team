@@ -286,7 +286,15 @@ const reset = () => MISSING_PROCS.clear();
     ok(!!acl.services.mute_state, 'mute_state is declared');
     ok(!!acl.services.mute_set, 'mute_set is declared');
     eq(acl.services.mute_state.permission.src, 'read', 'reading state needs read');
-    eq(acl.services.mute_set.permission.src, 'write', 'changing it needs write');
+    // 🚨 NOT 'write'. Measured on the endpoint 2026-08-26: with src=write the
+    // ACL answered [DENIED] on the caller's own active workspace and every
+    // mute failed. `scope: hub` + `src: write` asks for WRITE ACCESS TO THE
+    // WORKSPACE, but this endpoint writes the CALLER'S OWN preference row,
+    // keyed on the session uid — it changes nothing about the hub. A read-only
+    // member must still be able to silence a workspace that is shouting at
+    // them. dismiss_rollup is the same class of call and already does this,
+    // with the note "Allowed to all mebers".
+    eq(acl.services.mute_set.permission.src, 'read', 'muting is a per-user preference, not a hub write');
     eq(acl.services.mute_state.scope, 'hub', 'mute_state is hub-scoped');
     eq(acl.services.mute_set.scope, 'hub', 'mute_set is hub-scoped');
     // The repo rule: doc strings carry no curly braces.
