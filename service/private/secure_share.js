@@ -732,6 +732,22 @@ class __secure_share extends Mfs {
     // will add them to the hub with this privilege when they register.
     if (!uid) {
       await this.yp.await_proc('yp_add_pending_invitation', hub_id, 0, privilege, email);
+      // Viral loop: this branch, and ONLY this branch, is a workspace
+      // invitation. It queues the pending row that signup turns into
+      // add_member plus a '*' grant, which is what workspace membership means.
+      // The existing-user branch below is deliberately NOT tracked — it grants
+      // node-scoped access to one shared folder and explicitly avoids making
+      // the recipient a member of the workspace root (see its comment). Counting
+      // it here would report invitations into workspaces nobody ever joined,
+      // and would put the workspace in the avg-team-size denominator on the
+      // strength of a single shared subfolder.
+      try {
+        await this.yp.await_proc(
+          'invite_track_mark', this.uid, hub_id, email, null, 0, 'secure_share'
+        );
+      } catch (err) {
+        this.warn('[secure_share] invite tracking failed for', email, err && err.message);
+      }
       return;
     }
 
