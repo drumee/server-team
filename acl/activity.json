@@ -569,6 +569,83 @@
           "dismissed_at": { "type": "integer" }
         }
       }
+    },
+
+    "mute_state": {
+      "doc": "The caller's notification POPUP mute state. Affects the real-time popup channel only - a muted user still receives every row in the Notification Center and still gets the unread badge. Answers global 0 with an empty hubs list when nothing is muted, which is also what it answers before the schema is applied, so popups keep working rather than falling silent on a missing routine.",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "params": {},
+      "returns": {
+        "type": "object",
+        "properties": {
+          "global": {
+            "type": "integer",
+            "description": "1 when popups are muted for every workspace, 0 otherwise",
+            "example": 0
+          },
+          "hubs": {
+            "type": "array",
+            "description": "Workspace ids muted individually. Empty when global is 1 - the two do not layer.",
+            "items": { "type": "string" }
+          }
+        }
+      },
+      "errors": []
+    },
+
+    "mute_set": {
+      "doc": "Mute or unmute the notification popups for one workspace or for all of them. Popup channel only - the feed and the unread badge are never affected. Muting globally clears the per-workspace mutes, and unmuting globally clears everything, so the stored state always has one interpretation. Returns the full resulting state so the client can refresh its cache from the write itself.",
+      "scope": "hub",
+      "permission": {
+        "src": "write"
+      },
+      "params": {
+        "hub_id": {
+          "type": "string",
+          "required": false,
+          "default": "",
+          "description": "Workspace to act on. Empty or absent means ALL workspaces."
+        },
+        "muted": {
+          "type": "boolean",
+          "required": false,
+          "default": true,
+          "description": "true or absent mutes; explicit false, 0 or the string false unmutes."
+        }
+      },
+      "returns": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "ok when the write landed, error when the routine is not deployed or the write failed",
+            "example": "ok"
+          },
+          "muted": {
+            "type": "integer",
+            "description": "1 if this call muted, 0 if it unmuted",
+            "example": 1
+          },
+          "hub_id": {
+            "type": "string",
+            "description": "The scope acted on, empty string for all workspaces"
+          },
+          "global": {
+            "type": "integer",
+            "description": "Resulting global flag",
+            "example": 1
+          },
+          "hubs": {
+            "type": "array",
+            "description": "Resulting list of individually muted workspace ids",
+            "items": { "type": "string" }
+          }
+        }
+      },
+      "errors": []
     }
   },
 

@@ -514,6 +514,28 @@ class MfsActivity extends Entity {
     return toArray(rows);
   }
 
+  /**
+   * As _optionalYpProc, but also says WHETHER the routine actually ran.
+   *
+   * Read paths cannot use that distinction — an absent routine and a user with
+   * nothing to report both mean "show nothing" — so they keep calling
+   * _optionalYpProc unchanged. A WRITE path needs it: `[]` is also the
+   * legitimate answer for "you have nothing muted", so without this flag a mute
+   * that never reached the database would be indistinguishable from one that
+   * succeeded, and would be confirmed to the user anyway.
+   *
+   * 🔑 It DELEGATES rather than re-implementing the cooldown, and reads the
+   * verdict back out of MISSING_PROCS afterwards. Two reasons: the bookkeeping
+   * stays in exactly one place, and _optionalYpProc keeps the self-contained
+   * body that two existing suites slice out and run on their own. An entry
+   * under this name after the call means the routine did not answer (or was
+   * still standing down); a successful call removes it.
+   */
+  async _optionalYpProcResult(name, ...args) {
+    const rows = await this._optionalYpProc(name, ...args);
+    return { ok: !MISSING_PROCS.has(name), rows };
+  }
+
   async _callUserProc(procName, ...args) {
     // const argsStr = args.map(arg => {
     //   if (typeof arg === 'string') return `'${arg}'`;
@@ -1707,6 +1729,93 @@ class MfsActivity extends Entity {
     );
     const data = toArray(result)[0] || { status: 'ok', category, key_id };
     this.output.data(data);
+  }
+
+  // ============================================================
+  // Notification popup mute (Round 3 / Sprint 1 row 6)
+  //
+  // 🚨 THE POPUP CHANNEL ONLY. Nothing in this section may ever be read by
+  // list(), get_feed() or unread_counts(): a muted user keeps every row in the
+  // Notification Center and keeps the bell badge, they just stop being
+  // interrupted by a card. Muting is "stop talking to me", not "stop
+  // recording". Both feed paths are deliberately left untouched.
+  //
+  // The suppression itself happens on the CLIENT, which reads this state once
+  // and re-reads it from the return value of every mute_set. The chat push
+  // path is not touched at all — no per-message, per-recipient lookup is added
+  // to the hottest push we have, and no popup decision depends on a round trip
+  // that can fail silently mid-message.
+  // ============================================================
+
+  /**
+   * Rows -> the shape the client caches: a global flag plus the muted
+   * workspaces. Shared by mute_state and mute_set so the two can never
+   * disagree about how a row is read.
+   *
+   * A global row (hub_id = '') is decisive on its own; the stored procedures
+   * clear the per-workspace rows when it is written, so the two cannot
+   * legitimately arrive together, but this does not assert on that — it
+   * reports what is there.
+   */
+  _muteState(rows) {
+    let global = 0;
+    const hubs = [];
+    for (const r of toArray(rows)) {
+      if (!r) continue;
+      const id = r.hub_id == null ? '' : String(r.hub_id);
+      if (id === '') global = 1;
+      else if (!hubs.includes(id)) hubs.push(id);
+    }
+    return { global, hubs };
+  }
+
+  /**
+   * The caller's current popup-mute state.
+   * Endpoint: POST /activity.mute_state
+   *
+   * Best-effort by design: before the schema is applied this answers "nothing
+   * muted", which is the safe direction — popups keep working exactly as they
+   * do today rather than everything falling silent on a missing routine.
+   */
+  async mute_state() {
+    const rows = await this._optionalYpProc('notification_mute_state', this.uid);
+    this.output.data(this._muteState(rows));
+  }
+
+  /**
+   * Mute or unmute the popups for one workspace, or for all of them.
+   * Endpoint: POST /activity.mute_set
+   * Input: hub_id (string, empty or absent = all workspaces),
+   *        muted (boolean, default true)
+   *
+   * Returns the FULL resulting state, not just an acknowledgement, so the
+   * client refreshes its cache from the write itself instead of following
+   * every mute with a second call.
+   *
+   * `status` is reported honestly: await_proc does not throw — it logs, drops
+   * the connection and returns undefined — so a write that never landed would
+   * otherwise be indistinguishable from one that did and would be confirmed to
+   * the user regardless. The client shows its confirmation on ok only.
+   */
+  async mute_set() {
+    const hub_id = String(this.input.use('hub_id') || '');
+    const raw = this.input.use('muted');
+    // Absent means mute: the endpoint is named for what it usually does, and
+    // only the explicit falsey values unmute. Strings are checked because form
+    // and query payloads arrive as strings, where '0' and 'false' are both
+    // truthy in JS and would silently invert the caller's intent.
+    const muted =
+      raw === undefined || raw === null || raw === ''
+        ? true
+        : !(raw === 0 || raw === '0' || raw === false || raw === 'false');
+    const proc = muted ? 'notification_mute_set' : 'notification_mute_unset';
+    const { ok, rows } = await this._optionalYpProcResult(proc, this.uid, hub_id);
+    this.output.data({
+      status: ok ? 'ok' : 'error',
+      muted: muted ? 1 : 0,
+      hub_id,
+      ...this._muteState(rows),
+    });
   }
 }
 
