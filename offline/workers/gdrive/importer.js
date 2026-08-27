@@ -118,6 +118,18 @@ class GoogleDriveImporter {
     this.processedFiles = 0;
     this.totalFolders = 0;
     this.totalFiles = 0;
+    // Bytes durably written by THIS attempt, for the Aha-moment page's
+    // "Avg GB migrated/user". Accumulated at the write site rather than during
+    // enumeration, so a file that was listed but failed to store is not
+    // counted as migrated.
+    //
+    // A RESUMED ATTEMPT UNDER-REPORTS. The resume set (_done) lives in Redis
+    // and survives a crash, but this counter does not -- so files stored by an
+    // earlier attempt of the same job are skipped here and their bytes are
+    // lost from the total. Bounded, rare (it needs a crash mid-migration) and
+    // accepted: carrying per-file sizes in the Redis resume set to close it
+    // would cost more than the figure is worth.
+    this.totalBytes = 0;
     this._cancelled = false;
     // Token cache populated lazily; refreshed when expires_at - safety < now.
     this._tokenCache = null;          // { access_token, expires_at }
@@ -338,6 +350,7 @@ class GoogleDriveImporter {
       processed_files: this.processedFiles,
       total_files: this.totalFiles,
       total_folders: this.totalFolders,
+      total_bytes: this.totalBytes,
       errors: this.errors,                              // capped sample (≤ MAX_ERRORS)
       errors_count: this.errorCount,                    // true total
       errors_truncated: this.errorCount > this.errors.length,
@@ -969,6 +982,7 @@ class GoogleDriveImporter {
       );
       const nodeId = await this._findNewestChildId(opts.hubDb, pid);
       if (!nodeId) throw new Error(`could not resolve created file '${filenameWithoutExt}' under pid=${pid}`);
+      this.totalBytes += Number(item.size || stat.size || 0);
 
       const base = join(home_dir, '__storage__', nodeId);
       await fsp.mkdir(base, { recursive: true });
