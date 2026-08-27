@@ -119,9 +119,8 @@ class GoogleDriveImporter {
     this.totalFolders = 0;
     this.totalFiles = 0;
     // Bytes durably written by THIS attempt, for the Aha-moment page's
-    // "Avg GB migrated/user". Accumulated at the write site rather than during
-    // enumeration, so a file that was listed but failed to store is not
-    // counted as migrated.
+    // "Avg GB migrated/user". See the increment site (after fsp.copyFile) for
+    // why it's counted there and not earlier.
     //
     // A RESUMED ATTEMPT UNDER-REPORTS. The resume set (_done) lives in Redis
     // and survives a crash, but this counter does not -- so files stored by an
@@ -982,11 +981,16 @@ class GoogleDriveImporter {
       );
       const nodeId = await this._findNewestChildId(opts.hubDb, pid);
       if (!nodeId) throw new Error(`could not resolve created file '${filenameWithoutExt}' under pid=${pid}`);
-      this.totalBytes += Number(item.size || stat.size || 0);
 
       const base = join(home_dir, '__storage__', nodeId);
       await fsp.mkdir(base, { recursive: true });
       await fsp.copyFile(source, join(base, `orig.${ext}`));
+      // AFTER copyFile, not before it: the DB row alone is not the durable
+      // write, and a throw from mkdir/copyFile propagates to
+      // _importItemGuarded's catch, which leaves processedFiles alone. Counting
+      // bytes any earlier lets volume drift above what files actually landed --
+      // which is the "Avg GB migrated/user" card overstating, silently.
+      this.totalBytes += Number(item.size || stat.size || 0);
     });
     // Free the scratch copy immediately after the durable write so peak /tmp
     // stays at ~one file instead of the whole tree — a 10k-file import would
