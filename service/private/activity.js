@@ -446,6 +446,83 @@ function isCoveredByNotice(row, keys) {
 // source a minute, never a permanent blackout. Process-wide rather than
 // per-user, because whether a routine exists is a property of the database.
 // ---------------------------------------------------------------------------
+// ── Daily-reminder meeting counting ─────────────────────────────────────────
+//
+// room_list_scheduled returns every RECURRING meeting regardless of the window
+// it was asked for -- deliberately, so the client can expand occurrences -- so
+// counting its rows would report a weekly stand-up as "today" every day of the
+// year. This applies the same expansion the client's normalizeMeetings does
+// (folder/skeleton/meeting-schedule.js), so the card and the calendar can
+// never disagree about what "today" contains.
+//
+// metadata.content is DOUBLE-ENCODED: metadata is JSON whose `content` member
+// is itself a JSON *string* (room.book/update write it that way). A single
+// parse yields a string, and reading `.recur` off it silently gives undefined
+// -- which would make every recurring meeting look like a one-off.
+function meetingContent(m) {
+  try {
+    const md = typeof m.metadata === 'string' ? JSON.parse(m.metadata) : m.metadata || {};
+    const c = typeof md.content === 'string' ? JSON.parse(md.content) : md.content || {};
+    return c && typeof c === 'object' ? c : {};
+  } catch (e) {
+    return {};
+  }
+}
+
+// Advance an epoch-seconds instant by n periods, in UTC. Months are handled on
+// the calendar rather than as 30 days, so a monthly meeting stays on its date.
+function addPeriods(epoch, freq, n) {
+  const d = new Date(epoch * 1000);
+  if (freq === 'daily') d.setUTCDate(d.getUTCDate() + n);
+  else if (freq === 'weekly') d.setUTCDate(d.getUTCDate() + 7 * n);
+  else d.setUTCMonth(d.getUTCMonth() + n);
+  return Math.floor(d.getTime() / 1000);
+}
+
+// How many meetings fall inside [start, end)? Counts OCCURRENCES, so a daily
+// stand-up counts once for the day, not once per row.
+function countMeetingsInWindow(rows, start, end) {
+  if (!Array.isArray(rows) || !rows.length) return 0;
+  if (!(end > start)) return 0;
+  let n = 0;
+  for (const m of rows) {
+    if (!m) continue;
+    const content = meetingContent(m);
+    const s = Number(m.stime || content.stime);
+    // A legacy node with no queryable epoch is skipped rather than guessed at
+    // -- the client's expander skips it too.
+    if (!s) continue;
+
+    const recur = content.recur;
+    const freq = recur && recur.freq;
+    if (!freq || freq === 'none') {
+      if (s >= start && s < end) n += 1;
+      continue;
+    }
+    if (freq !== 'daily' && freq !== 'weekly' && freq !== 'monthly') {
+      // An unknown frequency is treated as a one-off rather than expanded: a
+      // wrong guess here repeats a phantom meeting every single day.
+      if (s >= start && s < end) n += 1;
+      continue;
+    }
+
+    const until = Number(recur.until) || 0;
+    // Pure short-circuit, NOT a correctness guard: the walk below re-checks
+    // `until` before counting, so deleting this line changes no answer — a
+    // mutation run proved that. It exists so an ended daily series does not
+    // walk thousands of iterations to reach the same conclusion.
+    if (until && until < start) continue;
+    // Walk from the series start. The window is ONE day, so the guard only
+    // has to survive a long-running series, not a wide range.
+    let occ = s;
+    let guard = 0;
+    const GUARD_MAX = 4000;
+    while (occ < start && guard++ < GUARD_MAX) occ = addPeriods(occ, freq, 1);
+    if (occ >= start && occ < end && (!until || occ <= until)) n += 1;
+  }
+  return n;
+}
+
 const MISSING_PROCS = new Map(); // proc name -> epoch ms to retry after
 const PROC_RETRY_MS = 60 * 1000;
 
@@ -1817,6 +1894,108 @@ class MfsActivity extends Entity {
       ...this._muteState(rows),
     });
   }
+  // ── Daily reminder card (Round 3 / Sprint 1 row 7) ───────────────
+  //
+  // Three numbers for the once-a-day "Hi X, today you have ..." card. None of
+  // them has a single-workspace source, so this fans out across every
+  // workspace the desk belongs to and sums. That is affordable ONLY because
+  // the card is shown once a day -- do not reuse this on any interactive path.
+  //
+  // The DAY WINDOW COMES FROM THE CLIENT, on purpose. "Today" is the viewer's
+  // today, and the server has no idea what timezone they are in; deriving it
+  // here would tell someone in UTC+7 about yesterday's tasks for most of their
+  // working morning. The client already knows, because it decides on its own
+  // clock whether the card is due at all.
+  //
+  // 🚨 `day` reaches SQL through forward_proc, which builds a dynamic
+  // statement out of the argument string -- so it is validated against a
+  // strict date pattern and rejected outright, never escaped or coerced. The
+  // epoch bounds go through Number(). uid comes from the session, not input.
+  async daily_digest() {
+    const day = String(this.input.use('day', '') || '');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) {
+      return this.exception.user('INVALID_DAY');
+    }
+    const dayStart = Number(this.input.use('stime', 0)) || 0;
+    const dayEnd = Number(this.input.use('etime', 0)) || 0;
+    if (!Number.isFinite(dayStart) || !Number.isFinite(dayEnd) || dayEnd <= dayStart) {
+      return this.exception.user('INVALID_DAY');
+    }
+
+    // Areas that count. A desk's hub register also holds the containers created
+    // for secure shares ('share') and public/guest access ('dmz') -- on a real
+    // stage account, 20 share and 2 dmz against 23 private and 3 public. Those
+    // are plumbing, not places the user works, and counting their chat as "your
+    // unread messages" would inflate the card with rows the user never thinks
+    // of as a workspace. They are filtered HERE rather than in the proc so this
+    // stays a one-line change if that judgement turns out to be wrong -- no
+    // schema re-apply needed.
+    const COUNTED_AREAS = ['private', 'public'];
+    const workspaces = toArray(await this._callUserProc('desk_my_workspaces'))
+      .filter((w) => w && COUNTED_AREAS.includes(String(w.area || '')));
+    // A cap so one pathological account cannot turn a daily card into a
+    // hundreds-of-query storm. Reported back so the client -- and anyone
+    // reading a bug report -- can tell a real total from a floor.
+    const MAX_WORKSPACES = 60;
+    const capped = workspaces.slice(0, MAX_WORKSPACES);
+
+    let unread_messages = 0;
+    let due_tasks = 0;
+    let meetings = 0;
+
+    for (const w of capped) {
+      const hubId = w && w.hub_id;
+      if (!hubId) continue;
+
+      // Counts. await_proc does not throw -- it logs, ends the connection and
+      // returns undefined -- so an unmigrated workspace simply contributes
+      // nothing instead of failing the whole card.
+      let row = null;
+      try {
+        row = toArray(
+          await this.yp.await_proc(
+            'forward_proc', hubId, 'hub_daily_counts', `'${this.uid}','${day}'`
+          )
+        )[0];
+      } catch (e) {
+        this.debug('[ACTIVITY] hub_daily_counts failed', hubId, e && e.message);
+        row = null;
+      }
+      if (row) {
+        unread_messages += Number(row.unread_messages) || 0;
+        due_tasks += Number(row.due_tasks) || 0;
+      }
+
+      // Meetings. room_list_scheduled already exists per hub, so this needs no
+      // SQL of its own -- but it returns EVERY recurring meeting regardless of
+      // the window (by design, so the client can expand occurrences), which is
+      // why the day filter is applied here rather than passed as bounds.
+      // The catch wraps ONLY the round trip. It used to wrap the counting
+      // too, and that hid a genuine ReferenceError as a quiet "0 meetings" --
+      // a catch wide enough to swallow a programming error reports a wrong
+      // number instead of failing, which is worse than either.
+      let rooms = [];
+      try {
+        rooms = toArray(
+          await this.yp.await_proc('forward_proc', hubId, 'room_list_scheduled', 'NULL,NULL')
+        );
+      } catch (e) {
+        this.debug('[ACTIVITY] room_list_scheduled failed', hubId, e && e.message);
+        rooms = [];
+      }
+      meetings += countMeetingsInWindow(rooms, dayStart, dayEnd);
+    }
+
+    this.output.data({
+      unread_messages,
+      due_tasks,
+      meetings,
+      workspaces: capped.length,
+      // true = the numbers are a floor, not a total.
+      truncated: workspaces.length > capped.length ? 1 : 0,
+    });
+  }
+
 }
 
 module.exports = MfsActivity;

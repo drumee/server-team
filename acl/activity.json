@@ -571,6 +571,41 @@
       }
     },
 
+    "daily_digest": {
+      "doc": "Three totals for the once-a-day reminder card: unread team-chat messages, tasks due today or overdue and assigned to the caller, and meetings in the day. Fans out across every workspace the desk belongs to and sums, which is affordable only because the card is shown once a day - do not call it on an interactive path.",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "params": {
+        "day": {
+          "type": "string",
+          "required": true,
+          "doc": "The viewer's own date as YYYY-MM-DD. Sent by the client because today depends on the viewer's timezone, which the server cannot know. Strictly validated - it reaches SQL through forward_proc"
+        },
+        "stime": {
+          "type": "number",
+          "required": true,
+          "doc": "Start of the viewer's day, unix epoch seconds. Used for the meeting window"
+        },
+        "etime": {
+          "type": "number",
+          "required": true,
+          "doc": "End of the viewer's day, unix epoch seconds, exclusive"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "doc": "unread_messages, due_tasks, meetings, workspaces (how many were summed), truncated (1 = the totals are a floor because the workspace cap was hit)"
+      },
+      "errors": [
+        {
+          "code": "INVALID_DAY",
+          "message": "day is not YYYY-MM-DD, or the window is empty or inverted",
+          "http_status": 400
+        }
+      ]
+    },
     "mute_state": {
       "doc": "The caller's notification POPUP mute state. Affects the real-time popup channel only - a muted user still receives every row in the Notification Center and still gets the unread badge. Answers global 0 with an empty hubs list when nothing is muted, which is also what it answers before the schema is applied, so popups keep working rather than falling silent on a missing routine.",
       "scope": "hub",
