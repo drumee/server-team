@@ -1187,6 +1187,42 @@
         }
       ]
     },
+    "column_set_done": {
+      "doc": "Flag a column as a done column on one board, or clear the flag. A task sitting in a done column counts as completed - it stamps completed_at and fills the subtask done/total badge. Separate from column_update on purpose: adding a parameter there would be a breaking signature change.",
+      "scope": "hub",
+      "permission": {
+        "src": "write"
+      },
+      "params": {
+        "id": {
+          "type": "string",
+          "required": true,
+          "doc": "Column id"
+        },
+        "nid": {
+          "type": "string",
+          "required": false,
+          "doc": "Folder scope the column belongs to. Built-in ids are stored once per folder, so without it the flag would hit every board"
+        },
+        "is_done": {
+          "type": "number",
+          "required": false,
+          "default": 0,
+          "doc": "1 marks the column as done, 0 clears it. Any number of columns on a board may be done columns, so this never clears the others"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "doc": "The updated column row"
+      },
+      "errors": [
+        {
+          "code": "COLUMN_NOT_FOUND",
+          "message": "No column with that id",
+          "http_status": 404
+        }
+      ]
+    },
     "column_delete": {
       "doc": "Delete a column from one board. Its tasks are re-homed onto the first surviving column of that same board (never lost).",
       "scope": "hub",

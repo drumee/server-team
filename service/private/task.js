@@ -1323,6 +1323,42 @@ class __private_task extends Entity {
   }
 
   /**
+   * Flag a column as the board's "done" column (or clear the flag).
+   * Params: id (required); nid (folder scope, nullable); is_done (0 | 1).
+   *
+   * is_done already drives completed_at stamping, the subtask done/total badge
+   * and the completion filters — it just had no writer, so only the seeded
+   * built-in 'complete' was ever a done column and a board that replaced its
+   * columns had none at all. Deliberately its OWN service and its OWN proc
+   * rather than a fourth parameter on column_update: that would be a breaking
+   * signature change on both sides.
+   *
+   * Scoped for the same reason as column_update — built-in ids are literal
+   * status keys stored once per folder.
+   */
+  async column_set_done() {
+    const id = this.input.need(Attr.id);
+    const nid = this.input.use('nid', null);
+    // Anything other than an explicit truthy value clears the flag; the proc
+    // normalises to 0/1 as well, so a bad input can never store a third state.
+    const is_done = Number(this.input.use('is_done', 0)) ? 1 : 0;
+
+    const data = await this.db.await_run(
+      'CALL task_column_set_done(?, ?, ?)',
+      [id, nid, is_done]
+    );
+    // The DB layer swallows SQL errors and returns empty (await_run never
+    // throws), so an empty result is the only failure signal there is — it
+    // means either no such column in this scope, or the proc is not applied to
+    // this hub DB yet. Fail loudly instead of acking a write that never landed.
+    if (isEmpty(data)) {
+      return this.exception.user('COLUMN_NOT_FOUND');
+    }
+    await this._broadcast('task.column_set_done', data);
+    this.output.data(data);
+  }
+
+  /**
    * Delete a column. Its tasks are re-homed onto the first surviving column of
    * the SAME board by the proc (never lost); the response carries moved_tasks
    * so the client re-fetches its task list when non-zero.
