@@ -7,12 +7,9 @@ chat, tasks and meetings.
   **Docs:** [docs.drumee.com](https://docs.drumee.com/introduction/)
 - **Front-end counterpart:** [drumee/ui-team](https://github.com/drumee/ui-team)
 
-> Looking to **run** Drumee rather than develop it? Use
-> [docker-hosted](https://github.com/drumee/docker-hosted),
-> [debian-hosted](https://github.com/drumee/debian-hosted) or
-> [synology-hosted](https://github.com/drumee/synology-hosted).
-> For a local development instance, use the
-> [Starter Kit](https://github.com/drumee/starter-kit).
+> Looking to **run** Drumee rather than develop it? Follow the
+> [self-hosting guides](https://docs.drumee.com/self-hosting/overview) —
+> Docker Compose, Debian packages, and production operations.
 
 ---
 
@@ -33,9 +30,9 @@ the workspace UI — it serves the loader and answers the API.
 
 Drumee's back-end expects the surrounding infrastructure (MariaDB, Redis,
 nginx, the meta filesystem) to exist. The supported way to get that on a
-developer machine is the [Starter Kit](https://github.com/drumee/starter-kit),
-which brings it all up in Docker and clones this repository into
-`drumee-os/server-team` for you.
+developer machine, follow the
+[getting-started guides](https://docs.drumee.com/getting-started); the build and
+deployment source lives in [drumee/debian](https://github.com/drumee/debian).
 
 ## Development
 
