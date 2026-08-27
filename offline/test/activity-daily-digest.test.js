@@ -253,34 +253,60 @@ const room = (stime, recur, until) => ({
       'workspaces come from desk_my_workspaces — the desk register, which includes JOINED workspaces');
   }
 
-  // ── 5b. share / dmz containers are not workspaces ────────────────────────
+  // ── 5b. the counted areas are EXACTLY the sidebar's ──────────────────────
   console.log('\n5b. area filtering');
   {
     const h = new Holder({
       input: { day: DAY, stime: START, etime: END },
       workspaces: [
-        { hub_id: 'P1', area: 'private' },
-        { hub_id: 'P2', area: 'public' },
-        { hub_id: 'S1', area: 'share' },
+        { hub_id: 'A1', area: 'private' },
+        { hub_id: 'A2', area: 'public' },
+        { hub_id: 'A3', area: 'share' },
+        { hub_id: 'A4', area: 'restricted' },
         { hub_id: 'D1', area: 'dmz' },
+        { hub_id: 'PL', area: 'pool' },
+        { hub_id: 'PE', area: 'personal' },
         { hub_id: 'N1' },
       ],
       answers: {
-        P1: { hub_daily_counts: [{ unread_messages: 1, due_tasks: 1 }] },
-        P2: { hub_daily_counts: [{ unread_messages: 2, due_tasks: 0 }] },
-        S1: { hub_daily_counts: [{ unread_messages: 100, due_tasks: 100 }] },
+        A1: { hub_daily_counts: [{ unread_messages: 1, due_tasks: 1 }] },
+        A2: { hub_daily_counts: [{ unread_messages: 2, due_tasks: 0 }] },
+        A3: { hub_daily_counts: [{ unread_messages: 4, due_tasks: 2 }] },
+        A4: { hub_daily_counts: [{ unread_messages: 8, due_tasks: 0 }] },
         D1: { hub_daily_counts: [{ unread_messages: 100, due_tasks: 100 }] },
+        PL: { hub_daily_counts: [{ unread_messages: 100, due_tasks: 100 }] },
+        PE: { hub_daily_counts: [{ unread_messages: 100, due_tasks: 100 }] },
         N1: { hub_daily_counts: [{ unread_messages: 100, due_tasks: 100 }] },
       },
     });
     await h.daily_digest();
-    eq(h.sent.workspaces, 2, 'only private and public areas are summed');
-    eq(h.sent.unread_messages, 3, 'a secure-share container does not inflate the message count');
-    eq(h.sent.due_tasks, 1, 'nor the task count');
-    ok(!h.calls.some((c) => c.hubId === 'S1' || c.hubId === 'D1'),
-      'and they are not even queried — the fan-out is smaller as well as more honest');
-    ok(!h.calls.some((c) => c.hubId === 'N1'),
-      'a row with no area at all is skipped rather than guessed at');
+    eq(h.sent.workspaces, 4, 'share, private, restricted and public all count');
+    eq(h.sent.unread_messages, 15, 'summed across every collaborative area');
+    eq(h.sent.due_tasks, 3, 'tasks likewise');
+    // 'share' is the one that matters: it is a COLLABORATIVE area the sidebar
+    // lists, and on a real account it is 20 of 48 workspaces. Counting only
+    // private+public under-reported by more than a third and made the card
+    // disagree with the list the user is looking at.
+    ok(h.calls.some((c) => c.hubId === 'A3'), "a 'share' workspace IS counted — the sidebar lists it");
+    ok(h.calls.some((c) => c.hubId === 'A4'), "so is 'restricted'");
+    for (const skipped of ['D1', 'PL', 'PE', 'N1']) {
+      ok(!h.calls.some((c) => c.hubId === skipped),
+        `${skipped} is not a workspace and is never even queried`);
+    }
+  }
+
+  // ── 5c. the gate must not drift from the client's ────────────────────────
+  console.log('\n5c. the gate matches the sidebar');
+  {
+    // modules/desk/workspace-list/index.js decides what a person sees listed
+    // as a workspace, with /^(share|private|restricted|public)$/. desk.home
+    // and mfs_show_node_by apply no area filter at all, so that regex is the
+    // only gate — and this one must equal it, or the tile disagrees with the
+    // list beside it.
+    const m = /const COUNTED_AREAS = \[([^\]]*)\]/.exec(src);
+    ok(m, 'COUNTED_AREAS parses');
+    const got = [...m[1].matchAll(/'([a-z]+)'/g)].map((x) => x[1]).sort();
+    deq(got, ['private', 'public', 'restricted', 'share'], 'exactly the sidebar gate, no more and no less');
   }
 
   // ── 6. the workspace cap is reported, not silent ─────────────────────────

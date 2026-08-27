@@ -1922,15 +1922,29 @@ class MfsActivity extends Entity {
       return this.exception.user('INVALID_DAY');
     }
 
-    // Areas that count. A desk's hub register also holds the containers created
-    // for secure shares ('share') and public/guest access ('dmz') -- on a real
-    // stage account, 20 share and 2 dmz against 23 private and 3 public. Those
-    // are plumbing, not places the user works, and counting their chat as "your
-    // unread messages" would inflate the card with rows the user never thinks
-    // of as a workspace. They are filtered HERE rather than in the proc so this
-    // stays a one-line change if that judgement turns out to be wrong -- no
-    // schema re-apply needed.
-    const COUNTED_AREAS = ['private', 'public'];
+    // Areas that count: EXACTLY the sidebar's own "collaborative-area gate".
+    //
+    // This list is not a judgement call -- it is copied from what the client
+    // already treats as the user's workspaces, in
+    // modules/desk/workspace-list/index.js:
+    //     /^(share|private|restricted|public)$/.test(it.area)
+    // whose comment reads "hubs keep the collaborative-area gate (drops the
+    // personal hub itself and the auto dmz/wicket)". desk.home and
+    // mfs_show_node_by apply NO area filter of their own, so that regex is the
+    // only thing deciding what a person sees listed as a workspace.
+    //
+    // An earlier version of this counted only private+public, on the guess that
+    // a 'share' hub was secure-share plumbing. That was WRONG: 'share' is a
+    // collaborative area and the sidebar lists it. On a real stage account it
+    // is 20 of 48 workspaces, so the card would have quietly under-reported by
+    // more than a third, and the tile would have disagreed with the very list
+    // the user is looking at. Only 'dmz' -- and the unassigned 'pool' area --
+    // are genuinely not workspaces.
+    //
+    // Filtered HERE rather than in the proc, so keeping it in step with the
+    // client costs no schema re-apply. desk_my_workspaces returns `area` for
+    // exactly this reason.
+    const COUNTED_AREAS = ['share', 'private', 'restricted', 'public'];
     const workspaces = toArray(await this._callUserProc('desk_my_workspaces'))
       .filter((w) => w && COUNTED_AREAS.includes(String(w.area || '')));
     // A cap so one pathological account cannot turn a daily card into a
