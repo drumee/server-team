@@ -23,6 +23,18 @@ function firstValue(...values) {
 // avatar the same person. `ffffffffffffffff` is the anonymous sentinel — an
 // unauthenticated visitor on a public link (same guard as
 // service/private/secure_share.js).
+// The rollup categories that CANNOT survive being read on their own.
+// notification_center_next recomputes them from unread state, so once they are
+// read they are simply never generated again -- unlike contact / hub-invite /
+// mfs rows, which activity_get_feed_all still returns with is_read = 1. These
+// four are therefore the ones captured in the notification_rollup store and the
+// ones merged into the feed in BOTH toggle states.
+//
+// Defined once at module scope on purpose: _notificationRollups decides what to
+// STORE and get_feed decides what to MERGE, and if those two lists ever drifted
+// apart a category would either double-show or vanish entirely.
+const ROLLUP_CATEGORIES = new Set(['chat', 'media', 'teamchat', 'ticket']);
+
 const ANONYMOUS_UID = 'ffffffffffffffff';
 function openerKeyOf(r) {
   if (!r) return null;
@@ -934,7 +946,7 @@ class MfsActivity extends Entity {
         // hub-invite / refused-invitation rollups ARE returned by
         // activity_get_feed_all (the Unread-OFF feed), so only merge them under
         // Unread ON — otherwise the same event double-shows under Unread OFF.
-        const ALWAYS = new Set(['chat', 'media', 'teamchat', 'ticket']);
+        const ALWAYS = ROLLUP_CATEGORIES;
         const rollups = await this._notificationRollups();
         for (const r of rollups) {
           if (!r) continue;
@@ -963,6 +975,27 @@ class MfsActivity extends Entity {
           // only carry ctime, so mirror it to timestamp for correct ordering.
           if (r.timestamp == null) r.timestamp = r.ctime;
           result.push(r);
+        }
+        // The rollups that have ALREADY been read. A chat/teamchat/media/ticket
+        // rollup is recomputed from unread state, so reading it makes
+        // notification_center_next stop emitting it entirely -- there is no
+        // "read rollup" to return, which is why the row used to vanish. The
+        // notification_rollup store holds the last state each one had while it
+        // was still live, and anything in the store that is NOT in the live set
+        // above is, by definition, one the user has since read.
+        //
+        // Unread OFF only: under Unread ON the user is explicitly asking for
+        // what they have not read, and these are exactly the rows they are
+        // filtering out.
+        if (!unreadOnly) {
+          const live = new Set(
+            rollups.filter((r) => r && ROLLUP_CATEGORIES.has(r.category))
+              .map((r) => `${r.category}:${r.key_id}`)
+          );
+          for (const st of await this._storedRollups()) {
+            if (live.has(`${st.category}:${st.key_id}`)) continue;
+            result.push({ ...st, is_read: 1 });
+          }
         }
         // Task @-mentions / assignments and admin-console storage alerts live
         // in yp.contact_activity → under Unread OFF they already come from
@@ -1046,7 +1079,65 @@ class MfsActivity extends Entity {
       result = result.filter((row) => row && row.bucket === bucket);
     }
 
+    // Drop what the user removed with the trash button. Applied LAST so it
+    // catches every source that fed `result`, and applied in both toggle states
+    // even though it is a no-op under Unread ON (mfs_get_activity_feed and the
+    // *_unread procs already exclude dismissed rows) -- a filter that is only
+    // correct in one mode is the kind that breaks when the modes change.
+    result = await this._dropDeleted(result);
+
     this.output.list(result);
+  }
+
+  /**
+   * Remove the rows the user deleted with the trash button.
+   *
+   * WHY THIS IS NOT TWO WHERE CLAUSES IN activity_get_feed_all. That procedure
+   * serves the whole feed. Teaching it about mfs_dismissed.deleted and
+   * contact_activity.deleted_at would make it raise ER_BAD_FIELD_ERROR on any
+   * database where the patches had not landed -- and await_proc does not
+   * re-throw, it logs, rolls back and returns undefined, which becomes an empty
+   * array and then a COMPLETELY BLANK notification panel with no error surfaced
+   * anywhere. Keeping the dependency in this separate optional call inverts the
+   * failure: if the procedure or the columns are missing we filter nothing, and
+   * the worst case is a deleted row reappearing -- visible and obviously wrong,
+   * rather than silent and total.
+   *
+   * Matched on event_type rather than on id alone because a changelog id and a
+   * contact_activity id are independent sequences that collide constantly.
+   * Rollup and share-open rows carry no event_type and are therefore never
+   * touched here; workspace-move rows deliberately DO carry 'mfs' and an id
+   * that is a real changelog id, so they filter correctly.
+   */
+  async _dropDeleted(rows) {
+    if (!Array.isArray(rows) || !rows.length) return rows;
+    let deleted;
+    try {
+      deleted = toArray(await this._callUserProc('activity_get_deleted_ids', this.uid));
+    } catch (e) {
+      this.debug('[ACTIVITY] activity_get_deleted_ids skipped', e && e.message);
+      return rows;
+    }
+    // undefined is what await_proc returns when the procedure is missing or the
+    // columns are not there yet; an empty array is also the normal answer for a
+    // user who has never pressed trash. Both mean "filter nothing".
+    if (!deleted || !deleted.length) return rows;
+
+    const mfs = new Set();
+    const contact = new Set();
+    for (const d of deleted) {
+      if (!d || d.id == null) continue;
+      if (d.kind === 'mfs') mfs.add(String(d.id));
+      else if (d.kind === 'contact') contact.add(String(d.id));
+    }
+    if (!mfs.size && !contact.size) return rows;
+
+    return rows.filter((row) => {
+      if (!row || row.id == null) return true;
+      if (row.event_type === 'mfs') return !mfs.has(String(row.id));
+      if (row.event_type === 'contact') return !contact.has(String(row.id));
+      return true;
+    });
   }
 
   /**
@@ -1581,6 +1672,80 @@ class MfsActivity extends Entity {
   }
 
   /**
+   * Remove an mfs_changelog notification for good (the trash button), as
+   * opposed to `dismiss`, which now means only "I have read this".
+   *
+   * The two were the same operation until 2026-08-28: both wrote an
+   * mfs_dismissed row, and the feed read its presence as is_read. Reading a
+   * notification therefore deleted it, which is what Lexis asked to stop.
+   * `dismiss` is unchanged and still marks read; this adds the flag that keeps
+   * the row out of the feed permanently.
+   *
+   * A separate procedure rather than a parameter on mfs_dismiss_activity:
+   * changing that procedure's arity would break every production caller the
+   * moment it was applied, MariaDB having no default parameters.
+   * Endpoint: POST /activity.delete_activity
+   * Input: changelog_id (integer)
+   */
+  async delete_activity() {
+    const changelogId = parseInt(this.input.need('changelog_id'));
+    const result = await this._callUserProc('mfs_delete_activity', this.uid, changelogId);
+    const data = toArray(result)[0] || {};
+    this.output.data(data);
+  }
+
+  /**
+   * Remove a contact_activity notification for good (the trash button).
+   * Counterpart of `delete_activity` for hub invites, contact invites, task
+   * assignments, task @-mentions, watched-column moves, meeting notices and
+   * storage alerts. `dismiss_contact_event` is unchanged and still means read.
+   *
+   * The procedure also stamps dismissed_at when it is still NULL, so trashing a
+   * notification the user never opened cannot leave it counting toward the bell
+   * badge while being unreachable in the panel.
+   * Endpoint: POST /activity.delete_contact_event
+   * Input: activity_id (integer)
+   */
+  async delete_contact_event() {
+    const activityId = parseInt(this.input.need('activity_id'));
+    const result = await this._callUserProc('contact_activity_delete', this.uid, activityId);
+    const data = toArray(result)[0] || {};
+    this.output.data(data);
+  }
+
+  /**
+   * Remove a chat / teamchat / media / ticket rollup for good (the trash
+   * button).
+   *
+   * TWO WRITES, AND BOTH ARE REQUIRED. notification_rollup_delete flags the
+   * stored copy so it stops being rendered as a read row, and
+   * notification_dismiss advances the underlying read pointer so
+   * notification_center_next stops generating the LIVE rollup. Doing only the
+   * first leaves the live rollup untouched and the row reappears on the next
+   * refresh; doing only the second is exactly today's behaviour, where the row
+   * comes back as a read row instead of staying gone.
+   *
+   * The dismiss half is what today's trash button already does, so this adds
+   * one write rather than changing any existing behaviour. It runs FIRST: if
+   * the flagging then fails, the user is left with today's outcome (the row
+   * returns as read) rather than a row that is flagged deleted while its
+   * conversation is still unread and still counted by the badge.
+   * Endpoint: POST /activity.delete_rollup
+   * Input: category (string), key_id (string), hub_id (string), last_id (integer)
+   */
+  async delete_rollup() {
+    const category = String(this.input.need('category'));
+    const key_id = String(this.input.need('key_id'));
+    const hub_id = String(this.input.use('hub_id') || '');
+    const last_id = parseInt(this.input.use('last_id') || 0);
+
+    await this._callUserProc('notification_dismiss', category, key_id, hub_id, last_id);
+    const result = await this._callUserProc('notification_rollup_delete', this.uid, category, key_id);
+    const data = toArray(result)[0] || {};
+    this.output.data(data);
+  }
+
+  /**
    * Unified notification dismiss for any rollup returned by drumate.notification_center.
    * Routes by `category` to the right read-pointer / status update.
    * Endpoint: POST /activity.notification_dismiss
@@ -1651,12 +1816,96 @@ class MfsActivity extends Entity {
     // Stamp `bucket` here so BOTH consumers get it from one place: list() (the
     // badge / priority source) and get_feed()'s chronological merge. Purely
     // additive — an existing client that ignores the field is unaffected.
-    return stampBuckets([
+    const items = stampBuckets([
       ...rows.map(mapNotificationRow),
       ...hubs.map(mapHubInviteRow),
       ...refused.map(mapContactRefusedRow),
       ...workspaceMoves,
     ]);
+
+    // Capture the live rollups so they can still be rendered once they have
+    // been read. Deliberately placed HERE and not in get_feed: this method is
+    // what every caller goes through -- list() for the bell badge, get_feed()
+    // for the panel, unread_counts() for the tabs -- and the badge refreshes on
+    // desk load, on visibility change, on reconnect and on chat/mention
+    // websocket pushes, not merely while the panel is open. Capturing anywhere
+    // narrower would lose the row for a user who reads a conversation by
+    // opening the chat window directly and never touching the panel.
+    //
+    // Awaited rather than fired and forgotten so a slow write cannot interleave
+    // with the next refresh and store a stale rollup after a newer one; the
+    // procedure takes the whole set in a single round trip precisely so that
+    // this stays cheap on the busiest notification path.
+    await this._storeRollups(items);
+
+    return items;
+  }
+
+  /**
+   * Upsert the rollup rows into notification_rollup. Best-effort by design.
+   *
+   * A failure here must never affect the badge or the feed: the store is what
+   * lets a READ rollup still be rendered, so losing a write costs at most one
+   * row's history, whereas throwing would cost the user their entire
+   * notification list. await_proc does not re-throw on a SQL error anyway (it
+   * logs, rolls back and returns undefined), so the catch covers only
+   * programmer errors -- which is exactly why the work is kept to one call with
+   * nothing else inside the try.
+   */
+  async _storeRollups(items) {
+    const storable = (items || []).filter((r) => r && ROLLUP_CATEGORIES.has(r.category) && r.key_id != null);
+    if (!storable.length) return;
+    try {
+      await this._callUserProc('notification_rollup_put', this.uid, JSON.stringify(storable));
+    } catch (e) {
+      this.debug('[ACTIVITY] notification_rollup_put skipped', e && e.message);
+    }
+  }
+
+  /**
+   * Read back the captured rollups, rebuilt into the exact shape the client
+   * already renders.
+   *
+   * The payload was stored verbatim, so the row needs no re-derivation and no
+   * second source of truth for its wording -- which is the point of storing the
+   * whole object rather than a handful of columns. The column values still win
+   * for the four fields the store owns (category, key_id, ctime and the trash
+   * flag it filters on), because those are what the upsert maintains across
+   * updates while the payload is only ever a snapshot.
+   *
+   * Best-effort: on a missing procedure or a malformed payload the row is
+   * skipped and the feed simply behaves as it does today -- the read rollup
+   * does not appear. That is the safe direction; the alternative is a throw
+   * that costs the user the whole feed.
+   */
+  async _storedRollups() {
+    let rows;
+    try {
+      rows = toArray(await this._callUserProc('notification_rollup_list', this.uid, 1));
+    } catch (e) {
+      this.debug('[ACTIVITY] notification_rollup_list skipped', e && e.message);
+      return [];
+    }
+    if (!rows || !rows.length) return [];
+
+    const out = [];
+    for (const r of rows) {
+      if (!r || !r.category || r.key_id == null) continue;
+      let payload = r.payload;
+      if (typeof payload === 'string') {
+        try { payload = JSON.parse(payload); } catch (e) { payload = null; }
+      }
+      if (!payload || typeof payload !== 'object') continue;
+      out.push({
+        ...payload,
+        category: r.category,
+        key_id: r.key_id,
+        hub_id: payload.hub_id != null ? payload.hub_id : r.hub_id,
+        ctime: r.ctime,
+        timestamp: r.ctime,
+      });
+    }
+    return stampBuckets(out);
   }
 
   /**
