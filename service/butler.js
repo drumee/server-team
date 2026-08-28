@@ -788,6 +788,31 @@ class __butler extends Mfs {
     }
 
     // 6. Clean up all resolved pending_invitation entries for this email
+
+    // Viral loop: every pending invitation for this address is redeemed by this
+    // one sign-up, so the acceptance is recorded once for all of them rather
+    // than per hub — invite_track_accept stamps every row still open for the
+    // address. Placed BEFORE pending_invitation_delete_by_email below, which
+    // erases the only other evidence the invitations ever existed.
+    //
+    // Never allowed to throw: an account that was created and joined its
+    // workspaces, then reported a failure because a metric could not be
+    // written, is strictly worse than an uncounted acceptance.
+    try {
+      await this.yp.await_proc("invite_track_accept", email, newUser.id);
+    } catch (err) {
+      this.warn("[butler._resolve_pending_invitation] invite tracking failed for", email, err && err.message);
+    }
+
+    // The rollup counts live permission rows, so it has to be refreshed after
+    // the grants above — the crawl and these writers must agree.
+    for (const row of rows) {
+      try {
+        await this.yp.await_proc("workspace_members_set", row.hub_id);
+      } catch (err) {
+        this.warn("[butler._resolve_pending_invitation] workspace member tracking failed for", row.hub_id, err && err.message);
+      }
+    }
     await this.yp.await_proc("pending_invitation_delete_by_email", email);
   }
 
