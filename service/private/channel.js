@@ -2192,11 +2192,14 @@ class __private_channel extends Entity {
 
     this.output.data(data);
     // Core function -> the Chat bar. A file-thread reply is a message and
-    // counts here. It ALSO belongs to the Aha-moment page's "chat threads in
-    // files" metric, which is a different question over the same event --
-    // that page is still a mockup, and when it is wired it needs its own
-    // signal rather than borrowing this one.
+    // counts here.
     markFeatureUsage(this, "chat");
+    // Aha moment -> the "chat threads in files" bar. GATED ON is_new, so hits
+    // counts threads STARTED, not messages posted in them -- which is what
+    // "Avg chat threads/user" divides down. A user who replies in ten threads
+    // and starts none is not an adopter of this signal: the moat is stitching
+    // context to a file, and starting the thread is the act that does it.
+    if (is_new) markFeatureUsage(this, "file_thread");
   }
 
   /**
