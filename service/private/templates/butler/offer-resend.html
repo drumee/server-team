@@ -1,0 +1,88 @@
+<%
+// "Here is your offer link again." Transactional, sent by payment.resend_offer.
+//
+// Vars: recipient_name, link.
+//
+// DELIBERATELY NOT THE CAMPAIGN CREATIVE. The segment-a/segment-b designs
+// belong to marketing, live in analytics-server, and change on marketing's
+// schedule. Copying them here would mean two repos to update whenever a
+// designer touched one, and this mail answers a different question anyway: not
+// "here is an offer" but "here is your link again".
+//
+// LODASH TEMPLATES, where the delimiters are the REVERSE of EJS: the bare one
+// is RAW and the dashed one ESCAPES. `link` is raw on purpose -- it is a URL
+// this server built and its ampersands must stay ampersands -- and
+// recipient_name is escaped because it is the local part of an address.
+//
+// lodash compiles HTML comments too, so never write a delimiter inside one.
+//
+// Palette and structure follow the other butler mails so the three read as one
+// product.
+var FONT = "'Geist','SF Pro Display',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif";
+%><!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="x-apple-disable-message-reformatting">
+  <title>Your Drumee offer link</title>
+</head>
+<body style="margin:0;padding:0;background:#fff;-webkit-font-smoothing:antialiased;font-family:<%= FONT %>;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#fff;">
+    <tr>
+      <td align="center" style="padding:0;">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;max-width:600px;background:#fff;border:1px solid #d1d1d6;border-radius:8px;overflow:hidden;">
+
+          <tr>
+            <td bgcolor="#433cc5" align="center" style="padding:24px;background:#433cc5;">
+              <table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr><td align="center" style="line-height:0;">
+                <img src="https://content.app.drumee.com/icons/logo.png" width="170" height="36" alt="Drumee" style="display:block;border:0;outline:0;text-decoration:none;-ms-interpolation-mode:bicubic;">
+              </td></tr></table>
+            </td>
+          </tr>
+
+          <tr>
+            <td style="padding:32px;">
+
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+                <tr><td align="center">
+                  <h1 style="margin:0 0 8px 0;padding:0;font-family:<%= FONT %>;font-weight:600;font-size:24px;line-height:1.2;color:#0b0a21;">Your offer link</h1>
+                  <p style="margin:0;padding:0;font-family:<%= FONT %>;font-weight:400;font-size:14px;line-height:1.5;color:#65656c;">Hi <%- recipient_name %> &mdash; here is your link again. It opens your upgrade screen with the discount already applied, so there is nothing to type.</p>
+                </td></tr>
+              </table>
+
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td style="height:24px;line-height:24px;font-size:0;">&nbsp;</td></tr></table>
+
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+                <tr><td align="center">
+                  <table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr>
+                    <td align="center" bgcolor="#433cc5" style="border-radius:6px;background:#433cc5;">
+                      <a href="<%= link %>" style="display:inline-block;padding:14px 32px;font-family:<%= FONT %>;font-weight:600;font-size:15px;line-height:1;color:#ffffff;text-decoration:none;border-radius:6px;">Open my upgrade screen</a>
+                    </td>
+                  </tr></table>
+                </td></tr>
+              </table>
+
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td style="height:24px;line-height:24px;font-size:0;">&nbsp;</td></tr></table>
+
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+                <tr><td style="padding:16px;background:#f5f5f7;border-radius:6px;">
+                  <p style="margin:0;padding:0;font-family:<%= FONT %>;font-weight:400;font-size:13px;line-height:1.5;color:#65656c;">This link works <strong style="color:#0b0a21;">once</strong>, and only for this account. Forwarding it will not pass the offer on. If you need it again, ask from the upgrade screen.</p>
+                </td></tr>
+              </table>
+
+            </td>
+          </tr>
+
+          <tr>
+            <td align="center" style="padding:0 32px 28px 32px;">
+              <p style="margin:0;padding:0;font-family:<%= FONT %>;font-weight:400;font-size:12px;line-height:1.5;color:#8e8e93;">drumee.org &middot; <a href="https://drumee.com/privacy/" style="color:#8e8e93;text-decoration:underline;">Privacy Policy</a></p>
+            </td>
+          </tr>
+
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>

@@ -75,6 +75,26 @@
         }
       }
     },
+    "claim_offer": {
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "params": {
+        "g": {
+          "type": "string",
+          "required": true,
+          "doc": "Grant token from a campaign CTA. Exchanged for the coupon it grants — SPENDS a single-use grant, so only call it when the checkout is actually being opened."
+        }
+      }
+    },
+    "resend_offer": {
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "params": {}
+    },
     "preview_coupon": {
       "scope": "hub",
       "permission": {

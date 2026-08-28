@@ -4,6 +4,11 @@ const { stripeClient } = require('../lib/stripe');
 // Shared with promo.js's direct redeem — see lib/mkt-coupon for why the
 // hold TTL must be one value across both.
 const { COUPON_HOLD_TTL_SEC } = require('../lib/mkt-coupon');
+const { resolve } = require('path');
+const { Messenger } = require('@drumee/server-essentials');
+// The shared butler sender: multipart/alternative with a display-name From,
+// used by every non-contact transactional mail this server sends.
+const { sendButlerMail } = require('../lib/butler-mail');
 
 // Billing currency for every catalog / plan lookup. The 2026-07 pricing
 // rebuild moved the catalog to USD; the old EUR rows are deactivated in
@@ -225,6 +230,175 @@ class __private_payment extends Entity {
       // 0 = Stripe duration 'once' (single invoice), else N billing cycles.
       duration_months: parseInt(row.duration_months, 10) || 0,
     });
+  }
+
+  /**
+   * Exchange a mailed grant token for the coupon it grants.
+   *
+   * THE ONLY PLACE THE CODE IS REVEALED, and that is the whole design. The
+   * campaign CTA used to carry `promo=<code>` in cleartext with an FNV digest
+   * of the recipient beside it, checked in the browser. Both were bearer
+   * credentials the moment the mail landed. The link now carries an opaque
+   * token that is worth nothing without this call.
+   *
+   * ONLY CALL THIS WHEN YOU ARE GOING TO ACT ON IT. A successful claim SPENDS
+   * a single-use grant — the same contract as ui-team's billing-deep-link
+   * consume() versus peek(), for the same reason: a caller that claims and
+   * then changes its mind has destroyed an offer nobody used. There is no
+   * read-only preview by design; one would let anyone with a forwarded link
+   * probe whether it is live.
+   *
+   * IDENTITY COMES FROM payment_get_payer, NEVER FROM THE REQUEST. That is the
+   * same source preview_coupon and checkout key on, so the three cannot
+   * disagree about who is buying — the failure that made the previous,
+   * browser-side check unreliable was exactly two sources for one answer.
+   *
+   * Refusals travel by name (OFFER_SPENT, OFFER_EXPIRED, OFFER_NOT_YOURS, ...)
+   * because the UI has to tell them apart: two of them offer "get a new link"
+   * and one must not.
+   */
+  async claim_offer() {
+    const token = String(this.input.use('g', '') || '').trim();
+    if (!token) return this.output.data({ status: 'OFFER_INVALID' });
+
+    const payer = await this.yp.await_proc('payment_get_payer', this.uid);
+    const email = (payer && payer.email) || '';
+    if (!email) return this.output.data({ status: 'COUPON_EMAIL_REQUIRED' });
+
+    const row = this._row(
+      await this.yp.await_proc('mkt_grant_claim', token, email, this.uid),
+    );
+    if (!row || row.error) {
+      // NOTHING BUT THE STATUS on a refusal. The caller is, by definition,
+      // possibly not the addressee; echoing the code or the address would turn
+      // a forwarded link into an oracle for both.
+      return this.output.data({ status: (row && row.error) || 'OFFER_INVALID' });
+    }
+
+    const percent_off = parseInt(row.percent_off, 10) || 0;
+    const trial_days = this._promoTrialDays(row);
+    // Mirrors preview_coupon's own refusal: an offer with neither a discount
+    // nor a free period would render as "applied" and change nothing.
+    if (!percent_off && !trial_days) {
+      return this.output.data({ status: 'OFFER_INVALID' });
+    }
+
+    this.output.data({
+      status: 'OK',
+      code: row.code,
+      campaign: row.campaign || '',
+      partner: row.partner || '',
+      kind: row.kind || '',
+      plan_scope: row.plan_scope || 'all',
+      percent_off,
+      trial_days,
+      duration_months: parseInt(row.duration_months, 10) || 0,
+    });
+  }
+
+  /**
+   * "Send me that link again" — re-issues the grant this address already holds.
+   *
+   * WHY IT EXISTS. A single-use grant is spent by its first successful claim,
+   * which is what the campaign asked for: click the CTA, sign in, billing
+   * opens; sign out, click the same CTA, sign in again, nothing happens. That
+   * needs a way back, or a person who was interrupted mid-checkout is stuck
+   * with a support ticket.
+   *
+   * IT TAKES NO CAMPAIGN AND NO CODE. The caller is a signed-in user staring
+   * at a refusal; they do not know a campaign name, and letting them name one
+   * would turn this into "issue me any offer in the table". The proc resolves
+   * the newest grant the address holds, reads the code off that row, and
+   * refuses GRANT_NOT_FOUND when there is none.
+   *
+   * IT APPLIES THE NEW GRANT IN-SESSION AND ALSO MAILS IT. The in-session half
+   * is the one that will carry the traffic: the person is already signed in and
+   * looking at the screen, so making them wait for an email to arrive would be
+   * theatre. The mail exists so the offer is somewhere they can come back to,
+   * and because the failure this recovers from sometimes IS a lost mail.
+   *
+   * THE MAIL IS TRANSACTIONAL, NOT THE CAMPAIGN CREATIVE. The 101/102 designs
+   * belong to marketing, live in analytics-server, and change on marketing's
+   * schedule. This one says "here is your link again" and should never change.
+   *
+   * A MAIL FAILURE DOES NOT FAIL THE CALL. The grant has already been re-issued
+   * by then, and the fresh offer is in the response the client is about to act
+   * on. Reporting a failure would make the user press the button again, which
+   * costs them one of their three sends for something that already worked.
+   */
+  async resend_offer() {
+    const payer = await this.yp.await_proc('payment_get_payer', this.uid);
+    const email = (payer && payer.email) || '';
+    if (!email) return this.output.data({ status: 'COUPON_EMAIL_REQUIRED' });
+
+    // NULLs so the proc's own defaults apply: 30-day link, 3 sends total,
+    // 15-minute cooldown. Passing 0 here would DISABLE those limits — the two
+    // are deliberately different values in mkt_grant_issue.
+    const row = this._row(await this.yp.await_proc(
+      'mkt_grant_resend', '', email, this.uid, null, null, null,
+    ));
+    if (!row || row.error) {
+      return this.output.data({
+        status: (row && row.error) || 'RESEND_FAILED',
+        // The one refusal the user can act on: retry_after tells them when.
+        retry_after: (row && parseInt(row.retry_after, 10)) || 0,
+      });
+    }
+
+    // Best-effort. See the docblock.
+    let mailed = 0;
+    try {
+      await this._mailOfferLink(email, row);
+      mailed = 1;
+    } catch (e) {
+      this.warn && this.warn('[resend_offer] mail failed', e && e.message);
+    }
+
+    this.output.data({
+      status: 'OK',
+      g: row.token,
+      campaign: row.campaign || '',
+      send_count: parseInt(row.send_count, 10) || 0,
+      mailed,
+    });
+  }
+
+  /**
+   * The transactional "here is your link again" mail.
+   *
+   * The link is rebuilt here rather than carried from the request: this is the
+   * one place that knows the fresh token, and a client-supplied URL would let
+   * the caller choose where their own offer mail points.
+   *
+   * @param {String} email
+   * @param {Object} grant row from mkt_grant_resend
+   */
+  async _mailOfferLink(email, grant) {
+    const recipient_name = String(email).replace(/@.+$/, '');
+    const link = `${this.input.homepath()}#/desk/billing`
+      + `?plan=team&cycle=monthly&tab=checkout&g=${encodeURIComponent(grant.token)}`;
+    const subject = 'Your Drumee offer link';
+    const tplPath = resolve(
+      __dirname, 'templates', 'butler', 'offer-resend.html');
+    const msg = new Messenger({
+      subject,
+      recipient: email,
+      handler: this.exception.email,
+    });
+    const html = msg.renderFrom(tplPath, { recipient_name, link });
+    const text = [
+      `Hello ${recipient_name},`,
+      ``,
+      `Here is your Drumee offer link again. It opens your upgrade screen with`,
+      `the discount already applied:`,
+      ``,
+      link,
+      ``,
+      `The link works once, and only for this account.`,
+      ``,
+      `drumee.org · Privacy Policy: https://drumee.com/privacy/`,
+    ].join('\n');
+    return sendButlerMail(msg, { recipient: email, subject, html, text });
   }
 
   // Hosted Checkout. entity_type 'user' (individual Free->Pro) or 'org' (team,
