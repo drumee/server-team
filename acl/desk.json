@@ -325,6 +325,27 @@
         }
       }
     },
+    "cta_click": {
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "params": {
+        "cta": {
+          "type": "string",
+          "required": true,
+          "enum": ["upgrade", "selfhosted"],
+          "doc": "Which CTA was clicked. 'upgrade' = opened billing/plans through ANY route. It is marked inside openBillingPage, the convergence point for roughly ten callers — the sidebar entry and the Settings card, but also the quota-exceeded dialog, the feature locks in Tasks and Meeting, the upgrade-nudge and promo-launch30 popups, and billing deep links — around ten callers, most reached through the `desk:open-billing-page` broadcast rather than directly — so it counts opens, not one button, and prompted opens will dominate deliberate ones. 'selfhosted' = opened Get help > Self-hosting."
+        }
+      },
+      "returns": {
+        "ok": {
+          "type": "boolean",
+          "doc": "Always true — the caller does not wait for this"
+        }
+      },
+      "doc": "Record a tracked CTA click for the analytics Engagement > Extended page, which reports the share of real users who clicked each at least once — click, not conversion. Writes one yp.feature_usage row per (user, signal) through feature_mark: existence drives the bar, hits counts repeats. Deliberately carries NO `log` flag, unlike track_workspace next door: services_log retention is a policy call (drumate_delete.sql) and these signals are not recoverable from anywhere if it is pruned. `permission.src` is `read` rather than `owner` because any member can open billing or the help page. Tracking only; never blocks or alters the screen it reports, and an unrecognised cta is dropped rather than raised."
+    },
     "limit": {
       "doc": "Get current quota limits and available storage space",
       "scope": "hub",
