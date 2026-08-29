@@ -22,6 +22,7 @@ const { stringify } = JSON;
 const { mkdirSync } = require("fs");
 const { isEmpty, isArray, map, includes } = require("lodash");
 const { CAN_CHAT, privilegeAllows } = require("../lib/member-capability");
+const { markFeatureUsage } = require("../lib/feature-usage");
 
 const ENTITY_ID_RE = /^[0-9a-zA-Z_-]{1,32}$/;
 const DB_NAME_RE = /^[A-Za-z0-9_]+$/;
@@ -865,6 +866,11 @@ class privateChat extends Entity {
       entity_id,
     ]);
     this.output.data(res);
+    // Core function -> the Chat bar and Avg messages/user. All three message
+    // paths mark 'chat' (p2p here, workspace and file threads in channel.js):
+    // "used chat" means sent a message, and splitting it three ways would put
+    // a user who only ever posts in their workspace outside chat adoption.
+    markFeatureUsage(this, "chat");
   }
 
   /**

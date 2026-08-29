@@ -48,9 +48,12 @@ const AGE_STEPS = [
   ["age_14d", 14 * 24 * 3600],
 ];
 
-// Where a nudge can send people. Business has nowhere to go, so a business
-// org gets no nudges at all — whatever its numbers say.
-const TARGET_PLAN = { free: "team", pro: "team", team: "business" };
+// Where a nudge can send people (designer's route list: Free → Pro,
+// Pro → Team, Team → Business; Business → Self-hosted is an evergreen CTA,
+// not a threshold popup). A downgraded ORG on the free row has no personal
+// tier to go to, so it is sent to Team. Business gets no nudges at all.
+const TARGET_PLAN = { free: "pro", pro: "team", team: "business" };
+const ORG_TARGET_PLAN = { free: "team", pro: "team", team: "business" };
 
 function enabled() {
   return !!(global.myDrumee && global.myDrumee.upgrade_nudges);
@@ -147,10 +150,13 @@ function _ageCandidates(ctime, nowSec) {
  */
 async function grant(yp, domainId, uid) {
   const dom = ~~domainId;
-  if (!enabled() || dom <= 1 || !uid) return null;
+  if (!enabled() || !uid) return null;
   try {
-    const org = await _org(yp, dom);
-    if (!org) return null; // personal accounts have no workspace nudges
+    // Two scopes, one gate. An organisation member is nudged about the
+    // WORKSPACE (org numbers, org-wide seen map); a personal Free/Pro
+    // account about its own desk (drumate.profile home, Free → Pro → Team).
+    const org = dom > 1 ? await _org(yp, dom) : null;
+    if (!org) return _grantPersonal(yp, uid);
 
     const limits = await _limits(yp, dom, org.id);
 
@@ -169,7 +175,7 @@ async function grant(yp, domainId, uid) {
       block = null;
     }
 
-    const target = TARGET_PLAN[limits.plan];
+    const target = ORG_TARGET_PLAN[limits.plan];
     if (!target) return null; // top tier — nowhere to nudge to
 
     // ---- live numbers (same sources as over-limit.js) ----
@@ -227,6 +233,89 @@ async function grant(yp, domainId, uid) {
   }
 }
 
+
+/**
+ * Personal Free/Pro account — same families, same gate semantics, personal
+ * sources: entitlement from get_quota(uid), usage from the disk_usage(uid)
+ * function (own desk + owned hubs), age from the account's own entity
+ * ctime, seats from drumate_seat_usage (members + live invites across the
+ * hubs it owns, against the plan's 3-seat cap). State lives in
+ * drumate.profile.$.upgrade_nudge via the drumate_* twin procs.
+ */
+async function _grantPersonal(yp, uid) {
+  let raw = await yp.await_func("get_quota", uid);
+  if (typeof raw === "string") { try { raw = JSON.parse(raw); } catch (e) { raw = null; } }
+  const q = raw && typeof raw === "object" ? raw : {};
+  const limits = {
+    plan: String(q.plan || "free").toLowerCase(),
+    disk: Number(q.disk || q.storage) || 0,
+    seat: q.seat == null ? null : Number(q.seat),
+  };
+
+  const me = firstRow(await yp.await_query(
+    `SELECT d.profile, e.ctime FROM drumate d LEFT JOIN entity e ON e.id = d.id
+      WHERE d.id = ? LIMIT 1`, uid
+  ));
+  if (!me) return null;
+
+  let block = null;
+  try {
+    const pf = typeof me.profile === "string" ? JSON.parse(me.profile) : me.profile;
+    block = (pf && pf.upgrade_nudge) || null;
+  } catch (e) { block = null; }
+  if (block && block.plan && block.plan !== limits.plan) {
+    await yp.await_proc("drumate_upgrade_nudge_reset", uid);
+    block = null;
+  }
+
+  const target = TARGET_PLAN[limits.plan];
+  if (!target) return null;
+
+  let diskUsed = 0;
+  try { diskUsed = Number(await yp.await_func("disk_usage", uid)) || 0; } catch (e) { /* 0 */ }
+
+  let seatsUsed = 0;
+  try {
+    const stats = firstRow(await yp.await_proc("drumate_seat_usage", uid));
+    seatsUsed = Number((stats && stats.total_members) || 0)
+      + Number((stats && stats.pending_invites) || 0);
+  } catch (e) { /* seats family just yields nothing */ }
+
+  const nowSec = Math.floor(Date.now() / 1000);
+  const candidates = [
+    ..._storageCandidates(diskUsed, limits.disk).map((t) => ({ trigger: t, family: "storage" })),
+    ..._seatCandidates(seatsUsed, limits.seat).map((t) => ({ trigger: t, family: "seats" })),
+    ..._ageCandidates(me.ctime, nowSec).map((t) => ({ trigger: t, family: "age" })),
+  ];
+  if (!candidates.length) return null;
+
+  const day = today();
+  for (const cand of candidates) {
+    const res = firstRow(await yp.await_proc(
+      "drumate_upgrade_nudge_mark", uid, cand.trigger, day, limits.plan
+    ));
+    if (res && Number(res.granted)) {
+      return {
+        trigger: cand.trigger,
+        family: cand.family,
+        plan: limits.plan,
+        // Seats: Free and Pro share the same 3-member cap, so the seat nudge
+        // sells Team on both (content doc: "Free / Pro → Team").
+        target_plan: cand.family === "seats" && limits.plan === "free" ? "team" : target,
+        numbers: {
+          disk_used: diskUsed,
+          disk_limit: limits.disk,
+          seats_used: seatsUsed,
+          seat_limit: limits.seat == null ? 0 : Number(limits.seat),
+          age_days: me.ctime ? Math.floor((nowSec - Number(me.ctime)) / 86400) : 0,
+        },
+      };
+    }
+    if (res && Number(res.capped_today)) return null;
+  }
+  return null;
+}
+
 module.exports = {
   enabled,
   grant,
@@ -235,4 +324,5 @@ module.exports = {
   _seatCandidates,
   _ageCandidates,
   TARGET_PLAN,
+  ORG_TARGET_PLAN,
 };

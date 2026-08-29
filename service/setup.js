@@ -57,7 +57,9 @@ class __seo_admin extends Mfs {
     profile.connected = "1";
     profile.sharebox = uniqueId();
     profile.domain = domain.name;
-    profile.lang = this.input.ua_language();
+    // Product default is English — do not stamp the creator's browser
+    // language onto the new account.
+    profile.lang = 'en';
     profile.privilege = dom_owner;
 
     const rows = await this.yp.await_proc(

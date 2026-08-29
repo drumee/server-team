@@ -203,6 +203,12 @@ class __private_room extends __public_room {
     let etime = content.etime
     let recur = content.recur
 
+    // The start time BEFORE this edit, so a real reschedule can be told apart
+    // from a save that left the time alone. The scheduler posts the whole form
+    // with flag 'all' on every edit, so comparing is the only way to avoid
+    // announcing a "new time" that is the old one.
+    const prevStime = Number(stime) || 0;
+
     if (flag == 'when' || flag == 'all') {
       date = this.input.use(Attr.date) || Moment(Moment.now() / 1000, 'X').format('LLLL');
       // Keep the queryable epochs in lockstep with the display date; only
@@ -263,6 +269,19 @@ class __private_room extends __public_room {
       }, 1);
     // In-app popup for newly-invited workspace members (fire-and-forget).
     if (addedUids.length) {
+      // The invitation card names WHERE the meeting is ("<organizer> invited
+      // you joining the meeting in <folder>"), and the invitee cannot work
+      // that out from ids alone. Resolved here rather than in the client for
+      // the same reason the chat toast's chip is: a per-recipient lookup
+      // fails silently and is undiagnosable. mfs_node_attr answers with the
+      // WORKSPACE name when the meeting sits at the hub root, which is where
+      // room.book files them by default.
+      //
+      // The durable-notice block below resolves this again for its own
+      // payload; that costs a second lightweight proc only when someone is
+      // BOTH invited and rescheduled in one edit, which is rare enough not to
+      // be worth threading a shared value through two different conditions.
+      const folder_name = await this._meeting_folder_name(node && node.parent_id);
       this._notify_invitees(addedUids, {
         type: 'meeting_scheduled',
         nid,
@@ -271,7 +290,46 @@ class __private_room extends __public_room {
         stime,
         recur,
         from: name,
+        folder_name,
+        // The card's meta line counts who is invited ("N invited") and shows
+        // their faces, exactly as the reminder's does. `attendees` is already
+        // the normalised { uid, name } list built above, so this costs
+        // nothing extra — it simply was never sent.
+        attendees,
       });
+    }
+
+    // Durable notifications. The live push above is socket-only: it is gone on
+    // reload and never reaches anyone who was offline, which is why an invitee
+    // saw only "<organizer> uploaded <Meeting-name>" in the Files tab.
+    //
+    // Resolved once and shared by both notices below; skipped entirely when
+    // there is nobody to tell, so an ordinary title/agenda edit costs nothing.
+    const movedTo = Number(stime) || 0;
+    const timeChanged = movedTo !== prevStime && movedTo > 0;
+    const attendeeUids = (isArray(attendees) ? attendees : [])
+      .map((a) => (a && (a.uid || a)))
+      .filter(Boolean);
+    // A newly-added attendee gets the invitation, not a reschedule notice —
+    // they were never told the old time.
+    const rescheduleUids = timeChanged
+      ? attendeeUids.filter((u) => !addedUids.includes(u))
+      : [];
+    if (addedUids.length || rescheduleUids.length) {
+      const folder_name = await this._meeting_folder_name(node && node.parent_id);
+      const common = {
+        nid,
+        pid: (node && node.parent_id) || null,
+        title,
+        stime: movedTo,
+        folder_name,
+      };
+      if (addedUids.length) {
+        await this._meeting_notice(addedUids, 'invite', common);
+      }
+      if (rescheduleUids.length) {
+        await this._meeting_notice(rescheduleUids, 'moved', common);
+      }
     }
     content = {
       attendees, title, message, date, stime, etime, recur,
@@ -281,6 +339,87 @@ class __private_room extends __public_room {
     // (attendee set, moved time, cleared/added recurrence).
     await this._index_meeting(nid, content);
     await this.output.data((content));
+  }
+
+  /**
+   * Persist a scheduled-meeting notice for each recipient (Duy 2026-08-21,
+   * issues 9 and 11).
+   *
+   * Until now the meeting lifecycle produced NO durable notification at all:
+   * booking was only visible as the media rollup for the `schedule` node ("X
+   * uploaded <Meeting-name>", in Files), an invitation was a live socket push
+   * that vanished on reload, a time change announced nothing, and a deletion
+   * silently removed the rollup row too — `permission_revoke` DELETEs a
+   * `schedule` media row outright, so there was nothing left to notify from.
+   *
+   * `meeting_notice` is one yp.contact_activity event with `kind` in
+   * { invite | moved | cancelled }, mirroring how the task events already ride
+   * contact_activity: per-person, dismissable, and bucketed to Meeting by
+   * activity.js's BUCKET_BY_EVENT.
+   *
+   * Everything the row has to render is written HERE, at emit time, rather than
+   * resolved when the feed is read — a cancelled meeting's node no longer exists
+   * by then, so its title and folder could never be looked up afterwards.
+   *
+   * Best-effort per recipient: a failed write must never fail the booking, the
+   * edit or the deletion that triggered it.
+   *
+   * @param {string[]} uids     recipients (self is dropped)
+   * @param {string} kind       'invite' | 'moved' | 'cancelled'
+   * @param {object} payload    { nid, pid, title, stime, folder_name }
+   */
+  async _meeting_notice(uids, kind, payload = {}) {
+    try {
+      const targets = toArray(uids)
+        .map((u) => (u && (u.uid || u)))
+        .filter((u) => u && u !== this.uid);
+      if (isEmpty(targets)) return;
+      const hub_id = this.hub.get(Attr.id);
+      const meta = {
+        kind,
+        hub_id,
+        nid: payload.nid || null,
+        // The meeting node's PARENT — what the row's click opens. The node
+        // itself is gone for a cancellation.
+        pid: payload.pid || null,
+        title: (payload.title || '').slice(0, 255),
+        stime: Number(payload.stime) || 0,
+        folder_name: payload.folder_name || null,
+      };
+      const seen = new Set();
+      for (const target_uid of targets) {
+        if (seen.has(target_uid)) continue;
+        seen.add(target_uid);
+        try {
+          await this.yp.await_proc(
+            'contact_log_activity', this.uid, target_uid, 'meeting_notice', meta,
+          );
+        } catch (e) {
+          this.warn && this.warn('room._meeting_notice log failed', e && e.message);
+        }
+      }
+    } catch (e) {
+      this.warn && this.warn('room._meeting_notice failed', e && e.message);
+    }
+  }
+
+  /**
+   * The display name of a meeting's containing folder, for the card's chip.
+   * `mfs_node_attr` answers with the WORKSPACE name when the parent is the hub
+   * root, which is exactly right — room.book() files meetings at the workspace
+   * root by default. Internal plumbing names are withheld, and any failure
+   * simply yields no chip.
+   */
+  async _meeting_folder_name(pid) {
+    try {
+      if (!pid || `${pid}` === '0') return null;
+      const a = await this.db.await_proc('mfs_node_attr', pid);
+      const name = a && a.filename;
+      if (!name || /^__.*__$/.test(name) || name.indexOf('__') === 0) return null;
+      return name;
+    } catch (e) {
+      return null;
+    }
   }
 
   /**
@@ -424,6 +563,23 @@ class __private_room extends __public_room {
     if (content.created_by && content.created_by !== this.uid) {
       this.exception.user("NOT_MEETING_OWNER");
       return;
+    }
+    // Tell the attendees BEFORE the node goes away. permission_revoke DELETEs a
+    // `schedule` media row outright, so after this line the title, the start
+    // time and the parent folder are unrecoverable — and the media rollup that
+    // used to be the only sign of the meeting disappears with it, which is why a
+    // cancellation announced nothing at all (Duy 2026-08-21, issue 11).
+    const cancelAttendees = (isArray(content.attendees) ? content.attendees : [])
+      .map((a) => (a && (a.uid || a)))
+      .filter(Boolean);
+    if (cancelAttendees.length) {
+      await this._meeting_notice(cancelAttendees, 'cancelled', {
+        nid,
+        pid: (node && node.parent_id) || null,
+        title: content.title || (node && node.filename) || '',
+        stime: content.stime || 0,
+        folder_name: await this._meeting_folder_name(node && node.parent_id),
+      });
     }
     await this.db.await_proc('permission_revoke', nid, "meeting");
     await this._unindex_meeting(nid);

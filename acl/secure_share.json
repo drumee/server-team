@@ -169,6 +169,26 @@
         }
       }
     },
+    "delete_open": {
+      "doc": "Remove a share-open notification (token + recipient) permanently -- the trash button. Distinct from `mark_open_seen`, which since 2026-08-28 means only read and leaves the row in the feed. Stamps creator_deleted_at, and creator_seen_at too when it was still null so the row cannot keep counting as unread. Scoped server-side to the caller's own shares.",
+      "scope": "hub",
+      "permission": {
+        "src": "write"
+      },
+      "log": true,
+      "params": {
+        "token_id": {
+          "type": "string",
+          "required": true,
+          "doc": "Share token id identifying the open-notification group"
+        },
+        "recipient_email": {
+          "type": "string",
+          "required": false,
+          "doc": "Recipient email of the group; omit for anonymous opens"
+        }
+      }
+    },
     "set_notify_on_open": {
       "doc": "Turn the sender's open-notification preference on or off for one of their own links, after the link has been created. notify_on_open was create-time only, so the panel's toggle could not persist. Scoped server-side to the caller's own shares; answers NOT_FOUND identically for an unknown token and someone else's token.",
       "scope": "hub",
