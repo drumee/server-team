@@ -147,6 +147,19 @@ async function main() {
     assert.strictEqual(ctx.calls[0][4], 4096);
   });
 
+  test("upgrade_click and selfhosted_click accumulate independently (PENDING map keyed uid:feature)", () => {
+    lib._reset();
+    const ctx = fakeCtx();
+    lib.markFeatureUsage(ctx, "upgrade_click", { hits: 1 });
+    lib.markFeatureUsage(ctx, "upgrade_click", { hits: 1 });
+    lib.markFeatureUsage(ctx, "selfhosted_click", { hits: 1 });
+    lib._flushNow();
+    const byFeature = Object.fromEntries(ctx.calls.map((c) => [c[2], c]));
+    assert.strictEqual(ctx.calls.length, 2, "one call per feature, not one per event");
+    assert.strictEqual(byFeature.upgrade_click[3], 2, "upgrade_click: 2 hits");
+    assert.strictEqual(byFeature.selfhosted_click[3], 1, "selfhosted_click: 1 hit");
+  });
+
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
 }
