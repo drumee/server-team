@@ -183,6 +183,45 @@ function fakeCtx(procImpl) {
     (await helpers._dropDeleted.call(ctx, rows())).map(r => r.label),
     ['file', 'invite', 'rollup']);
 
+  // --- share_open ---------------------------------------------------------
+  // These carry no usable id: the feed reports MAX(sys_id) over a GROUP, so the
+  // stable identity is the (token_id, recipient_email) pair the procedure acts
+  // on. A mismatch here silently un-deletes every share-open notification.
+  const shareRows = () => ([
+    { category: 'share_open', id: 1, token_id: 'TOK1', recipient_email: 'a@b.c', label: 'named' },
+    { category: 'share_open', id: 2, token_id: 'TOK2', recipient_email: null, label: 'anonymous' },
+    { category: 'share_open', id: 3, token_id: 'TOK3', recipient_email: 'x@y.z', label: 'other' },
+    { category: 'share_open', id: 4, label: 'no-token' },
+    { id: 1, event_type: 'mfs', label: 'unrelated-mfs' },
+  ]);
+
+  ctx = fakeCtx(() => [{ kind: 'share_open', id: 'TOK1|a@b.c' }]);
+  check('a named share-open group is filtered by its token+recipient key',
+    (await helpers._dropDeleted.call(ctx, shareRows())).map(r => r.label),
+    ['anonymous', 'other', 'no-token', 'unrelated-mfs']);
+
+  // The procedure writes IFNULL(recipient_email,''), so an anonymous open's key
+  // ends in a bare pipe. Building it any other way never matches and the row
+  // comes back from the dead on every reload.
+  ctx = fakeCtx(() => [{ kind: 'share_open', id: 'TOK2|' }]);
+  check('an anonymous share-open group matches on the empty recipient',
+    (await helpers._dropDeleted.call(ctx, shareRows())).map(r => r.label),
+    ['named', 'other', 'no-token', 'unrelated-mfs']);
+
+  // A row with no token cannot be addressed on the server, so it must never be
+  // filtered by an accidental "undefined|" key collision.
+  ctx = fakeCtx(() => [{ kind: 'share_open', id: 'undefined|' }]);
+  check('a share-open row with no token is never filtered',
+    (await helpers._dropDeleted.call(ctx, shareRows())).map(r => r.label),
+    ['named', 'anonymous', 'other', 'no-token', 'unrelated-mfs']);
+
+  // A share-open deletion must not spill into the id-keyed categories: id 1
+  // exists in both sets here.
+  ctx = fakeCtx(() => [{ kind: 'share_open', id: 'TOK1|a@b.c' }]);
+  check('a share-open deletion never touches an mfs row with the same id',
+    (await helpers._dropDeleted.call(ctx, shareRows())).filter(r => r.label === 'unrelated-mfs').length,
+    1);
+
   ctx = fakeCtx(() => [{ kind: 'mfs', id: 5 }]);
   check('empty input is returned as-is', await helpers._dropDeleted.call(ctx, []), []);
 

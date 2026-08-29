@@ -1125,15 +1125,29 @@ class MfsActivity extends Entity {
 
     const mfs = new Set();
     const contact = new Set();
+    const shareOpen = new Set();
     for (const d of deleted) {
       if (!d || d.id == null) continue;
       if (d.kind === 'mfs') mfs.add(String(d.id));
       else if (d.kind === 'contact') contact.add(String(d.id));
+      else if (d.kind === 'share_open') shareOpen.add(String(d.id));
     }
-    if (!mfs.size && !contact.size) return rows;
+    if (!mfs.size && !contact.size && !shareOpen.size) return rows;
 
     return rows.filter((row) => {
-      if (!row || row.id == null) return true;
+      if (!row) return true;
+      // Share-open rows are keyed by the pair the feed row carries and the
+      // procedure acts on, (token_id, recipient_email), NOT by id: their `id` is
+      // a MAX(sys_id) computed over the group, which this side would have to
+      // reproduce exactly to stay in step. `|| ''` matches the IFNULL the
+      // procedure applies, so an anonymous open agrees on both sides -- without
+      // it those rows would never filter. Checked BEFORE the id guard because a
+      // share-open row is identified without needing an id at all.
+      if (row.category === 'share_open') {
+        if (!row.token_id) return true;
+        return !shareOpen.has(`${row.token_id}|${row.recipient_email || ''}`);
+      }
+      if (row.id == null) return true;
       if (row.event_type === 'mfs') return !mfs.has(String(row.id));
       if (row.event_type === 'contact') return !contact.has(String(row.id));
       return true;
