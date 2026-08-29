@@ -199,9 +199,33 @@ class conference extends __yp {
             // hub_id) it comes back empty and details.filename, which the
             // notification used to render, is undefined. Carry the workspace
             // name explicitly.
+            // Who is actually IN the room, for the card's "N joined" line.
+            // `attendees` is everyone already present — the joiner was
+            // filtered out of it above — so the starter is added back: they
+            // are, by definition, in the meeting they just started.
+            //
+            // Trimmed to what the card renders (a name, which Avatar hashes
+            // for its fallback colour) rather than forwarding whole
+            // conference rows, which carry socket ids, permissions and quota.
+            //
+            // This is what lets the client tell "N joined" from "N invited":
+            // a schedule notice has an invitee list and nobody in the room,
+            // a started meeting has people in it. No extra query — both
+            // values were already in hand.
+            const roster = [...toArray(attendees), user]
+              .filter(Boolean)
+              .map((a) => ({
+                uid: a.uid,
+                name:
+                  [a.firstname, a.lastname].filter(Boolean).join(' ') ||
+                  a.username ||
+                  '',
+              }));
             const startPayload = {
               ...user, details, room_type, hub_id,
               hub_name: this.hubDisplayName(),
+              attendees: roster,
+              joined: roster.length,
             };
             await RedisStore.sendData(this.payload(startPayload, { service: 'conference.start' }), toArray(hubMembers));
           }

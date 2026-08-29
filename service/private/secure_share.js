@@ -249,6 +249,31 @@ class __secure_share extends Mfs {
   }
 
   /**
+   * Remove a share-open notification group (token + recipient) for good -- the
+   * trash button, as opposed to `mark_open_seen`, which since 2026-08-28 means
+   * only "I have read this" and leaves the row in the feed.
+   *
+   * The two were the same operation while the panel opened unread-only: marking
+   * seen filtered the row out, so it looked deleted. Now that read rows stay
+   * (Lexis), "seen" can no longer double as "gone", and this writes the separate
+   * creator_deleted_at marker that activity_get_deleted_ids filters on.
+   *
+   * A new procedure rather than a parameter on secure_share_mark_open_seen:
+   * changing that one's arity would break every existing caller the moment it
+   * was applied, MariaDB having no default parameters.
+   *
+   * Scoped server-side to the caller's own shares (creator_id), exactly like
+   * mark_open_seen -- this table is shared across every creator in yp.
+   * Endpoint: POST /secure_share.delete_open
+   */
+  async delete_open() {
+    const token_id = this.input.need('token_id');
+    const recipient_email = this.input.use('recipient_email', null) || null;
+    await this.yp.await_proc('secure_share_delete_open', this.uid, token_id, recipient_email);
+    this.output.data({ status: 'OK' });
+  }
+
+  /**
    * Turn the sender's "notify me when someone opens this" preference on or off
    * for one of their OWN links, after the link has been created.
    *

@@ -2570,6 +2570,37 @@ class __private_media extends Media {
         this.warn('[SAVE] Failed to update filesize:', error.message);
       }
 
+      // Announce the edit. Saving an editable file (note / markdown / text /
+      // diagram — all of them post media.save) wrote NO changelog row at all, so
+      // editing a shared document produced no notification for anyone (Duy
+      // 2026-08-21, issue 1). It is the same fact as an upload-over-a-file, so it
+      // reuses that event name: the client renders both as "<name> has been
+      // updated".
+      //
+      // `notify: 0` keeps the in-app notification while leaving the activity
+      // EMAIL alone: saves are frequent and nobody asked for mail here.
+      //
+      // The `/__chat__/` skip is done HERE rather than relying on
+      // changelog_write's own guard, which tests `src.ownpth` — a field that
+      // does not exist (mfs_access_node returns `ownpath`), so that guard has
+      // never actually fired for any caller. Left alone on purpose: making it
+      // work would change what every existing MFS event logs, which is a
+      // behaviour change to a working path and not this fix's business. Reported
+      // separately.
+      //
+      // Best-effort: a logging failure must never fail a save the user has
+      // already been told succeeded.
+      const chatScoped = /^\/__chat__\//.test(String(attr.ownpath || attr.file_path || ''));
+      if (!chatScoped) {
+        try {
+          // Shallow copy: changelog_write deletes `metadata` off the object it
+          // is handed, and `attr` is still read below.
+          await this.changelog_write({ src: { ...attr }, event: 'media.replace', notify: 0 });
+        } catch (e) {
+          this.warn('[SAVE] changelog_write failed:', e && e.message);
+        }
+      }
+
       if ([Attr.document].includes(old_category)) {
         try {
           await this.db.await_proc('seo_delete_index', hub_id, nid);
