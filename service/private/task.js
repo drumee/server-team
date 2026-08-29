@@ -67,11 +67,11 @@ class __private_task extends Entity {
 
   /**
    * A status key is valid when it's one of the built-in columns or the id of
-   * an existing column (task_column row) in the SAME folder scope.
+   * an existing column (task_column row) in this workspace.
    *
-   * The scope matters: built-in ids are literal status keys stored once per
-   * scope, so an unscoped lookup would accept a key that only exists on some
-   * other board.
+   * `nid` is still taken and still passed through, but task_column_get_v2
+   * resolves the single workspace scope itself now — there is one set of
+   * columns per workspace, so a key either exists here or it does not.
    */
   async _isValidStatus(status, nid) {
     if (VALID_STATUSES.includes(status)) return true;
@@ -82,9 +82,9 @@ class __private_task extends Entity {
 
   /**
    * Whether a status/column key is a "done" column (is_done = 1) in this
-   * folder scope. Completion is column-driven, so this replaces the old
-   * literal `status === 'complete'` checks — a renamed or user-created done
-   * column still counts as complete.
+   * workspace. Completion is column-driven, so this replaces the old literal
+   * `status === 'complete'` checks — a renamed or user-created done column
+   * still counts as complete.
    */
   async _isDoneColumn(status, nid) {
     try {
@@ -479,28 +479,46 @@ class __private_task extends Entity {
    * Params: nid, include_unscoped (mirror task.list), limit (default 30).
    */
   async activity() {
+    // workspace=1 → every row in the workspace, matching task.list. The board's
+    // Project Health feed is workspace-level like the board itself; '*' is
+    // task_activity_list's sentinel for it.
+    const workspace = this.input.use('workspace', 0) ? 1 : 0;
     const nid = this.input.use('nid', null);
     const include_unscoped = this.input.use('include_unscoped', 0) ? 1 : 0;
     const limit = Number(this.input.use('limit', 30)) || 30;
     const data = await this.db.await_run(
       'CALL task_activity_list(?, ?, ?)',
-      [nid, include_unscoped, limit]
+      [workspace ? '*' : nid, include_unscoped, limit]
     );
     this.output.list(data);
   }
 
   /**
-   * List tasks scoped to a folder node.
-   * Params: nid (folder node id; null/absent = legacy unscoped), include_unscoped
-   * (1 on the workspace-root view to also surface legacy nid-less tasks).
+   * List a board's tasks.
+   *
+   * Params:
+   *   workspace        1 = the WHOLE workspace, every task in this database
+   *                    regardless of the folder it was created in. This is what
+   *                    the board asks for now: tasks are workspace-level
+   *                    (Figma 43:23955), and a workspace IS a database.
+   *   nid              folder node id — folder-scoped listing. Retained for
+   *                    callers that still want one folder's tasks; ignored when
+   *                    `workspace` is set.
+   *   include_unscoped 1 also surfaces legacy nid-less tasks. Only meaningful
+   *                    for a folder-scoped call; workspace scope returns them
+   *                    anyway because it filters on nothing.
    */
   async list() {
+    const workspace = this.input.use('workspace', 0) ? 1 : 0;
     const nid = this.input.use('nid', null);
     const include_unscoped = this.input.use('include_unscoped', 0) ? 1 : 0;
+    // '*' is task_list's workspace sentinel — a sentinel rather than a third
+    // parameter because MariaDB procedures take no default arguments, so a new
+    // IN would break every existing two-argument CALL.
     // await_run (not await_proc) preserves a JS null nid when binding.
     const data = await this.db.await_run(
       'CALL task_list(?, ?)',
-      [nid, include_unscoped]
+      [workspace ? '*' : nid, include_unscoped]
     );
     this.output.list(data);
   }
