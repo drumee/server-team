@@ -36,6 +36,7 @@ const { remove_dir } = MfsTools;
 const { toArray } = utils;
 const { stringify } = JSON;
 const { writeAudit } = require("./_audit");
+const {admit: admitMobilePush} = require('../lib/mobile-push');
 
 // Workspace areas that count as EXTERNAL (shared outside the member circle).
 // Everything else in the yp.entity.area enum — private, public, personal,
@@ -927,6 +928,14 @@ class __private_hub extends Hub {
         err && err.message
       );
     }
+    await admitMobilePush({
+      type: 'hub.invite_received',
+      actor_id: this.uid,
+      hub_id: this.hub.get(Attr.id),
+      key_id: uid,
+      occurred_at: Date.now(),
+      recipient_uids: [uid],
+    });
     // Notify online members (admins with the Folder settings permission matrix
     // open) so the new member appears immediately without a manual reload.
     // Covers both callers of _grantMembership: invite() branch B (drumate

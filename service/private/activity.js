@@ -3,7 +3,21 @@
 
 const { Entity } = require('@drumee/server-core');
 const { RedisStore, Attr, toArray } = require('@drumee/server-essentials');
+const { createHash } = require('node:crypto');
 const { resolveHubInviteName } = require('../lib/hub-invite-name');
+const CONTACT_ACTIVITY_CATEGORIES = new Set([
+  'contact_refused',
+  'hub_invite',
+  'task_assigned',
+  'task_mention',
+]);
+const ROLLUP_MUTATION_CATEGORIES = new Set([
+  'chat',
+  'contact',
+  'media',
+  'teamchat',
+  'ticket',
+]);
 
 function firstValue(...values) {
   for (const value of values) {
@@ -15,9 +29,18 @@ function firstValue(...values) {
 }
 
 function mapNotificationRow(r) {
+  let keyId = r.key_id;
+  switch (r.category) {
+    case 'chat': keyId = firstValue(r.drumate_id, r.key_id); break;
+    case 'contact': keyId = firstValue(r.contact_id, r.key_id); break;
+    case 'media': keyId = firstValue(r.nid, r.hub_id, r.key_id); break;
+    case 'teamchat': keyId = firstValue(r.key_id, r.nid, r.hub_id); break;
+    case 'ticket': keyId = firstValue(r.key_id, r.hub_id); break;
+  }
   const item = {
     category: r.category,
-    key_id: r.category === 'media' ? firstValue(r.hub_id, r.key_id) : r.key_id,
+    key_id: keyId,
+    source_id: firstValue(r.key_id, r.id),
     hub_id: r.hub_id,
     nid: r.nid,
     parent_id: r.parent_id,
@@ -76,6 +99,33 @@ function mapNotificationRow(r) {
   return item;
 }
 
+function bookmarkKey(row) {
+  const event = String(row.event || '');
+  let category = String(row.category || row.event_type || event || 'unknown');
+  if (['hub_invite', 'contact_refused', 'task_assigned', 'task_mention'].includes(category)) {
+    category = 'contact';
+  } else if (event.startsWith('media.')) {
+    category = 'mfs';
+  }
+  const key = firstValue(row.key_id, row.history_id, row.id);
+  if (key === undefined) return null;
+  // A rollup's last_id advances whenever another event lands. It must not be
+  // part of the bookmark identity: otherwise a saved card silently becomes
+  // unsaved after refresh, and the durable history row created on read cannot
+  // recover the saved state. category + canonical key + hub identify the same
+  // notification stream across unread and history representations; raw MFS and
+  // contact rows already use their immutable row id as `key`. Contact events
+  // deliberately omit hub_id because their unread adapters may enrich it while
+  // activity_get_feed_all represents the same yp.contact_activity row without
+  // one. The immutable contact-activity id is sufficient and mode-stable.
+  const identity = [
+    category,
+    String(key),
+    ...(category === 'contact' ? [] : [String(row.hub_id || '')]),
+  ];
+  return createHash('sha256').update(JSON.stringify(identity)).digest('hex');
+}
+
 // Surface task fields at the top level from the nested contact_activity `data`
 // JSON so the client renders the right text and can navigate to the task,
 // without relying on the nested JSON surviving the LETC model. Handles BOTH
@@ -110,6 +160,21 @@ function flattenTaskFields(rows) {
     }
   }
   return rows;
+}
+
+function mapTaskNotificationRow(r) {
+  const hubId = firstValue(r.task_hub_id, r.hub_id);
+  const nodeId = firstValue(r.task_nid, r.nid);
+  return {
+    category: r.event,
+    key_id: String(r.id),
+    hub_id: hubId,
+    nid: nodeId,
+    filename: r.task_title || '',
+    last_id: r.id,
+    cnt: 1,
+    ctime: firstValue(r.timestamp, r.ctime),
+  };
 }
 
 // Shape a hub-invite row (yp.contact_activity 'hub_invite_received') into the
@@ -237,24 +302,12 @@ class MfsActivity extends Entity {
 
     this.debug(`[MFS_ACTIVITY] Marking all read for user ${this.uid}, last_id: ${lastId}`);
 
-    const result = await this._callUserProc('mfs_mark_all_read', this.uid, lastId);
-    const data = toArray(result)[0];
-
-    // "Mark all as read" must also clear share-open notifications, which ride the
-    // feed via secure_share_open_feed / creator_seen_at (not mfs_mark_all_read).
-    // Best-effort — never fail the whole mark-all if this errors.
-    try {
-      await this.yp.await_proc('secure_share_mark_all_open_seen', this.uid);
-    } catch (e) {
-      this.warn('[MFS_ACTIVITY] mark_all_read: secure_share_mark_all_open_seen failed', e && e.message);
-    }
-
-    // "Mark all as read" must also persist-clear the pinned rollups
+    // Snapshot and clear rollups BEFORE mfs_mark_all_read advances P2P pointers;
+    // otherwise direct-chat rows disappear before durable history captures them.
     // (media/chat/teamchat/contact/ticket) — otherwise they reappear on reload.
-    // Reuse the already-tested procs: enumerate with notification_center_next,
-    // then notification_dismiss each with the same per-category key resolution the
-    // individual (trash-button) dismiss uses. Server-side loop so the client makes
-    // one call. Best-effort per rollup — never fail the whole mark-all.
+    // Reuse the already-tested procs: enumerate with notification_center_next.
+    // Read-capable rollups snapshot privacy-safe history before advancing their
+    // pointers; media/contact retain their existing clear behavior.
     try {
       const rollups = toArray(await this._callUserProc('notification_center_next'));
       for (const r of rollups) {
@@ -269,20 +322,42 @@ class MfsActivity extends Entity {
           default:         continue; // only rollup categories
         }
         if (!keyId) continue;
-        try {
+        const category = String(r.category);
+        const args = [
+          category,
+          String(keyId),
+          String(r.hub_id || ''),
+          parseInt(r.last_id || 0),
+        ];
+        if (['chat', 'teamchat', 'ticket'].includes(category)) {
           await this._callUserProc(
-            'notification_dismiss',
-            String(r.category),
-            String(keyId),
-            String(r.hub_id || ''),
-            parseInt(r.last_id || 0)
+            'notification_read',
+            ...args,
+            parseInt(r.ctime || 0),
           );
-        } catch (e) {
-          this.warn('[MFS_ACTIVITY] mark_all_read: rollup dismiss failed', r.category, e && e.message);
+        } else {
+          await this._callUserProc('notification_dismiss', ...args);
         }
       }
     } catch (e) {
-      this.warn('[MFS_ACTIVITY] mark_all_read: rollup enumerate failed', e && e.message);
+      // Do not advance the global MFS/P2P pointers after an enumerate,
+      // snapshot, or per-rollup mutation failure. That would make unread chat
+      // disappear without its durable history row while still reporting
+      // success to the client.
+      this.warn('[MFS_ACTIVITY] mark_all_read: rollup phase failed', e && e.message);
+      return this.exception.server('MARK_ALL_READ_FAILED');
+    }
+
+    const result = await this._callUserProc('mfs_mark_all_read', this.uid, lastId);
+    const data = toArray(result)[0];
+
+    // "Mark all as read" must also clear share-open notifications, which ride the
+    // feed via secure_share_open_feed / creator_seen_at (not mfs_mark_all_read).
+    // Best-effort — never fail the whole mark-all if this errors.
+    try {
+      await this.yp.await_proc('secure_share_mark_all_open_seen', this.uid);
+    } catch (e) {
+      this.warn('[MFS_ACTIVITY] mark_all_read: secure_share_mark_all_open_seen failed', e && e.message);
     }
 
     if (data && data.status === 'ok') {
@@ -329,17 +404,15 @@ class MfsActivity extends Entity {
     if (unreadOnly) {
       result = await this._callUserProc('mfs_get_activity_feed', this.uid, page);
     } else {
-      // Fail-safe: if activity_get_feed_all isn't present on this DB instance
-      // yet (schema not applied), degrade to the legacy unified log instead of
-      // erroring out the whole panel. Worst case = prior "off" behaviour.
-      try {
-        result = await this._callUserProc('activity_get_feed_all', this.uid, page);
-      } catch (e) {
-        this.warn('[ACTIVITY] activity_get_feed_all unavailable, falling back to activity_get_log', e);
-        result = await this._callUserProc('activity_get_log', this.uid, page);
-      }
+      // Full-feed callers require real read history. Failing closed is safer
+      // than silently returning the legacy unread/dismissed log under an OFF
+      // toggle, which would misrepresent the selected contract.
+      result = await this._callUserProc('activity_get_feed_all', this.uid, page);
     }
     result = toArray(result);
+    for (const row of result) {
+      if (row) row.feed_page_source = 'base';
+    }
     if (filter === 'mentions') {
       result = result.filter((row) => row.event !== 'media.share');
     } else if (filter === 'shares') {
@@ -431,6 +504,9 @@ class MfsActivity extends Entity {
           // Item skeleton + sort read `timestamp` first, then `ctime`; rollups
           // only carry ctime, so mirror it to timestamp for correct ordering.
           if (r.timestamp == null) r.timestamp = r.ctime;
+          // Rollups come from unread-only procedures and historically omitted
+          // is_read. The unified mobile contract must not guess their state.
+          if (r.is_read == null) r.is_read = 0;
           result.push(r);
         }
         // Task @-mentions / assignments and admin-console storage alerts live
@@ -480,7 +556,26 @@ class MfsActivity extends Entity {
     flattenTaskFields(result);
     flattenTaskColumnChange(result);
 
-    this.output.list(result);
+    this.output.list(await this._decorateBookmarks(result));
+  }
+
+  async _decorateBookmarks(rows) {
+    let saved = [];
+    try {
+      saved = toArray(await this._callUserProc(
+        'notification_activity_bookmark_list',
+      ));
+    } catch (e) {
+      this.debug('[ACTIVITY] bookmark list unavailable', e && e.message);
+    }
+    const savedKeys = new Set(saved.map(row => row && row.bookmark_key).filter(Boolean));
+    return rows.map(row => {
+      const key = bookmarkKey(row);
+      return {
+        ...row,
+        ...(key ? {bookmark_key: key, is_saved: savedKeys.has(key) ? 1 : 0} : {}),
+      };
+    });
   }
 
   /**
@@ -666,15 +761,20 @@ class MfsActivity extends Entity {
    */
   async notification_dismiss() {
     const category = String(this.input.need('category'));
-    const key_id = String(this.input.need('key_id'));
-    const hub_id = String(this.input.use('hub_id') || '');
-    const last_id = parseInt(this.input.use('last_id') || 0);
+    const keyId = String(this.input.need('key_id'));
+    const hubId = String(this.input.use('hub_id') || '');
+    const lastId = Number(this.input.need('last_id'));
+    if (category !== 'contact' && (!Number.isSafeInteger(lastId) || lastId < 1)) {
+      return this.exception.bad_request('INVALID_DATA');
+    }
+    const row = await this._visibleNotificationRollup(category, keyId, hubId, lastId);
+    if (!row) return this.exception.bad_request('INVALID_DATA');
     const result = await this._callUserProc(
       'notification_dismiss',
       category,
-      key_id,
-      hub_id,
-      last_id
+      String(row.key_id),
+      String(row.hub_id || ''),
+      Number(row.last_id || 0),
     );
     const data = toArray(result)[0] || {};
     this.output.data(data);
@@ -696,7 +796,29 @@ class MfsActivity extends Entity {
    * Endpoint: POST /activity.list
    */
   async list() {
+    // Web Activity owns task assignment/mention queries separately. Keeping
+    // them out of this legacy priority-rollup endpoint prevents double badge
+    // counts; the chronological mobile surface uses activity.get_feed instead.
     this.output.list(await this._notificationRollups());
+  }
+
+  async _taskNotificationRollups() {
+    const rows = [];
+    for (const proc of [
+      'contact_task_assigned_unread',
+      'contact_task_mention_unread',
+    ]) {
+      try {
+        rows.push(...toArray(await this.yp.await_proc(proc, this.uid)));
+      } catch (e) {
+        this.debug(`[ACTIVITY] ${proc} unavailable`, e && e.message);
+      }
+    }
+    flattenTaskFields(rows);
+    return rows
+      .filter(row => row && row.id &&
+        (row.event === 'task_assigned' || row.event === 'task_mention'))
+      .map(mapTaskNotificationRow);
   }
 
   /**
@@ -734,13 +856,74 @@ class MfsActivity extends Entity {
     ];
   }
 
+  async _visibleNotificationRollup(category, keyId, hubId, lastId) {
+    if (!ROLLUP_MUTATION_CATEGORIES.has(category)) return null;
+    const rows = await this._notificationRollups();
+    return rows.find(row => (
+      row
+      && String(row.category || '') === category
+      && String(row.key_id || '') === keyId
+      && String(row.hub_id || '') === hubId
+      && (category === 'contact' || Number(row.last_id || 0) === lastId)
+    )) || null;
+  }
+
   /**
    * Alias of `notification_dismiss` under the consolidated activity.* API.
    * Hides the rollup row from the activity feed.
    * Endpoint: POST /activity.dismiss
    */
   async dismiss_rollup() {
+    const category = String(this.input.need('category'));
+    if (CONTACT_ACTIVITY_CATEGORIES.has(category)) {
+      const activityId = Number(this.input.need('key_id'));
+      if (!Number.isSafeInteger(activityId) || activityId < 1) {
+        return this.exception.bad_request('INVALID_DATA');
+      }
+      const result = await this._callUserProc(
+        'contact_activity_dismiss',
+        this.uid,
+        activityId,
+      );
+      return this.output.data(toArray(result)[0] || {});
+    }
     return this.notification_dismiss();
+  }
+
+  async dismiss_history() {
+    const historyId = Number(this.input.need('history_id'));
+    if (!Number.isSafeInteger(historyId) || historyId < 1) {
+      return this.exception.bad_request('INVALID_DATA');
+    }
+    const result = await this._callUserProc(
+      'notification_history_hide',
+      historyId,
+    );
+    return this.output.data(toArray(result)[0] || {});
+  }
+
+  async bookmark_add() {
+    const bookmarkKey = String(this.input.need('bookmark_key'));
+    if (!/^[a-f0-9]{64}$/.test(bookmarkKey)) {
+      return this.exception.bad_request('INVALID_DATA');
+    }
+    const result = await this._callUserProc(
+      'notification_activity_bookmark_add',
+      bookmarkKey,
+    );
+    return this.output.data(toArray(result)[0] || {});
+  }
+
+  async bookmark_remove() {
+    const bookmarkKey = String(this.input.need('bookmark_key'));
+    if (!/^[a-f0-9]{64}$/.test(bookmarkKey)) {
+      return this.exception.bad_request('INVALID_DATA');
+    }
+    const result = await this._callUserProc(
+      'notification_activity_bookmark_remove',
+      bookmarkKey,
+    );
+    return this.output.data(toArray(result)[0] || {});
   }
 
   /**
@@ -752,15 +935,28 @@ class MfsActivity extends Entity {
    */
   async read() {
     const category = String(this.input.need('category'));
-    const key_id = String(this.input.need('key_id'));
-    const hub_id = String(this.input.use('hub_id') || '');
-    const last_id = parseInt(this.input.use('last_id') || 0);
+    const keyId = String(this.input.need('key_id'));
+    if (CONTACT_ACTIVITY_CATEGORIES.has(category)) {
+      const activityId = Number(keyId);
+      if (!Number.isSafeInteger(activityId) || activityId < 1) {
+        return this.exception.bad_request('INVALID_DATA');
+      }
+      return this.output.data({status: 'ok', changed: 0});
+    }
+    const hubId = String(this.input.use('hub_id') || '');
+    const lastId = Number(this.input.need('last_id'));
+    if (!Number.isSafeInteger(lastId) || lastId < 1) {
+      return this.exception.bad_request('INVALID_DATA');
+    }
+    const row = await this._visibleNotificationRollup(category, keyId, hubId, lastId);
+    if (!row) return this.exception.bad_request('INVALID_DATA');
     const result = await this._callUserProc(
       'notification_read',
       category,
-      key_id,
-      hub_id,
-      last_id
+      String(row.key_id),
+      String(row.hub_id || ''),
+      Number(row.last_id || 0),
+      Number(row.ctime || 0),
     );
     const data = toArray(result)[0] || {};
     this.output.data(data);
@@ -793,4 +989,5 @@ class MfsActivity extends Entity {
   }
 }
 
+MfsActivity.bookmarkKey = bookmarkKey;
 module.exports = MfsActivity;

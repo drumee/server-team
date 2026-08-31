@@ -23,6 +23,7 @@ const { remove_node, move_node, copy_node } = MfsTools;
 const { stampAuthorIdentity } = require("../lib/message-author");
 const { movePlanRows } = require("./_move-plan");
 const { memberCan, CAN_CHAT } = require("../lib/member-capability");
+const {admit: admitMobilePush} = require('../lib/mobile-push');
 
 const { stringify, parse: jsonParse } = JSON;
 const { isEmpty } = require("lodash");
@@ -1639,6 +1640,16 @@ class __private_channel extends Entity {
         );
       }
     }
+
+    await admitMobilePush({
+      type: 'channel.post',
+      actor_id: this.uid,
+      hub_id,
+      key_id: message_id,
+      occurred_at: data.ctime,
+      scope_nid: nid || '',
+      recipient_uids: toArray(mention_ids),
+    });
 
     this.output.data(data);
   }

@@ -29,7 +29,7 @@
       "doc": "Mark all MFS notifications as read for current user. Updates the mfs_ack table with the last read changelog ID. If no last_id provided, uses the latest changelog ID from database.",
       "scope": "hub",
       "permission": {
-        "src": "write"
+        "src": "read"
       },
       "params": {
         "last_id": {
@@ -74,7 +74,7 @@
     },
 
     "get_feed": {
-      "doc": "Get paginated activity feed with read/unread status. Returns MFS changelog entries with pagination (45 items per page by default). Each item includes read status based on user's mfs_ack.last_read_id.",
+      "doc": "Get the caller's paginated unified notification feed. unread_only=1 returns unread rows; unread_only=0 includes read history. The response may contain MFS, contact, task, share, and notification-rollup rows, so event-specific fields are optional.",
       "scope": "hub",
       "permission": {
         "src": "read"
@@ -85,6 +85,18 @@
           "required": false,
           "default": 1,
           "description": "Page number for pagination (45 items per page)"
+        },
+        "filter": {
+          "type": "string",
+          "required": false,
+          "default": "all",
+          "description": "Server feed selector. Mobile uses all and applies the visual Files/Task/Meeting/Chat/Other grouping to decoded rows."
+        },
+        "unread_only": {
+          "type": "integer",
+          "required": false,
+          "default": 0,
+          "description": "1 returns unread rows only; 0 returns read and unread rows."
         }
       },
       "returns": {
@@ -96,6 +108,26 @@
             "id": {
               "type": "integer",
               "description": "Changelog entry ID"
+            },
+            "key_id": {
+              "type": "string",
+              "description": "Stable notification rollup key when the item is a rollup"
+            },
+            "category": {
+              "type": "string",
+              "description": "Notification rollup category when present"
+            },
+            "event": {
+              "type": "string",
+              "description": "Domain event name when present"
+            },
+            "event_type": {
+              "type": "string",
+              "description": "Underlying feed family, for example mfs or contact"
+            },
+            "feed_page_source": {
+              "type": "string",
+              "description": "base for a row that counts toward the authoritative 45-row database page; omitted on page-one merged extras"
             },
             "action": {
               "type": "string",
@@ -109,17 +141,60 @@
               "type": "string",
               "description": "Name of the file/folder"
             },
+            "filename": {
+              "type": "string",
+              "description": "Resolved item, task, workspace, or folder display name when present"
+            },
+            "item_filename": {
+              "type": "string",
+              "description": "Single uploaded item name when present"
+            },
+            "hub_id": {
+              "type": "string",
+              "description": "Workspace identifier when present"
+            },
+            "parent_id": {
+              "type": "string",
+              "description": "Parent node identifier when present"
+            },
+            "last_id": {
+              "type": "integer",
+              "description": "Latest rollup acknowledgement target when present"
+            },
+            "cnt": {
+              "type": "integer",
+              "description": "Rollup item count when present"
+            },
+            "timestamp": {
+              "type": "integer",
+              "description": "Unix timestamp used by unified-feed rows"
+            },
             "author_id": {
               "type": "string",
               "description": "User ID who performed the action"
             },
+            "author_firstname": { "type": "string" },
+            "author_lastname": { "type": "string" },
+            "firstname": { "type": "string" },
+            "lastname": { "type": "string" },
+            "fullname": { "type": "string" },
+            "hub_name": { "type": "string" },
+            "link_label": { "type": "string" },
+            "task_title": { "type": "string" },
+            "meeting_action": { "type": "string" },
+            "history_id": { "type": "integer" },
+            "bookmark_key": { "type": "string" },
+            "is_saved": { "type": "integer" },
+            "src": { "type": "object" },
+            "dest": { "type": "object" },
+            "data": { "type": "object" },
             "ctime": {
               "type": "integer",
               "description": "Unix timestamp when action occurred"
             },
             "is_read": {
               "type": "integer",
-              "description": "Read status (0 = unread, 1 = read)"
+              "description": "Read status (0 = unread, 1 = read). Merged unread rollups are explicitly 0."
             }
           }
         }
@@ -342,7 +417,7 @@
       "doc": "Dismiss a single activity notification so it no longer appears in the feed.",
       "scope": "hub",
       "permission": {
-        "src": "write"
+        "src": "read"
       },
       "params": {
         "changelog_id": {
@@ -370,7 +445,7 @@
       "doc": "Dismiss a single contact_activity row (hub invite, contact invite, etc.) so it no longer appears in the activity feed. Stamps yp.contact_activity.dismissed_at without deleting the underlying audit row.",
       "scope": "hub",
       "permission": {
-        "src": "write"
+        "src": "read"
       },
       "params": {
         "activity_id": {
@@ -410,7 +485,7 @@
     },
 
     "list": {
-      "doc": "Single-call notification feed combining notification_center rollups + standalone hub-invite rows. Returns a flat array; client renders by `category` (chat | contact | media | teamchat | ticket | hub_invite).",
+      "doc": "Legacy priority notification feed combining notification_center rollups, hub-invite rows, refused invitations, and workspace moves. Task assignment/mention rows are intentionally excluded because the Web consumer fetches those sources separately; mobile chronology uses get_feed.",
       "scope": "hub",
       "permission": { "src": "read" },
       "params": {},
@@ -443,20 +518,69 @@
         "category": { "type": "string", "required": true },
         "key_id": { "type": "string", "required": true },
         "hub_id": { "type": "string", "required": false },
-        "last_id": { "type": "integer", "required": false, "default": 0 }
+        "last_id": { "type": "integer", "required": true }
       },
       "returns": { "type": "object" }
+    },
+
+    "dismiss_history": {
+      "doc": "Hide one privacy-safe rollup history row from the caller's full Activity feed.",
+      "scope": "hub",
+      "permission": { "src": "read" },
+      "params": {
+        "history_id": { "type": "integer", "required": true }
+      },
+      "returns": {
+        "type": "object",
+        "properties": {
+          "status": { "type": "string" },
+          "history_id": { "type": "integer" }
+        }
+      }
+    },
+
+    "bookmark_add": {
+      "doc": "Save one visible Activity item in the caller's personal notification bookmark store. The key is a server-generated SHA-256 activity identity.",
+      "scope": "hub",
+      "permission": { "src": "read" },
+      "params": {
+        "bookmark_key": { "type": "string", "required": true }
+      },
+      "returns": {
+        "type": "object",
+        "properties": {
+          "bookmark_key": { "type": "string" },
+          "is_saved": { "type": "integer" }
+        }
+      }
+    },
+
+    "bookmark_remove": {
+      "doc": "Remove one Activity item from the caller's personal notification bookmark store.",
+      "scope": "hub",
+      "permission": { "src": "read" },
+      "params": {
+        "bookmark_key": { "type": "string", "required": true }
+      },
+      "returns": {
+        "type": "object",
+        "properties": {
+          "bookmark_key": { "type": "string" },
+          "is_saved": { "type": "integer" }
+        }
+      }
     },
 
     "read": {
       "doc": "Mark a rollup as read (advance read pointer) without hiding it. For chat/teamchat/ticket this is identical to dismiss; for media we only advance mfs_ack; for contact this is a no-op (use dismiss to hide).",
       "scope": "hub",
-      "permission": { "src": "write" },
+      "permission": { "src": "read" },
       "params": {
         "category": { "type": "string", "required": true },
         "key_id": { "type": "string", "required": true },
         "hub_id": { "type": "string", "required": false },
-        "last_id": { "type": "integer", "required": false, "default": 0 }
+        "last_id": { "type": "integer", "required": true },
+        "ctime": { "type": "integer", "required": false, "default": 0 }
       },
       "returns": { "type": "object" }
     },
@@ -498,8 +622,7 @@
         },
         "last_id": {
           "type": "integer",
-          "required": false,
-          "default": 0,
+          "required": true,
           "description": "Latest ack target (ref_ctime / sys_id / changelog_id)"
         }
       },

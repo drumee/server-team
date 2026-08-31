@@ -19,6 +19,7 @@ const { Attr, RedisStore, toArray } = require('@drumee/server-essentials');
 const { isEmpty } = require('lodash');
 const { Entity } = require('@drumee/server-core');
 const { notifyTaskEvent } = require('../lib/activity-mailer');
+const {admit: admitMobilePush} = require('../lib/mobile-push');
 
 // Built-in Kanban columns. Custom columns live in the task_column table and
 // use their row id as the task.status key — see _isValidStatus().
@@ -167,6 +168,15 @@ class __private_task extends Entity {
       taskId: task_id,
       kind: kind === 'reply' ? 'reply' : 'mention',
     }).catch((e) => this.warn('[task._notifyMentions] mail failed:', e && e.message));
+    await admitMobilePush({
+      type: 'task.mention',
+      actor_id: this.uid,
+      hub_id,
+      key_id: task_id,
+      occurred_at: Date.now(),
+      scope_nid: meta.nid || '',
+      recipient_uids: uids,
+    });
   }
 
   /**
@@ -230,6 +240,15 @@ class __private_task extends Entity {
       taskId: task_id,
       kind: 'assigned',
     }).catch((e) => this.warn('[task._notifyAssignees] mail failed:', e && e.message));
+    await admitMobilePush({
+      type: 'task.assigned',
+      actor_id: this.uid,
+      hub_id,
+      key_id: task_id,
+      occurred_at: Date.now(),
+      scope_nid: meta.nid || '',
+      recipient_uids: uids,
+    });
   }
 
   /**
