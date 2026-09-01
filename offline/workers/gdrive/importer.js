@@ -118,6 +118,17 @@ class GoogleDriveImporter {
     this.processedFiles = 0;
     this.totalFolders = 0;
     this.totalFiles = 0;
+    // Bytes durably written by THIS attempt, for the Aha-moment page's
+    // "Avg GB migrated/user". See the increment site (after fsp.copyFile) for
+    // why it's counted there and not earlier.
+    //
+    // A RESUMED ATTEMPT UNDER-REPORTS. The resume set (_done) lives in Redis
+    // and survives a crash, but this counter does not -- so files stored by an
+    // earlier attempt of the same job are skipped here and their bytes are
+    // lost from the total. Bounded, rare (it needs a crash mid-migration) and
+    // accepted: carrying per-file sizes in the Redis resume set to close it
+    // would cost more than the figure is worth.
+    this.totalBytes = 0;
     this._cancelled = false;
     // Token cache populated lazily; refreshed when expires_at - safety < now.
     this._tokenCache = null;          // { access_token, expires_at }
@@ -338,6 +349,7 @@ class GoogleDriveImporter {
       processed_files: this.processedFiles,
       total_files: this.totalFiles,
       total_folders: this.totalFolders,
+      total_bytes: this.totalBytes,
       errors: this.errors,                              // capped sample (≤ MAX_ERRORS)
       errors_count: this.errorCount,                    // true total
       errors_truncated: this.errorCount > this.errors.length,
@@ -973,6 +985,12 @@ class GoogleDriveImporter {
       const base = join(home_dir, '__storage__', nodeId);
       await fsp.mkdir(base, { recursive: true });
       await fsp.copyFile(source, join(base, `orig.${ext}`));
+      // AFTER copyFile, not before it: the DB row alone is not the durable
+      // write, and a throw from mkdir/copyFile propagates to
+      // _importItemGuarded's catch, which leaves processedFiles alone. Counting
+      // bytes any earlier lets volume drift above what files actually landed --
+      // which is the "Avg GB migrated/user" card overstating, silently.
+      this.totalBytes += Number(item.size || stat.size || 0);
     });
     // Free the scratch copy immediately after the durable write so peak /tmp
     // stays at ~one file instead of the whole tree — a 10k-file import would

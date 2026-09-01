@@ -194,7 +194,8 @@ test('mark-all fails closed before the global pointer after a rollup failure', a
   const failure = {status: 'error'};
   const context = {
     uid: 'current-user',
-    input: {get: () => 0},
+    // `use('bucket')` returns undefined -> unscoped clear, the path this test pins.
+    input: {get: () => 0, use: () => undefined},
     debug: () => undefined,
     warn: () => undefined,
     exception: {server: code => ({...failure, code})},

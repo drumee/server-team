@@ -19,6 +19,8 @@ const { Attr, RedisStore, Cache, toArray } = require("@drumee/server-essentials"
 const { isArray, isEmpty, map } = require("lodash");
 
 const __yp = require("./yp");
+const { roomDeadline, clearRoomStart } = require("./lib/meeting-limit");
+const { markFeatureUsage } = require("./lib/feature-usage");
 class conference extends __yp {
 
   /**
@@ -95,6 +97,39 @@ class conference extends __yp {
 
     ({ room_id } = p[0]);
 
+    // Core function -> the Meeting bar and Avg meetings/user.
+    //
+    // DEDUPED PER ROOM, and this is the whole subtlety. conference.join is
+    // per SOCKET: a participant who reloads the tab joins again, and so does
+    // one whose connection drops and recovers. Counting raw joins reports
+    // several meetings for one meeting attended. The dedupe key collapses
+    // them for as long as the batch window holds -- which does not span a
+    // meeting that outlives it, so a very long call rejoined an hour later
+    // will count twice. That is a known and bounded over-count; closing it
+    // properly needs a persistent (uid, room_id) record, which is a second
+    // table for a rounding error on one card.
+    //
+    // AFTER the permission check: a refused join is not attendance.
+    //
+    // GUESTS DO NOT FALL OUT ON THEIR OWN -- this explicit skip is required.
+    // The `who` guard inside markFeatureUsage only catches a FALSY uid, but
+    // the DMZ guest account is a real, truthy `yp.drumate` row (id = the
+    // guest_id sysconf value), and metadata.uid = regUser.id || this.uid
+    // resolves to exactly that id for an anonymous join. conference.join is
+    // declared "src": "anonymous" in acl/conference.json, so this is the
+    // common path for a DMZ join, not an edge case: without the skip below,
+    // every anonymous participant's join gets attributed to the one shared
+    // guest account, and "Avg meetings/user" is distorted by one row with an
+    // enormous hits count. nobody_id is excluded for the same reason, should
+    // it ever reach here.
+    const _extUids = [Cache.getSysConf(Attr.guest_id), Cache.getSysConf("nobody_id")];
+    if (!_extUids.includes(metadata.uid)) {
+      markFeatureUsage(this, "meeting", {
+        uid: metadata.uid,
+        dedupe: room_id || "unknown",
+      });
+    }
+
     let user = {};
     let host = null;
     let attendees = p.filter(function (e) {
@@ -164,9 +199,33 @@ class conference extends __yp {
             // hub_id) it comes back empty and details.filename, which the
             // notification used to render, is undefined. Carry the workspace
             // name explicitly.
+            // Who is actually IN the room, for the card's "N joined" line.
+            // `attendees` is everyone already present — the joiner was
+            // filtered out of it above — so the starter is added back: they
+            // are, by definition, in the meeting they just started.
+            //
+            // Trimmed to what the card renders (a name, which Avatar hashes
+            // for its fallback colour) rather than forwarding whole
+            // conference rows, which carry socket ids, permissions and quota.
+            //
+            // This is what lets the client tell "N joined" from "N invited":
+            // a schedule notice has an invitee list and nobody in the room,
+            // a started meeting has people in it. No extra query — both
+            // values were already in hand.
+            const roster = [...toArray(attendees), user]
+              .filter(Boolean)
+              .map((a) => ({
+                uid: a.uid,
+                name:
+                  [a.firstname, a.lastname].filter(Boolean).join(' ') ||
+                  a.username ||
+                  '',
+              }));
             const startPayload = {
               ...user, details, room_type, hub_id,
               hub_name: this.hubDisplayName(),
+              attendees: roster,
+              joined: roster.length,
             };
             await RedisStore.sendData(this.payload(startPayload, { service: 'conference.start' }), toArray(hubMembers));
           }
@@ -213,6 +272,20 @@ class conference extends __yp {
       attendees,
       user
     }
+
+    // Group-meeting duration cap. Absent for 1:1 calls, unlimited plans, and
+    // any install that does not sell — so the three extra keys appear only
+    // when a cap genuinely applies, and a client that gets none simply has no
+    // deadline. Governed by the WORKSPACE OWNER's plan, which is what gives
+    // every participant (a DMZ guest included, who has no plan of their own)
+    // the same answer. See service/lib/meeting-limit.
+    const deadline = await roomDeadline(this, {
+      room_id,
+      type: room_type,
+      owner_id: this.hub.get(Attr.owner_id),
+    });
+    if (deadline) Object.assign(data, deadline);
+
     //this.debug("AAA:159", data)
     this.output.data(data);
 
@@ -259,6 +332,18 @@ class conference extends __yp {
       } catch (e) {
         if (this.warn) this.warn("conference.leave: notify peers failed", e && e.message);
       }
+    } else {
+      // LAST ONE OUT — the room is now empty, so drop its duration-cap start
+      // time. `room_id` for a workspace meeting is the workspace node id and
+      // is reused by every meeting that workspace ever holds, so a start time
+      // left behind here is inherited by the next one: it would open already
+      // past its deadline and be killed on the spot. See
+      // service/lib/meeting-limit (clearRoomStart).
+      //
+      // `remaining` is conference_leave's own answer about who is still in the
+      // room, minus this caller — the same list the notify above uses — so
+      // "nobody to tell" and "nobody left" are by definition the same fact.
+      await clearRoomStart(room_id);
     }
     let peers;
     if (!r) {

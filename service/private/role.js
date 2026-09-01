@@ -819,7 +819,9 @@ class __private_adminpanel extends Mfs {
     if (isEmpty(profile.areacode) && (otp == 'sms')) return this.output.status('AREACODE_EMPTY');
     if ((profile.areacode == "") && (otp == 'sms')) return this.output.status('AREACODE_EMPTY');
 
-    profile.lang = this.input.ua_language()
+    // Product default is English — do not stamp the INVITER's browser
+    // language onto the invited member's account.
+    profile.lang = 'en'
     profile.privilege = Remit.dom_member
     let org = await this.yp.await_proc('organisation_get', this.user.domain_id())
     orgid = org.id;

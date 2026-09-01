@@ -1021,6 +1021,32 @@ class __private_payment extends Entity {
     OverLimit.invalidate(dom);
     this.output.data({ status: 'OK', snoozed_until: until });
   }
+
+  // upgrade_nudge_state: the desk's one boot-time question — "does THIS
+  // member get an upgrade nudge right now?". All three trigger families
+  // (storage / seats / age) and both suppression rules (once per threshold,
+  // shared daily cap) are decided server-side in lib/upgrade-nudge + the yp
+  // gate proc; a granted answer is already MARKED shown, so the FE renders
+  // it unconditionally and never writes anything back.
+  async upgrade_nudge_state() {
+    const UpgradeNudge = require('../lib/upgrade-nudge');
+    if (!UpgradeNudge.enabled()) {
+      return this.output.data({ enabled: 0, show: 0 });
+    }
+    const res = await UpgradeNudge.grant(
+      this.yp, this.user.domain_id(), this.uid
+    );
+    if (!res) return this.output.data({ enabled: 1, show: 0 });
+    this.output.data({
+      enabled: 1,
+      show: 1,
+      trigger: res.trigger,
+      family: res.family,
+      plan: res.plan,
+      target_plan: res.target_plan,
+      ...res.numbers,
+    });
+  }
 }
 
 module.exports = __private_payment;

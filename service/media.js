@@ -24,6 +24,8 @@ const { writeAudit } = require("./private/_audit");
 const { secureShareWriteVerdict, secureShareCapVerdict, secureShareCapPrivilege } = require("./lib/secure-share-write-guard");
 const { memberCan, CAN_DOWNLOAD } = require("./lib/member-capability");
 const { notifyHubActivity } = require("./lib/activity-mailer");
+const { markFunnelMilestone } = require("./lib/funnel-milestone");
+const { markFeatureUsage } = require("./lib/feature-usage");
 const { DENIED } = Events;
 const {
   BATCH_FILE,
@@ -445,6 +447,23 @@ class __media extends Mfs {
       node = await this.db.await_proc("mfs_access_node", uid, node.nid);
     }
     await this.changelog_write({ src: node, event: "media.new" });
+
+    // Activation funnel -> "Create folder". Reported AFTER the changelog write,
+    // like the upload leg in store(), so the two stages are recorded in the
+    // same order the user performed them.
+    //
+    // EVERY folder create reports; the first one is the only one that lands.
+    // yp.funnel_milestone is keyed (uid, milestone), so this is idempotent in
+    // the database rather than guarded here.
+    //
+    // The folders an account is BORN with are not counted, and need no
+    // exclusion: Photos/Documents/Videos/Musics come from the drumate factory
+    // template and "Personal Workspace" from loby's make_default_folers, all
+    // of which call mfs_make_dir procedure-to-procedure and never reach this
+    // service at all. Only a folder a user actually asked for gets here.
+    //
+    // Never awaited: the folder already exists and its response is owed.
+    markFunnelMilestone(this, "folder");
 
     if (/^(.|.+\/.+| )$/.test(dirname)) {
       this.exception.user("INVALID_FILENAME");
@@ -1225,6 +1244,32 @@ class __media extends Mfs {
     // media.replace is not an upload the board counts, so it is not reported.
     if (service === "media.new") {
       require('./private/_referral_live').pushReferralLive(this, this.uid);
+      // Activation funnel -> "Upload file", and -> "Activated" if this user
+      // had already created a folder. Which of those two it is, is decided by
+      // yp.funnel_mark, not here. Inside the media.new branch for the same
+      // reason the referral push is: a replace is not a first upload.
+      //
+      // THE /__chat__/ TEST IS THE SAME ONE changelog_write APPLIES, repeated
+      // rather than inherited. Chat attachments are stored by this very
+      // store(), so they arrive here like any other file; changelog_write
+      // returns early for them and leaves no upload row, and the funnel has to
+      // agree with that or the two would count different populations. The
+      // stage means "put a file in their workspace", which sending one in a
+      // chat message is not.
+      const ownpth = (res && (res.ownpth || res.ownpath)) || "";
+      if (!/^\/__chat__\//.test(ownpth)) {
+        markFunnelMilestone(this, "upload");
+        // Core function -> the Upload bar, Total uploads and the GB figure.
+        // INSIDE the same /__chat__/ guard on purpose: the funnel stage and
+        // the adoption bar have to count one population, or the two pages
+        // disagree about who has uploaded. `volume` is the file's own size --
+        // cumulative bytes uploaded, which is what the page reports, and NOT
+        // a live disk footprint (a later delete does not take it back).
+        markFeatureUsage(this, "upload", {
+          hits: 1,
+          volume: Number(res && res.filesize) || 0,
+        });
+      }
     }
 
     let hub_id = this.hub.get(Attr.id);
@@ -1435,8 +1480,16 @@ class __media extends Mfs {
   /**
    * 
    */
+  /**
+   * `opt.notify === 0` writes the changelog row (so the in-app notification is
+   * produced) WITHOUT the activity email. Added for the editor-save path, which
+   * had no changelog row at all until 2026-08-21 and therefore produced no
+   * notification: giving it one is what Duy asked for, but silently turning
+   * every note save into a hub-wide email to offline members is a channel nobody
+   * asked for. Every existing caller omits the flag and mails exactly as before.
+   */
   async changelog_write(opt) {
-    let { src, dest, event } = opt;
+    let { src, dest, event, notify } = opt;
     let { metadata, md5Hash } = src;
     if (!md5Hash && metadata && metadata.md5Hash) {
       src.md5Hash = metadata.md5Hash;
@@ -1468,7 +1521,7 @@ class __media extends Mfs {
       this.warn("changelog_write failed:", e)
     }
     this.__changelog = changelog
-    if (changelog) {
+    if (changelog && notify !== 0) {
       // Email leg of the notification fan-out: offline members only, one
       // mail per hub per cooldown window. Deliberately not awaited — mail
       // must never delay or fail the file operation.

@@ -25,6 +25,51 @@
       "errors": []
     },
 
+    "unread_counts": {
+      "doc": "Unread notification count per Notification Center tab, for the tab-bar badges. Counts one per notification row the user sees - not the sum of each rollup's event count - so the tab badges agree with the bell badge. Every underlying source is best-effort: one that fails or is not yet deployed contributes zero instead of failing the call.",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "params": {},
+      "returns": {
+        "type": "object",
+        "properties": {
+          "all": {
+            "type": "integer",
+            "description": "Total across every tab - the sum of the five below",
+            "example": 14
+          },
+          "files": {
+            "type": "integer",
+            "description": "Files tab: uploads, folder creates, removes, workspace moves and link-sharing activity",
+            "example": 5
+          },
+          "task": {
+            "type": "integer",
+            "description": "Task tab: assignments, task mentions and watched-column changes",
+            "example": 3
+          },
+          "meeting": {
+            "type": "integer",
+            "description": "Meeting tab: meeting start and end events",
+            "example": 1
+          },
+          "chat": {
+            "type": "integer",
+            "description": "Chat tab: p2p messages and folder chat",
+            "example": 4
+          },
+          "other": {
+            "type": "integer",
+            "description": "Other tab: workspace and team invites, contacts, tickets, access requests and system alerts",
+            "example": 1
+          }
+        }
+      },
+      "errors": []
+    },
+
     "mark_all_read": {
       "doc": "Mark all MFS notifications as read for current user. Updates the mfs_ack table with the last read changelog ID. If no last_id provided, uses the latest changelog ID from database.",
       "scope": "hub",
@@ -37,6 +82,11 @@
           "required": false,
           "default": 0,
           "description": "Specific changelog ID to mark as last read. If not provided or 0, uses the latest changelog ID from database."
+        },
+        "bucket": {
+          "type": "string",
+          "required": false,
+          "description": "Notification Center tab to clear - files, task, meeting, chat or other. Only that tab's notifications are marked read. Omitted or unrecognised clears everything, exactly as before. The changelog read pointer and the share-open seen flag back the files tab, so they are only advanced for files or for an unscoped call."
         }
       },
       "returns": {
@@ -97,6 +147,11 @@
           "required": false,
           "default": 0,
           "description": "1 returns unread rows only; 0 returns read and unread rows."
+        },
+        "bucket": {
+          "type": "string",
+          "required": false,
+          "description": "Notification Center tab to narrow the feed to - files, task, meeting, chat or other. Omitted or unrecognised means no tab scope, i.e. the full feed exactly as before. Each row's bucket is assigned server-side and returned in the bucket field."
         }
       },
       "returns": {
@@ -598,6 +653,92 @@
       "returns": { "type": "object" }
     },
 
+    "delete_activity": {
+      "doc": "Remove an mfs_changelog notification permanently (the trash button). Distinct from `dismiss`, which since 2026-08-28 means only 'I have read this' and leaves the row in the feed. Sets mfs_dismissed.deleted = 1; the underlying changelog row is untouched.",
+      "scope": "hub",
+      "permission": {
+        "src": "write"
+      },
+      "params": {
+        "changelog_id": {
+          "type": "integer",
+          "required": true,
+          "description": "The changelog entry ID to delete for this user"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "properties": {
+          "status": { "type": "string" },
+          "changelog_id": { "type": "integer" },
+          "deleted": { "type": "integer" }
+        }
+      }
+    },
+
+    "delete_contact_event": {
+      "doc": "Remove a contact_activity notification permanently (the trash button): hub invites, contact invites, task assignments, task @-mentions, watched-column moves, meeting notices, storage alerts. Distinct from `dismiss_contact_event`, which means only read. Stamps deleted_at, and dismissed_at too when it was still null so the row cannot keep counting toward the bell badge.",
+      "scope": "hub",
+      "permission": {
+        "src": "write"
+      },
+      "params": {
+        "activity_id": {
+          "type": "integer",
+          "required": true,
+          "description": "The yp.contact_activity row ID to delete for this user"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "properties": {
+          "status": { "type": "string" },
+          "activity_id": { "type": "integer" },
+          "deleted_at": { "type": "integer" }
+        }
+      }
+    },
+
+    "delete_rollup": {
+      "doc": "Remove a chat/teamchat/media/ticket rollup permanently (the trash button). Two writes, both required: notification_dismiss advances the underlying read pointer so the LIVE rollup stops being generated, and notification_rollup_delete flags the stored copy so it stops being rendered as a read row.",
+      "scope": "hub",
+      "permission": {
+        "src": "write"
+      },
+      "params": {
+        "category": {
+          "type": "string",
+          "required": true,
+          "description": "Rollup category: chat | media | teamchat | ticket"
+        },
+        "key_id": {
+          "type": "string",
+          "required": true,
+          "description": "Identifier the rollup uses (peer_id, folder nid, hub_id, ticket_id)"
+        },
+        "hub_id": {
+          "type": "string",
+          "required": false,
+          "description": "Hub id for the rollup (required for media + teamchat)"
+        },
+        "last_id": {
+          "type": "integer",
+          "required": false,
+          "default": 0,
+          "description": "Latest ack target (ref_ctime / sys_id / changelog_id)"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "properties": {
+          "status": { "type": "string" },
+          "category": { "type": "string" },
+          "key_id": { "type": "string" },
+          "deleted": { "type": "integer" }
+        }
+      }
+    },
+
     "notification_dismiss": {
       "doc": "Unified dismiss for any rollup returned by drumate.notification_center. Routes by category to the right read-pointer/status update (chat → p2p_read, contact → contact.dismissed_at, media → mfs_dismissed, teamchat → <hub>.read_channel, ticket → yp.read_ticket_channel).",
       "scope": "hub",
@@ -637,6 +778,118 @@
           "dismissed_at": { "type": "integer" }
         }
       }
+    },
+
+    "daily_digest": {
+      "doc": "Three totals for the once-a-day reminder card: unread team-chat messages, tasks due today or overdue and assigned to the caller, and meetings in the day. Fans out across every workspace the desk belongs to and sums, which is affordable only because the card is shown once a day - do not call it on an interactive path.",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "params": {
+        "day": {
+          "type": "string",
+          "required": true,
+          "doc": "The viewer's own date as YYYY-MM-DD. Sent by the client because today depends on the viewer's timezone, which the server cannot know. Strictly validated - it reaches SQL through forward_proc"
+        },
+        "stime": {
+          "type": "number",
+          "required": true,
+          "doc": "Start of the viewer's day, unix epoch seconds. Used for the meeting window"
+        },
+        "etime": {
+          "type": "number",
+          "required": true,
+          "doc": "End of the viewer's day, unix epoch seconds, exclusive"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "doc": "unread_messages, due_tasks, meetings, workspaces (how many were summed), truncated (1 = the totals are a floor because the workspace cap was hit)"
+      },
+      "errors": [
+        {
+          "code": "INVALID_DAY",
+          "message": "day is not YYYY-MM-DD, or the window is empty or inverted",
+          "http_status": 400
+        }
+      ]
+    },
+    "mute_state": {
+      "doc": "The caller's notification POPUP mute state. Affects the real-time popup channel only - a muted user still receives every row in the Notification Center and still gets the unread badge. Answers global 0 with an empty hubs list when nothing is muted, which is also what it answers before the schema is applied, so popups keep working rather than falling silent on a missing routine.",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "params": {},
+      "returns": {
+        "type": "object",
+        "properties": {
+          "global": {
+            "type": "integer",
+            "description": "1 when popups are muted for every workspace, 0 otherwise",
+            "example": 0
+          },
+          "hubs": {
+            "type": "array",
+            "description": "Workspace ids muted individually. Empty when global is 1 - the two do not layer.",
+            "items": { "type": "string" }
+          }
+        }
+      },
+      "errors": []
+    },
+
+    "mute_set": {
+      "doc": "Mute or unmute the notification popups for one workspace or for all of them. Popup channel only - the feed and the unread badge are never affected. Muting globally clears the per-workspace mutes, and unmuting globally clears everything, so the stored state always has one interpretation. Returns the full resulting state so the client can refresh its cache from the write itself. Allowed to all members, like dismiss_rollup: this writes the CALLER'S OWN preference row, keyed on the session uid, and changes nothing about the workspace - so a read-only member must still be able to silence a workspace that is shouting at them.",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "params": {
+        "hub_id": {
+          "type": "string",
+          "required": false,
+          "default": "",
+          "description": "Workspace to act on. Empty or absent means ALL workspaces."
+        },
+        "muted": {
+          "type": "boolean",
+          "required": false,
+          "default": true,
+          "description": "true or absent mutes; explicit false, 0 or the string false unmutes."
+        }
+      },
+      "returns": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "ok when the write landed, error when the routine is not deployed or the write failed",
+            "example": "ok"
+          },
+          "muted": {
+            "type": "integer",
+            "description": "1 if this call muted, 0 if it unmuted",
+            "example": 1
+          },
+          "hub_id": {
+            "type": "string",
+            "description": "The scope acted on, empty string for all workspaces"
+          },
+          "global": {
+            "type": "integer",
+            "description": "Resulting global flag",
+            "example": 1
+          },
+          "hubs": {
+            "type": "array",
+            "description": "Resulting list of individually muted workspace ids",
+            "items": { "type": "string" }
+          }
+        }
+      },
+      "errors": []
     }
   },
 
