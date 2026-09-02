@@ -20,6 +20,9 @@ const {
 const {
   createMobilePushAuthorization,
 } = require('../../service/lib/mobile-push-authorization');
+const {
+  createMobilePushContent,
+} = require('../../service/lib/mobile-push-content');
 
 const runtimeEnv = sysEnv();
 const PROJECT_ID = runtimeEnv.firebase_project_id || 'drumee-7ffcc';
@@ -32,6 +35,7 @@ const auth = new GoogleAuth({
   ],
 });
 const {recipientAllowed} = createMobilePushAuthorization(yp);
+const {resolveNotification} = createMobilePushContent(yp);
 let shuttingDown = false;
 
 function errorCode(error) {
@@ -142,6 +146,7 @@ async function sendFcm(delivery) {
   ));
   const registration = registrations[0];
   if (!registration || !registration.push_token) return {expired: true};
+  const notification = await resolveNotification(delivery);
   const client = await auth.getClient();
   const access = await client.getAccessToken();
   const response = await fetch(
@@ -152,7 +157,7 @@ async function sendFcm(delivery) {
         Authorization: `Bearer ${access.token}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify(buildFcmMessage(delivery, registration.push_token)),
+      body: JSON.stringify(buildFcmMessage(delivery, registration.push_token, notification)),
       signal: AbortSignal.timeout(FCM_REQUEST_TIMEOUT_MS),
     },
   );

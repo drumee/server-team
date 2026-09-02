@@ -37,6 +37,34 @@ test('builds a generic string-only payload without private content', () => {
   assert.equal(JSON.stringify(payload).includes('private body'), false);
   assert.equal(JSON.stringify(payload).includes('secret.pdf'), false);
   assert.equal(payload.message.android.notification.channel_id, 'drumee_activity');
+  assert.deepEqual(payload.message.notification, {
+    title: 'Drumee',
+    body: 'You have new activity',
+  });
+});
+
+test('carries the resolved notification and falls back on a blank one', () => {
+  const delivery = {
+    event_id: 'event-1',
+    type: 'channel.post',
+    registration_id: 7,
+    binding_version: 3,
+    state_version: 4,
+    expires_at: 123,
+  };
+
+  assert.deepEqual(
+    buildFcmMessage(delivery, 'token-value', {
+      title: 'Temp Test',
+      body: 'Posted in Marketing',
+    }).message.notification,
+    {title: 'Temp Test', body: 'Posted in Marketing'},
+  );
+
+  assert.deepEqual(
+    buildFcmMessage(delivery, 'token-value', {title: '', body: ''}).message.notification,
+    {title: 'Drumee', body: 'You have new activity'},
+  );
 });
 
 test('classifies retryable and token-invalid responses', () => {

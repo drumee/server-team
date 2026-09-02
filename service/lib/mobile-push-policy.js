@@ -1,3 +1,4 @@
+const {GENERIC_NOTIFICATION} = require('./mobile-push-content');
 const FCM_REQUEST_TIMEOUT_MS = 25000;
 
 function transientStatus(status) {
@@ -19,11 +20,14 @@ function permanentFcmError(status, body) {
   ].includes(code));
 }
 
-function buildFcmMessage(delivery, pushToken) {
+function buildFcmMessage(delivery, pushToken, notification = GENERIC_NOTIFICATION) {
   return {
     message: {
       token: pushToken,
-      notification: {title: 'Drumee', body: 'You have new activity'},
+      notification: {
+        title: String(notification.title || GENERIC_NOTIFICATION.title),
+        body: String(notification.body || GENERIC_NOTIFICATION.body),
+      },
       data: {
         event_id: String(delivery.event_id),
         event_type: String(delivery.type),

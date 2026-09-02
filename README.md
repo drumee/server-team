@@ -34,6 +34,24 @@ Queue ownership and health counts live in
 payload, authorization, and retry policy live under
 [`service/lib/mobile-push*.js`](service/lib/).
 
+The notification banner names who acted and which workspace they acted in, and
+stops there: no message body, filename, task title, or email address ever
+enters the payload, because everything in it reaches Google and Apple
+infrastructure and shows on a locked screen. Wording and the per-event-type
+strings live in
+[`service/lib/mobile-push-content.js`](service/lib/mobile-push-content.js),
+which reads names through the `push_actor_name` and `push_workspace_name`
+procedures — `push_actor_name` composes the display name from the given and
+family name alone, so the rule that an account email never reaches a push
+provider is enforced in the database rather than in the worker;
+extend that module rather than passing content in from a producer, since
+admission deliberately rejects any event field that is not ID-shaped. Names are
+resolved at delivery time and memoized per worker process, so nothing but
+identifiers is ever written to Redis. A name that cannot be resolved — a
+deleted actor, a nameless account, an unavailable database — degrades to the
+generic `Drumee` / `You have new activity` banner and still delivers; push is
+advisory and the authenticated Activity feed stays the source of truth.
+
 Hub recipient enumeration uses the dedicated
 `hub_members_for_mobile_push(page, range)` procedure. The database clamps pages
 to 45 rows and the worker stops at its configured recipient cap; do not replace
