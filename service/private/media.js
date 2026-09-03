@@ -64,6 +64,12 @@ function firstRow(data) {
   return toArray(data)[0] || null;
 }
 
+// Areas a workspace merge may touch. Everything else is not a workspace a user
+// picks from the workspace menu: 'personal' is a desk, 'dmz' hubs sit behind
+// meetings and share links, 'public' hubs are system sites, and 'pool' entities
+// are unbuilt shells waiting for the factory.
+const MERGEABLE_AREAS = new Set(["private", "share"]);
+
 //########################################
 class __private_media extends Media {
   constructor(...args) {
@@ -74,6 +80,7 @@ class __private_media extends Media {
     this.copy_all = this.copy_all.bind(this);
     this.move_all = this.move_all.bind(this);
     this.workspace_move = this.workspace_move.bind(this);
+    this.merge_workspace = this.merge_workspace.bind(this);
     this.move_cross_hub = this.move_cross_hub.bind(this);
     this.pre_restore_into = this.pre_restore_into.bind(this);
     this.restore_into = this.restore_into.bind(this);
@@ -1296,6 +1303,229 @@ class __private_media extends Media {
       this._movedFilePairs().map((pair) => String(pair.source_file_nid))
     );
     await this._releaseFileThreadReservations(threadSnapshots, movedNids);
+  }
+
+  /**
+   * Merge one workspace into another: the contents of the source workspace
+   * become a folder, named after it, inside the destination workspace.
+   *
+   * PHASE 1 - FILES ONLY, AND THE SOURCE SURVIVES, EMPTIED. Dropping it is a
+   * separate step on purpose. Nothing should both relocate rows and drop a
+   * database until the relocating half has been proven in production, so there
+   * is no entity_delete on this path and nothing here drops anything.
+   *
+   * WHAT DOES NOT CROSS, and stays in the source workspace: chat threads (never
+   * carried between databases - see workspace_move), tasks (task.nid addresses
+   * media rows in the source database), meetings, share links, trash and
+   * version history. Members do not cross either: the destination member list
+   * is untouched, so whoever could reach these files only through the source
+   * workspace loses them. That is exactly what moving one file across
+   * workspaces already does, and it keeps granting access an explicit,
+   * admin-gated act instead of a side effect of a move.
+   *
+   * ORDER MATTERS. Everything that can refuse - identity, area, an empty
+   * source, storage - is settled BEFORE the destination folder is created, so a
+   * refused merge never leaves an empty folder behind in somebody else's
+   * workspace.
+   *
+   * Declared with no `preproc` on purpose: pre_transact builds its node list
+   * from the ACL-granted source, which here is the source workspace's ROOT. The
+   * nodes to move are that root's children, so the list is built below from
+   * mfs_merge_source_nodes instead.
+   */
+  async merge_workspace() {
+    const sourceHubId = this.hub.get(Attr.id);
+    const sourceInfo = this.hub.toJSON() || {};
+    const sourceDb = this.hub.get(Attr.db_name);
+
+    const destination = this.dest_granted() || {};
+    const recipientId = destination.actual_hub_id || destination.hub_id;
+    const destPid = destination.id;
+    const destDb = destination.db_name;
+
+    if (!sourceHubId || !sourceDb || !recipientId || !destPid || !destDb) {
+      this.warn("merge_workspace: source or destination unresolved", {
+        sourceHubId, sourceDb, recipientId, destPid, destDb,
+      });
+      return this.exception.user(INVALID_DATA);
+    }
+    if (String(recipientId) === String(sourceHubId)) {
+      this.warn("merge_workspace: source and destination are the same workspace", sourceHubId);
+      return this.exception.user(INVALID_DATA);
+    }
+
+    // get_hub_owner resolves the id through vhost(), which reads yp.vhost by
+    // entity id and therefore works on every domain. get_hub does NOT: it
+    // rebuilds the fqdn as ident + '.drumee.com', which matches nothing
+    // anywhere else and silently falls back to the 'home' entity - measured on
+    // stage, where the real fqdn ends in .drumee.in. It must not be used to
+    // identify a workspace here.
+    const src = firstRow(await this.yp.await_proc("get_hub_owner", sourceHubId));
+    const dst = firstRow(await this.yp.await_proc("get_hub_owner", recipientId));
+    // The proc INNER JOINs yp.hub, so an empty row means "not a workspace".
+    if (isEmpty(src) || isEmpty(dst)) {
+      this.warn("merge_workspace: WRONG_ENTITY_TYPE", { sourceHubId, recipientId });
+      return this.exception.user("WRONG_ENTITY_TYPE");
+    }
+    if (!MERGEABLE_AREAS.has(src.area) || !MERGEABLE_AREAS.has(dst.area)) {
+      this.warn("merge_workspace: MERGE_AREA_NOT_ALLOWED", {
+        source: src.area, destination: dst.area,
+      });
+      return this.exception.user("MERGE_AREA_NOT_ALLOWED");
+    }
+
+    // The workspace's display name lives in yp.hub.name, and mfs_node_attr is
+    // how it is read from inside the workspace: for the ROOT node it answers
+    // the hub name as `filename` (its CASE ... WHEN m.parent_id='0' branch).
+    //
+    // It is first in the chain because the obvious candidates are not there.
+    // Measured against the running endpoint: this.hub.toJSON() carries neither
+    // `name` nor `filename` for a workspace reached through scope:hub here, and
+    // get_hub_owner's `ident` is NULL for anything desk_create_hub made. With
+    // those two alone the folder was created named with the raw hub id.
+    const rootAttr = firstRow(
+      await this.db.await_proc("mfs_node_attr", this.home_id)
+    ) || {};
+    const sourceName = rootAttr.filename
+      || sourceInfo.name || sourceInfo.filename || src.ident || sourceHubId;
+
+    const nodes = toArray(await this.db.await_proc("mfs_merge_source_nodes"));
+    if (isEmpty(nodes)) {
+      // Said out loud rather than answered with an empty payload. On this
+      // codebase's move paths a transaction that relocated nothing looked
+      // exactly like one that succeeded, and that is what made the workspace
+      // Move and Make-a-copy rows fail silently for months.
+      this.output.data({
+        status: "SOURCE_EMPTY",
+        requested: 0,
+        merged: 0,
+        remaining: 0,
+        folder: null,
+        source_hub_id: sourceHubId,
+        recipient_id: recipientId,
+      });
+      return;
+    }
+
+    const srcList = nodes.map((n) => ({ nid: n.nid, hub_id: sourceHubId }));
+
+    // Storage. Inside one owner's allowance a merge is a net zero - the bytes
+    // never leave it - so only a cross-owner merge can exceed anything. Mirrors
+    // chk_pre_transact's copy branch, Infinity escape hatches included.
+    if (String(src.owner_id || "") !== String(dst.owner_id || "")) {
+      const limit = firstRow(await this.yp.await_proc("disk_limit", recipientId)) || {};
+      const { watermark, owner_id, available_disk } = limit;
+      const { watermark: sys_watermark } = quota;
+      if (watermark != Infinity && sys_watermark != Infinity && !Number(limit.unlimited)) {
+        const sized = firstRow(await this.yp.await_proc(
+          "get_transation_size", srcList, recipientId, "move"
+        )) || {};
+        const size = Number(sized.size || 0);
+        if (Number(available_disk) < size) {
+          let error = Cache.message("your_limit_exceeded");
+          if (this.uid != owner_id) {
+            error = Cache.message("limit_exceeded");
+          }
+          this.warn("merge_workspace: destination has no room", {
+            recipientId, available_disk, size,
+          });
+          return this.exception.user(error);
+        }
+      }
+    }
+
+    // First write of the whole handler. Every refusal above is behind us.
+    const folderName = await this.yp.await_func(
+      `${destDb}.unique_filename`, destPid, sourceName, ""
+    );
+    const created = firstRow(await this.yp.await_proc(
+      `${destDb}.mfs_make_dir`, destPid, [folderName], 1
+    )) || {};
+    const folderId = created.id || created.nid;
+    if (created.failed || !folderId) {
+      this.warn("merge_workspace: destination folder could not be created", {
+        recipientId, destPid, folderName, created,
+      });
+      return this.exception.server("SERVER_FAULT");
+    }
+
+    // after_transact reads both of these. oldItems supplies the `src` half of
+    // every changelog row; one snapshot of the source root covers the whole
+    // merge, where pre_transact's per-node-per-member walk would cost one proc
+    // call for every node times every member online.
+    this.heap.recipient_id = recipientId;
+    this.heap.oldItems = {};
+    const rootSnapshot = firstRow(
+      await this.db.await_proc("mfs_access_node", this.uid, this.home_id)
+    );
+    if (rootSnapshot) this.heap.oldItems[this.uid] = rootSnapshot;
+
+    const plan = movePlanRows(
+      await this.db.await_proc(
+        "mfs_move_all", srcList, this.user.uid(), folderId, recipientId
+      ),
+      this
+    );
+
+    const items = [];
+    let refused = 0;
+    for (const row of plan) {
+      if (row && row.failed) {
+        refused++;
+        this.warn("merge_workspace: mfs_move_all refused a node", row);
+      } else {
+        items.push(row);
+      }
+    }
+
+    const moved = await this.after_transact(items);
+
+    // MEASURED, not inferred. mfs_move_all can decline a node without emitting
+    // a `failed` row, so counting plan rows would report a clean merge over a
+    // partial one. Asking the source what is still there cannot be fooled.
+    const remaining = toArray(await this.db.await_proc("mfs_merge_source_nodes"));
+    const merged = nodes.length - remaining.length;
+    if (remaining.length) {
+      this.warn("merge_workspace: source workspace is not empty after the merge", {
+        sourceHubId, requested: nodes.length, merged, remaining: remaining.length,
+      });
+    }
+
+    // Both sides get a row: one workspace lost its content, the other gained
+    // it, and each audit log is read by a different set of admins. `removed`
+    // and `added` are the two values action_log.action actually allows - it is
+    // an ENUM, and a value outside it is written as an empty string while
+    // writeAudit swallows the warning, which would leave no trace at all.
+    await writeAudit(this, {
+      db: sourceDb,
+      uid: this.uid,
+      action: 'removed',
+      category: 'admin',
+      notify_to: 'admin',
+      entity_id: recipientId,
+      log: `Workspace '${sourceName}' merged into another workspace as folder '${folderName}' - ${merged} item(s) moved out`,
+    });
+    await writeAudit(this, {
+      db: destDb,
+      uid: this.uid,
+      action: 'added',
+      category: 'admin',
+      notify_to: 'admin',
+      entity_id: sourceHubId,
+      log: `Workspace '${sourceName}' merged in as folder '${folderName}' - ${merged} item(s) received`,
+    });
+
+    this.output.data({
+      status: "MERGED",
+      requested: nodes.length,
+      merged,
+      remaining: remaining.length,
+      refused,
+      folder: { nid: folderId, filename: folderName },
+      source_hub_id: sourceHubId,
+      recipient_id: recipientId,
+      nodes: moved,
+    });
   }
 
   /** Allow move with low privilege, but restricted to type=hub

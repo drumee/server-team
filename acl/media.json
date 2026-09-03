@@ -1626,6 +1626,91 @@
       },
       "method": "workspace_move"
     },
+    "merge_workspace": {
+      "doc": "Merge one workspace into another. Everything at the top level of the source workspace is moved into a new folder, named after the source, inside the destination. THE SOURCE WORKSPACE SURVIVES, EMPTIED - nothing is deleted and no database is dropped. Only files and folders cross. Chat threads stay in the database that owns them, the same rule workspace_move applies; tasks stay because task.nid addresses media rows in the source database; meetings, share links, trash and version history stay too. Members do NOT cross - the destination member list is untouched, so anyone who reached these files only through the source workspace loses them. That is the same outcome as moving a single file across workspaces today, and it keeps granting access an explicit admin-gated act rather than a side effect of a move. Asks owner on the source because it empties somebody whole workspace, the bar hub.delete_hub uses; asks only write on the destination, the bar workspace_move uses to receive files, because it adds nobody to it.",
+      "scope": "hub",
+      "permission": {
+        "src": "owner",
+        "dest": "write"
+      },
+      "method": "merge_workspace",
+      "params": {
+        "hub_id": {
+          "type": "string",
+          "required": true,
+          "doc": "Source workspace - the one being merged away and left empty"
+        },
+        "recipient_id": {
+          "type": "string",
+          "required": true,
+          "doc": "Destination workspace that receives the new folder"
+        },
+        "pid": {
+          "type": "string",
+          "required": true,
+          "doc": "Node in the destination workspace under which the folder is created, normally that workspace home node"
+        }
+      },
+      "returns": {
+        "status": {
+          "type": "string",
+          "doc": "MERGED when content moved, SOURCE_EMPTY when the source had nothing to move"
+        },
+        "merged": {
+          "type": "number",
+          "doc": "How many top level nodes were moved"
+        },
+        "folder": {
+          "type": "object",
+          "doc": "The folder created in the destination, null when nothing was moved",
+          "properties": {
+            "nid": {
+              "type": "string",
+              "doc": "Node id of the created folder"
+            },
+            "filename": {
+              "type": "string",
+              "doc": "Folder name, made unique against its siblings"
+            }
+          }
+        },
+        "source_hub_id": {
+          "type": "string",
+          "doc": "The emptied source workspace, which still exists"
+        },
+        "recipient_id": {
+          "type": "string",
+          "doc": "The destination workspace"
+        }
+      },
+      "errors": [
+        {
+          "code": "INVALID_DATA",
+          "message": "Destination missing, or source and destination are the same workspace",
+          "http_status": 400
+        },
+        {
+          "code": "WRONG_ENTITY_TYPE",
+          "message": "Source or destination is not a workspace",
+          "http_status": 400
+        },
+        {
+          "code": "MERGE_AREA_NOT_ALLOWED",
+          "message": "Only private and share workspaces may be merged",
+          "http_status": 403
+        },
+        {
+          "code": "your_limit_exceeded",
+          "message": "Your storage limit exceeded",
+          "http_status": 507
+        },
+        {
+          "code": "limit_exceeded",
+          "message": "Organization storage limit exceeded",
+          "http_status": 507
+        }
+      ]
+    },
     "move_cross_hub": {
       "scope": "hub",
       "permission": {
