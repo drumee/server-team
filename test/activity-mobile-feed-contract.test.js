@@ -51,7 +51,7 @@ test('merged unread rollups declare their read state before output', () => {
   assert.doesNotMatch(source, /falling back to activity_get_log/);
   assert.match(source, /this\.output\.list\(await this\._notificationRollups\(\)\)/);
   assert.match(source, /\['chat', 'teamchat', 'ticket'\]\.includes\(category\)/);
-  assert.match(source, /'notification_read',[\s\S]*parseInt\(r\.ctime \|\| 0\)/);
+  assert.match(source, /'notification_read_v2',[\s\S]*parseInt\(r\.ctime \|\| 0\)/);
   assert.match(source, /'notification_history_hide'/);
   assert.match(source, /case 'chat': keyId = firstValue\(r\.drumate_id, r\.key_id\)/);
   assert.match(source, /notification_activity_bookmark_add/);
@@ -209,7 +209,7 @@ test('mark-all fails closed before the global pointer after a rollup failure', a
           ctime: 20,
         }];
       }
-      if (proc === 'notification_read') throw new Error('snapshot unavailable');
+      if (proc === 'notification_read_v2') throw new Error('snapshot unavailable');
       throw new Error(`unexpected procedure: ${proc}`);
     },
   };
@@ -217,6 +217,6 @@ test('mark-all fails closed before the global pointer after a rollup failure', a
   const result = await Activity.prototype.mark_all_read.call(context);
 
   assert.deepEqual(result, {...failure, code: 'MARK_ALL_READ_FAILED'});
-  assert.deepEqual(calls, ['notification_center_next', 'notification_read']);
+  assert.deepEqual(calls, ['notification_center_next', 'notification_read_v2']);
   assert.ok(!calls.includes('mfs_mark_all_read'));
 });
