@@ -1484,11 +1484,36 @@ class __private_media extends Media {
     // a `failed` row, so counting plan rows would report a clean merge over a
     // partial one. Asking the source what is still there cannot be fooled.
     const remaining = toArray(await this.db.await_proc("mfs_merge_source_nodes"));
+    const stillHere = new Set(remaining.map((n) => String(n.nid)));
     const merged = nodes.length - remaining.length;
     if (remaining.length) {
       this.warn("merge_workspace: source workspace is not empty after the merge", {
         sourceHubId, requested: nodes.length, merged, remaining: remaining.length,
       });
+    }
+
+    // Tell the source workspace its content is gone. after_transact only
+    // broadcasts to the DESTINATION - the same gap workspace_move fills right
+    // here, and for the same reason: without this, anybody with the source
+    // workspace open keeps seeing rows whose media records no longer exist,
+    // until they reload. Driven off the MEASURED set, so a node that did not
+    // actually move is not announced as removed.
+    const departed = nodes.filter((n) => !stillHere.has(String(n.nid)));
+    if (departed.length) {
+      const recipients = await this.yp.await_proc("entity_sockets", sourceHubId);
+      for (const node of departed) {
+        await RedisStore.sendData(
+          this.payload(
+            { nid: node.nid, hub_id: sourceHubId },
+            { keys: [Attr.nid, Attr.hub_id], service: "media.remove" }
+          ),
+          recipients
+        );
+      }
+      await RedisStore.sendData(
+        this.payload({}, { service: "notification.resync" }),
+        recipients
+      );
     }
 
     // Both sides get a row: one workspace lost its content, the other gained
