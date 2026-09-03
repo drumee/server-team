@@ -486,7 +486,7 @@
       }
     },
     "tutorial_seen": {
-      "doc": "Record that one contextual tutorial tour has been shown to this user, and return the whole seen-map. First-write-wins and idempotent: repeating a tour_id returns the existing timestamp rather than an error. Tour ids MUST stay in sync with two other sites: the allow-list constant in service/private/drumate.js and the TOURS registry in ui-team src/drumee/modules/desk/tutorial/tours.js. Allowed: workspace, folder_task, share, migrate. TODO(OQ4): flip \"log\" to true once privacy sign-off lands — see plan §4 S9; it is false for now so Phase 1 creates no per-user behavioural rows in services_log that might later have to be deleted.",
+      "doc": "Record that one contextual tutorial tour has been shown to this user, and return the whole seen-map. First-write-wins and idempotent: repeating a tour_id returns the existing timestamp rather than an error. Tour ids MUST stay in sync with two other sites: the allow-list constant in service/private/drumate.js and the TOURS registry in ui-team src/drumee/modules/desk/tutorial/tours.js. Allowed: workspace, folder_task, chat, share, migrate, meeting. TODO(OQ4): flip \"log\" to true once privacy sign-off lands — see plan §4 S9; it is false for now so Phase 1 creates no per-user behavioural rows in services_log that might later have to be deleted.",
       "scope": "hub",
       "permission": {
         "src": "owner"

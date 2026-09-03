@@ -36,7 +36,7 @@ const { purge_account } = require("../lib/account-purge");
 // Contextual tutorial tour ids. See tutorial_seen() below for why this list is
 // duplicated in acl/drumate.json and in ui-team's tours.js, and what a
 // mismatch costs.
-const __TUTORIAL_TOURS = ['workspace', 'folder_task', 'share', 'migrate'];
+const __TUTORIAL_TOURS = ['workspace', 'folder_task', 'chat', 'share', 'migrate', 'meeting'];
 
 //########################################
 class __private_drumate extends Entity {
