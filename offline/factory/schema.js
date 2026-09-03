@@ -119,11 +119,34 @@ class __schema extends Logger {
    * BUILDING generation 0; media-root creation is the first authoritative
    * write, so publication must happen after that write succeeds.
    *
+   * RUN IT ON THE BARE CONNECTION, NOT THROUGH `await_proc`.
+   *
+   * `mfs_search_projection_rebuild` is a top-level maintenance call: it reads
+   * `@@in_transaction` and signals SEARCH_PROJECTION_REBUILD_ACTIVE_TRANSACTION
+   * when a caller transaction is already open. Every mariadb_stub helper
+   * (`await_proc`, `await_query`, `await_func`) issues `c.beginTransaction()`
+   * before its statement, and START TRANSACTION on its own already sets
+   * `in_transaction` — so calling this proc through the stub tripped the guard
+   * on EVERY build. No entity was marked `pool_state='clean'` after that, both
+   * pools drained to nothing pickupEntity could hand out, and `desk.create_hub`
+   * answered CREATION_FAILED with "Pool private is empty. Considerer runing
+   * factory" for every new workspace.
+   *
+   * The COMMIT is not ceremony: the previous helper (mfs_create_node, through
+   * create_media_root) opened its transaction on this same connection and its
+   * `c.commit()` is fire-and-forget, so close the connection's transaction
+   * explicitly before handing it to the guard.
+   *
    * @returns {Promise<boolean>}
    */
   async publish_search_projection() {
-    const result = await this.db.await_proc("mfs_search_projection_rebuild");
-    const projection = Array.isArray(result) ? result[0] : result;
+    const c = await this.db.getConnection();
+    await c.query("COMMIT");
+    let projection = await c.query("CALL mfs_search_projection_rebuild()");
+    // A CALL's single SELECT comes back inside the multi-resultset envelope
+    // ([rows, OkPacket]), so unwrap to the first row whatever the depth. An
+    // empty resultset lands on undefined and fails the checks below.
+    while (Array.isArray(projection)) projection = projection[0];
     const generation = Number(projection && projection.generation);
     if (
       !projection ||
