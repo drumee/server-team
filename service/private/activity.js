@@ -331,7 +331,7 @@ class MfsActivity extends Entity {
         ];
         if (['chat', 'teamchat', 'ticket'].includes(category)) {
           await this._callUserProc(
-            'notification_read',
+            'notification_read_v2',
             ...args,
             parseInt(r.ctime || 0),
           );
@@ -951,7 +951,7 @@ class MfsActivity extends Entity {
     const row = await this._visibleNotificationRollup(category, keyId, hubId, lastId);
     if (!row) return this.exception.bad_request('INVALID_DATA');
     const result = await this._callUserProc(
-      'notification_read',
+      'notification_read_v2',
       category,
       String(row.key_id),
       String(row.hub_id || ''),
