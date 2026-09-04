@@ -30,6 +30,7 @@ const {
 const { resolve } = require("path");
 const { notifyMemberJoined } = require("../lib/notify-member-joined");
 const { butlerFrom } = require("../lib/mail-sender");
+const { mailFailure } = require("../lib/mail-result");
 const { resolveHubInviteName } = require("../lib/hub-invite-name");
 const { MfsTools } = require("@drumee/server-core");
 const { remove_dir } = MfsTools;
@@ -1786,13 +1787,21 @@ class __private_hub extends Hub {
     // Display-name From ("Drumee" <contact@drumee.org>) so the inbox shows
     // "Drumee", matching the contact-add emails.
     const from = butlerFrom();
-    // Messenger.send() always resolves { recipient, error } — it never rejects
-    // (errors are routed to the handler). Inspect `error` so an SMTP-time
-    // rejection (e.g. unknown mailbox -> 550) surfaces as a failed invitee
-    // instead of a silent status:"ok".
-    const result = msg.dispatch({ html, from });
-    if (result && result.error) {
-      throw new Error(`Email delivery to ${recipient} failed: ${result.error}`);
+    // AWAITED, and the result judged by SHAPE rather than by a truthy `.error`
+    // — see service/lib/mail-result for why that distinction is the whole bug.
+    // dispatch() returns undefined before the mail reaches an MTA, and send()
+    // returns the rendered HTML when no transport is configured; both read as
+    // success under an `.error` test, which is how an invite came to report
+    // status:"ok" while nothing ever left the box.
+    //
+    // Awaiting costs one SMTP round-trip per invitee. That is the latency the
+    // non-blocking dispatch() was introduced to avoid, and it is the price of
+    // being able to tell the caller anything true at all. It also holds one
+    // conversation open at a time, which the relay's per-IP connection cap
+    // wants regardless.
+    const reason = mailFailure(await msg.send({ html, from }));
+    if (reason) {
+      throw new Error(`Email delivery to ${recipient} failed: ${reason}`);
     }
   }
 
