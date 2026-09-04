@@ -2136,6 +2136,38 @@ class MfsActivity extends Entity {
       this.debug('[ACTIVITY] unread_counts: secure_share_list_requests skipped', e && e.message);
     }
 
+    // 5. The BASE FEED's own unread rows — yp.mfs_changelog, i.e. every file
+    //    event (media.new / remove / rename / move / copy / replace / …).
+    //
+    //    These were missing entirely, and they are the single biggest source of
+    //    unread notifications: the Files tab showed unread uploads under a badge
+    //    reading 0, and All under-read by the same amount. Everything counted
+    //    above comes from contact_activity, the rollups or secure-share; none of
+    //    them looks at the changelog the feed itself pages through.
+    //
+    //    Added to `files` with no per-bucket breakdown because there cannot be
+    //    one: EVERY event in yp.mfs_changelog begins with "media." (measured —
+    //    media.new/remove/replace/copy/rename/move/relocate/workspace_move/
+    //    merge_workspace/copy_workspace), BUCKET_BY_EVENT has no media.* key, so
+    //    they all resolve through BUCKET_BY_EVENT_PREFIX's ['media.', files].
+    //
+    //    No double count against the `media` rollup counted in 1.: that rollup is
+    //    built from each hub's own `media` TABLE (notification_center_next),
+    //    while this counts the changelog EVENT LOG. get_feed merges both the same
+    //    way, so the badge keeps matching what the tab lists.
+    //
+    //    mfs_get_unread_count applies the same accessible-hubs set, the same
+    //    mfs_ack cursor AND the same mfs_dismissed exclusion as
+    //    mfs_get_activity_feed, so this is exactly the base rows the unread feed
+    //    would return. Best-effort like every other source here.
+    try {
+      const rows = toArray(await this._callUserProc('mfs_get_unread_count', this.uid));
+      const n = parseInt((rows[0] || {}).unread_count, 10) || 0;
+      counts.files += n;
+    } catch (e) {
+      this.debug('[ACTIVITY] unread_counts: mfs_get_unread_count skipped', e && e.message);
+    }
+
     const all = counts.files + counts.task + counts.meeting + counts.chat + counts.other;
     this.output.data({ all, ...counts });
   }
