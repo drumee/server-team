@@ -1626,6 +1626,69 @@
       },
       "method": "workspace_move"
     },
+    "copy_workspace": {
+      "doc": "Duplicate a workspace. Creates a NEW workspace named after the source and copies its files and folders into it. The SOURCE IS NEVER TOUCHED - this is a copy, so a failure anywhere leaves at worst an extra workspace, never damaged data. FILES ONLY: chat, tasks, meetings, share links, trash, version history and the MEMBER LIST are not copied, so the caller is the new workspace sole member. Copying members was considered and refused - it would let an editor of some other workspace hand people access to it by merging in a workspace they own, bypassing the admin bar every invite service asks for. Nothing that identifies the source is carried over either: no secure-share or DMZ tokens, no share box, no invite tracking, no subscription rows, no services log, no notifications, and disk usage is recomputed from what actually lands. The new workspace is allocated from the pre-built entity pool exactly as desk.create_hub does, so no database is ever created inside a request, and storage is checked against the owner allowance BEFORE anything is created.",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "method": "copy_workspace",
+      "params": {
+        "hub_id": {
+          "type": "string",
+          "required": true,
+          "doc": "The workspace to duplicate. It is left exactly as it was"
+        }
+      },
+      "returns": {
+        "status": {
+          "type": "string",
+          "doc": "COPIED when the new workspace was created, whether or not it received any content"
+        },
+        "hub_id": {
+          "type": "string",
+          "doc": "Id of the workspace that was created"
+        },
+        "filename": {
+          "type": "string",
+          "doc": "Name of the new workspace, made unique against the caller desk"
+        },
+        "requested": {
+          "type": "number",
+          "doc": "How many top level nodes the source had"
+        },
+        "copied": {
+          "type": "number",
+          "doc": "How many of them arrived, MEASURED in the new workspace rather than inferred"
+        },
+        "source_hub_id": {
+          "type": "string",
+          "doc": "The source, unchanged"
+        }
+      },
+      "errors": [
+        {
+          "code": "WRONG_ENTITY_TYPE",
+          "message": "The source is not a workspace",
+          "http_status": 400
+        },
+        {
+          "code": "MERGE_AREA_NOT_ALLOWED",
+          "message": "Only private and share workspaces may be duplicated",
+          "http_status": 403
+        },
+        {
+          "code": "your_limit_exceeded",
+          "message": "Your storage limit exceeded",
+          "http_status": 507
+        },
+        {
+          "code": "limit_exceeded",
+          "message": "Organization storage limit exceeded",
+          "http_status": 507
+        }
+      ]
+    },
     "merge_workspace": {
       "doc": "Merge one workspace into another. Everything at the top level of the source workspace is moved into a new folder, named after the source, inside the destination. THE SOURCE WORKSPACE SURVIVES, EMPTIED - nothing is deleted and no database is dropped. Only files and folders cross. Chat threads stay in the database that owns them, the same rule workspace_move applies; tasks stay because task.nid addresses media rows in the source database; meetings, share links, trash and version history stay too. Members do NOT cross - the destination member list is untouched, so anyone who reached these files only through the source workspace loses them. That is the same outcome as moving a single file across workspaces today, and it keeps granting access an explicit admin-gated act rather than a side effect of a move. Asks owner on the source because it empties somebody whole workspace, the bar hub.delete_hub uses; asks only write on the destination, the bar workspace_move uses to receive files, because it adds nobody to it.",
       "scope": "hub",

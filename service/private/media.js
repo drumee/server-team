@@ -48,6 +48,7 @@ const { check_base, check_safety, remove_node, move_node, copy_node, mkdir, rmdi
 const Media = require("../media");
 const { writeAudit } = require("./_audit");
 const { movePlanRows } = require("./_move-plan");
+const { createHub } = require("../lib/env");
 const { stringify } = JSON;
 const { isEmpty, isString, values } = require("lodash");
 const { join, resolve, basename, extname, dirname } = require("path");
@@ -64,11 +65,11 @@ function firstRow(data) {
   return toArray(data)[0] || null;
 }
 
-// Areas a workspace merge may touch. Everything else is not a workspace a user
-// picks from the workspace menu: 'personal' is a desk, 'dmz' hubs sit behind
-// meetings and share links, 'public' hubs are system sites, and 'pool' entities
-// are unbuilt shells waiting for the factory.
-const MERGEABLE_AREAS = new Set(["private", "share"]);
+// Areas a workspace-level operation may touch. Everything else is not a
+// workspace a user picks from the workspace menu: 'personal' is a desk, 'dmz'
+// hubs sit behind meetings and share links, 'public' hubs are system sites, and
+// 'pool' entities are unbuilt shells waiting for the factory.
+const WORKSPACE_AREAS = new Set(["private", "share"]);
 
 //########################################
 class __private_media extends Media {
@@ -81,6 +82,7 @@ class __private_media extends Media {
     this.move_all = this.move_all.bind(this);
     this.workspace_move = this.workspace_move.bind(this);
     this.merge_workspace = this.merge_workspace.bind(this);
+    this.copy_workspace = this.copy_workspace.bind(this);
     this.move_cross_hub = this.move_cross_hub.bind(this);
     this.pre_restore_into = this.pre_restore_into.bind(this);
     this.restore_into = this.restore_into.bind(this);
@@ -1367,7 +1369,7 @@ class __private_media extends Media {
       this.warn("merge_workspace: WRONG_ENTITY_TYPE", { sourceHubId, recipientId });
       return this.exception.user("WRONG_ENTITY_TYPE");
     }
-    if (!MERGEABLE_AREAS.has(src.area) || !MERGEABLE_AREAS.has(dst.area)) {
+    if (!WORKSPACE_AREAS.has(src.area) || !WORKSPACE_AREAS.has(dst.area)) {
       this.warn("merge_workspace: MERGE_AREA_NOT_ALLOWED", {
         source: src.area, destination: dst.area,
       });
@@ -1550,6 +1552,216 @@ class __private_media extends Media {
       source_hub_id: sourceHubId,
       recipient_id: recipientId,
       nodes: moved,
+    });
+  }
+
+  /**
+   * Duplicate a workspace: a NEW workspace named after the source, holding a
+   * copy of its files and folders.
+   *
+   * THE SOURCE IS NEVER TOUCHED. That is what makes this operation a different
+   * shape of risk from merge_workspace: nothing is relocated and nothing is
+   * removed, so a failure at any point leaves at worst an extra workspace the
+   * owner can delete - never damaged or half-moved data.
+   *
+   * FILES ONLY, and the caller is the new workspace's SOLE MEMBER. Chat, tasks,
+   * meetings, share links, trash and version history are not copied; neither is
+   * the member list. Copying members was considered and refused: it would let
+   * somebody hand people access to a workspace without holding the admin right
+   * every invite service asks for. Nothing identifying the source travels
+   * either - no secure-share or DMZ token, no share box, no invite tracking, no
+   * subscription rows, no services log, no notifications - and disk usage is
+   * recomputed by the platform from what actually lands.
+   *
+   * ORDER IS THE SAFETY. Identity, area and storage are all settled BEFORE the
+   * new workspace exists, so a refusal never leaves an empty workspace behind
+   * on somebody's desk.
+   *
+   * The shell comes from the pre-built entity pool through the same createHub
+   * the desk uses, so no database is ever created inside a request - which is
+   * the whole reason that pool exists, DDL being unable to roll back.
+   *
+   * NOT hub_clone_content. That dormant procedure looks like it does this job
+   * and cannot be used: it runs DELETE FROM media on the destination, it copies
+   * media rows keeping the SOURCE's node ids, it leaves yp.entity.home_id
+   * pointing at a root that no longer exists in the copy, and its closing
+   * yp.hub_update_name writes the UNIQUE hubname and rebuilds the vhost fqdn
+   * from a name containing spaces and brackets.
+   */
+  async copy_workspace() {
+    const sourceHubId = this.hub.get(Attr.id);
+    const sourceDb = this.hub.get(Attr.db_name);
+    const userDb = this.user.get(Attr.db_name);
+    const domain = this.user.get(Attr.domain);
+
+    if (!sourceHubId || !sourceDb || !userDb || !domain) {
+      this.warn("copy_workspace: incomplete context", {
+        sourceHubId, sourceDb, userDb, domain,
+      });
+      return this.exception.user(INVALID_DATA);
+    }
+
+    // get_hub_owner, never get_hub - the latter rebuilds the fqdn as
+    // ident + '.drumee.com' and silently answers the 'home' entity anywhere
+    // else. An empty row means "not a workspace": the proc INNER JOINs yp.hub.
+    const src = firstRow(await this.yp.await_proc("get_hub_owner", sourceHubId));
+    if (isEmpty(src)) {
+      this.warn("copy_workspace: WRONG_ENTITY_TYPE", { sourceHubId });
+      return this.exception.user("WRONG_ENTITY_TYPE");
+    }
+    if (!WORKSPACE_AREAS.has(src.area)) {
+      this.warn("copy_workspace: MERGE_AREA_NOT_ALLOWED", { area: src.area });
+      return this.exception.user("MERGE_AREA_NOT_ALLOWED");
+    }
+
+    // mfs_node_attr answers the hub name as the ROOT node's `filename`; the
+    // session object carries neither `name` nor `filename` for a workspace
+    // reached through scope:hub here.
+    const rootAttr = firstRow(
+      await this.db.await_proc("mfs_node_attr", this.home_id)
+    ) || {};
+    const sourceName = rootAttr.filename || src.ident || sourceHubId;
+
+    // The same list merge_workspace carries, and for the same reasons: the
+    // __chat__ / __trash__ / __upload__ system folders are excluded because the
+    // new workspace is given its own, hub cards because mfs_copy_all refuses
+    // them anyway, and hidden or deleted rows because a duplicate should not
+    // resurrect somebody's trash.
+    const nodes = toArray(await this.db.await_proc("mfs_merge_source_nodes"));
+    const srcList = nodes.map((n) => ({ nid: n.nid, hub_id: sourceHubId }));
+
+    // Storage, BEFORE anything is created. Unlike a move, a copy always
+    // consumes new bytes, so this applies within one owner too. Mirrors
+    // chk_pre_transact's copy branch, Infinity escape hatches included.
+    if (nodes.length) {
+      const limit = firstRow(await this.yp.await_proc("disk_limit", sourceHubId)) || {};
+      const { watermark, owner_id, available_disk } = limit;
+      const { watermark: sys_watermark } = quota;
+      if (watermark != Infinity && sys_watermark != Infinity && !Number(limit.unlimited)) {
+        const sized = firstRow(await this.yp.await_proc(
+          "get_transation_size", srcList, sourceHubId, "copy"
+        )) || {};
+        const size = Number(sized.size || 0);
+        if (Number(available_disk) < size) {
+          let error = Cache.message("your_limit_exceeded");
+          if (this.uid != owner_id) {
+            error = Cache.message("limit_exceeded");
+          }
+          this.warn("copy_workspace: not enough storage for the duplicate", {
+            sourceHubId, available_disk, size,
+          });
+          return this.exception.user(error);
+        }
+      }
+    }
+
+    // First write of the handler. `-copy` follows the intent left behind in
+    // desk.pre_copy, and createHub runs the name through unique_filename
+    // against the caller's desk, so repeats become -copy(1) and so on. The
+    // suffix also guarantees a non-empty hostname for a workspace whose name is
+    // entirely punctuation, which would otherwise throw in createHub's URL().
+    const home = firstRow(await this.yp.await_proc(`${userDb}.mfs_home`)) || {};
+    const created = await createHub.call(this, {
+      owner_id: this.uid,
+      domain,
+      area: src.area,
+      filename: `${sourceName}-copy`,
+      pid: home.home_id,
+      user_db: userDb,
+    }) || {};
+    if (!created.hub_id || !created.hub_db) {
+      this.warn("copy_workspace: the new workspace could not be created", {
+        sourceHubId, created,
+      });
+      return this.exception.server("SERVER_FAULT");
+    }
+
+    // The destination root is resolved from the new database itself rather than
+    // read out of desk_create_hub's answer. That answer is five result sets,
+    // and which one carries the root depends on their order; asking the
+    // database cannot be thrown off by that.
+    const newHome = firstRow(
+      await this.yp.await_proc(`${created.hub_db}.mfs_home`)
+    ) || {};
+    const destRoot = newHome.home_id;
+    if (!destRoot) {
+      this.warn("copy_workspace: the new workspace has no root node", {
+        hub_id: created.hub_id, db: created.hub_db,
+      });
+      return this.exception.server("SERVER_FAULT");
+    }
+
+    let refused = 0;
+    if (nodes.length) {
+      // after_transact reads both of these; oldItems supplies the `src` half of
+      // each changelog row, and one snapshot of the source root covers the lot.
+      this.heap.recipient_id = created.hub_id;
+      this.heap.oldItems = {};
+      const rootSnapshot = firstRow(
+        await this.db.await_proc("mfs_access_node", this.uid, this.home_id)
+      );
+      if (rootSnapshot) this.heap.oldItems[this.uid] = rootSnapshot;
+
+      // mfs_copy_all is used UNMODIFIED. Its root insert filters
+      // `category <> 'hub'`, which is exactly why media.copy on a workspace
+      // created nothing - but the nodes handed to it here are the workspace's
+      // CHILDREN, every one of them a file or a folder, so the filter has
+      // nothing to reject. movePlanRows is not optional: the plan comes back
+      // beside seo_update_hub's own result set, and a nested array matches no
+      // case in after_transact's switch, so the bytes would never be copied.
+      const plan = movePlanRows(
+        await this.db.await_proc(
+          "mfs_copy_all", srcList, this.user.uid(), destRoot, created.hub_id
+        ),
+        this
+      );
+      const items = [];
+      for (const row of plan) {
+        if (row && row.failed) {
+          refused++;
+          this.warn("copy_workspace: mfs_copy_all refused a node", row);
+        } else {
+          items.push(row);
+        }
+      }
+      await this.after_transact(items);
+    }
+
+    // MEASURED in the new workspace, not inferred from the plan. mfs_copy_all
+    // can decline a node without emitting a `failed` row, and a copy that
+    // silently arrived empty is the exact failure this menu row had before.
+    const landed = toArray(
+      await this.yp.await_proc(`${created.hub_db}.mfs_merge_source_nodes`)
+    );
+    if (landed.length !== nodes.length) {
+      this.warn("copy_workspace: the duplicate did not receive everything", {
+        sourceHubId, hub_id: created.hub_id,
+        requested: nodes.length, copied: landed.length, refused,
+      });
+    }
+
+    // Written in the SOURCE, the only workspace that existed before this ran.
+    // `changed` rather than `added`: action_log.action is an ENUM, and a value
+    // outside it is stored as an empty string while writeAudit swallows the
+    // warning, leaving no trace at all.
+    await writeAudit(this, {
+      db: sourceDb,
+      uid: this.uid,
+      action: 'changed',
+      category: 'admin',
+      notify_to: 'admin',
+      entity_id: created.hub_id,
+      log: `Workspace '${sourceName}' duplicated as '${created.filename}' - ${landed.length} item(s) copied`,
+    });
+
+    this.output.data({
+      status: "COPIED",
+      hub_id: created.hub_id,
+      filename: created.filename,
+      requested: nodes.length,
+      copied: landed.length,
+      refused,
+      source_hub_id: sourceHubId,
     });
   }
 
