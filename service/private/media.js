@@ -1754,9 +1754,18 @@ class __private_media extends Media {
       log: `Workspace '${sourceName}' duplicated as '${created.filename}' - ${landed.length} item(s) copied`,
     });
 
+    // `home_id` and `area` are here for the desk, not for decoration. The
+    // workspace:refresh descriptor a listener REOPENS a workspace from carries
+    // the ROOT node, never the hub id - libs/create-workspace says so in as
+    // many words: "A hub's own nid is the hub/0 placeholder and would not open
+    // anything." Without them the client cannot announce this workspace the
+    // same way a create does, and it stays missing from the switcher until a
+    // reload.
     this.output.data({
       status: "COPIED",
       hub_id: created.hub_id,
+      home_id: destRoot,
+      area: src.area,
       filename: created.filename,
       requested: nodes.length,
       copied: landed.length,

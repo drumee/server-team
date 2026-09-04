@@ -1653,6 +1653,14 @@
           "type": "string",
           "doc": "Name of the new workspace, made unique against the caller desk"
         },
+        "home_id": {
+          "type": "string",
+          "doc": "ROOT node of the new workspace. This, not hub_id, is what the desk reopens a workspace from"
+        },
+        "area": {
+          "type": "string",
+          "doc": "Area of the new workspace, always the same as the source"
+        },
         "requested": {
           "type": "number",
           "doc": "How many top level nodes the source had"
