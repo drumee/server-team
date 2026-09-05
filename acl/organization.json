@@ -1,0 +1,238 @@
+{
+  "services": {
+    "overview": {
+      "doc": "Everything the org view and the org dropdown draw, in one call: the organisation row with its department / workspace / member counts, the department sections in display order, and every workspace in the domain tagged with the department it belongs to. Workspace rows carry desk.home column names (hub_id, home_id, filename, area, filetype) so the org view opens a workspace through the same client helper the desk's home grid uses. READ-OPEN TO ANY MEMBER: the dropdown that consumes this sits in the top bar of every session, and nothing here is privileged beyond the member directory. A caller still on the default public domain has no organisation and gets nulls plus empty lists rather than an error. can_manage reports whether THIS caller may run the department mutations below, so the client's rename / New department affordances are decided by the same privilege read that would refuse the write.",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "params": {},
+      "returns": {
+        "organisation": {
+          "type": "object",
+          "doc": "Org row plus department_count, workspace_count and member_count. null outside an organisation."
+        },
+        "departments": {
+          "type": "array",
+          "doc": "Departments in rank order, each with workspace_count and member_count. Empty departments ARE included - the design draws them as a header with no grid."
+        },
+        "workspaces": {
+          "type": "array",
+          "doc": "Every workspace in the domain. department_id is null for ungrouped ones, which the org view draws in a bare row at the bottom."
+        },
+        "can_manage": {
+          "type": "number",
+          "doc": "1 when the caller may add / rename / delete departments"
+        }
+      }
+    },
+    "rename": {
+      "doc": "Rename the organisation - the pencil beside its name in the org dropdown. Changes the DISPLAY NAME only. Deliberately not organization.update, which also calls domain_update and would rewrite yp.domain.name to '<ident>.<main_domain>' - a no-op on a healthy row but a corrupted address on one whose ident is NULL. Org-admin only, same gate as the department mutations.",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "log": true,
+      "params": {
+        "name": {
+          "type": "string",
+          "required": true,
+          "minLength": 1,
+          "maxLength": 512,
+          "doc": "New display name"
+        }
+      },
+      "errors": [
+        {
+          "code": "NOT_IN_ORGANISATION",
+          "description": "caller is still on the default public domain"
+        },
+        {
+          "code": "NOT_ENOUGH_PRIVILEGE",
+          "description": "caller is not an organisation admin"
+        },
+        {
+          "code": "INVALID_NAME",
+          "description": "name is empty after trimming"
+        },
+        {
+          "code": "NO_ORG",
+          "description": "no organisation row for this domain"
+        }
+      ]
+    },
+    "department_add": {
+      "doc": "Create a department inside the caller's organisation. Org-admin only: the ACL entry checks the caller owns the hub they addressed, and the worker then requires domain privilege >= Remit.dom_admin through domain_privilege - the same gate organisation.update uses.",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "log": true,
+      "params": {
+        "name": {
+          "type": "string",
+          "required": true,
+          "minLength": 1,
+          "maxLength": 255,
+          "doc": "Department name, unique within the organisation"
+        }
+      },
+      "returns": {
+        "id": {
+          "type": "string",
+          "doc": "New department id"
+        },
+        "name": {
+          "type": "string",
+          "doc": "Department name"
+        },
+        "rank": {
+          "type": "number",
+          "doc": "Display order - appended after the existing departments"
+        }
+      },
+      "errors": [
+        {
+          "code": "NOT_IN_ORGANISATION",
+          "description": "caller is still on the default public domain"
+        },
+        {
+          "code": "NOT_ENOUGH_PRIVILEGE",
+          "description": "caller is not an organisation admin"
+        },
+        {
+          "code": "INVALID_NAME",
+          "description": "name is empty after trimming"
+        },
+        {
+          "code": "DEPARTMENT_EXISTS",
+          "description": "a department with that name already exists in this organisation"
+        }
+      ]
+    },
+    "department_rename": {
+      "doc": "Rename a department. Domain-scoped in SQL as well as here: department_id is matched together with the caller's domain_id, so an id belonging to another tenant is refused rather than renamed.",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "log": true,
+      "params": {
+        "department_id": {
+          "type": "string",
+          "required": true,
+          "doc": "Department to rename"
+        },
+        "name": {
+          "type": "string",
+          "required": true,
+          "minLength": 1,
+          "maxLength": 255,
+          "doc": "New name"
+        }
+      },
+      "errors": [
+        {
+          "code": "NOT_IN_ORGANISATION",
+          "description": "caller is still on the default public domain"
+        },
+        {
+          "code": "NOT_ENOUGH_PRIVILEGE",
+          "description": "caller is not an organisation admin"
+        },
+        {
+          "code": "INVALID_NAME",
+          "description": "name is empty after trimming"
+        },
+        {
+          "code": "DEPARTMENT_NOT_FOUND",
+          "description": "no such department in this organisation"
+        },
+        {
+          "code": "DEPARTMENT_EXISTS",
+          "description": "another department already holds that name"
+        }
+      ]
+    },
+    "department_remove": {
+      "doc": "Delete a department WITHOUT deleting its workspaces. The member workspaces have their department_id unset and reappear in the org view's ungrouped row; the response reports how many moved. This is why yp.department carries no foreign key to yp.hub - a cascade here would destroy real workspaces because somebody tidied a grouping.",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "log": true,
+      "params": {
+        "department_id": {
+          "type": "string",
+          "required": true,
+          "doc": "Department to delete"
+        }
+      },
+      "returns": {
+        "id": {
+          "type": "string",
+          "doc": "Deleted department id"
+        },
+        "released": {
+          "type": "number",
+          "doc": "How many workspaces became ungrouped"
+        }
+      },
+      "errors": [
+        {
+          "code": "NOT_IN_ORGANISATION",
+          "description": "caller is still on the default public domain"
+        },
+        {
+          "code": "NOT_ENOUGH_PRIVILEGE",
+          "description": "caller is not an organisation admin"
+        },
+        {
+          "code": "DEPARTMENT_NOT_FOUND",
+          "description": "no such department in this organisation"
+        }
+      ]
+    },
+    "department_assign": {
+      "doc": "Move one workspace into a department (the workspace arrives as `nid`; `hub_id` is the caller's own hub and is what the ACL reads for scope, exactly as in desk.leave_hub), or out of every department when department_id is empty or absent - that is how a workspace becomes ungrouped without the department being deleted, so an empty value is a legitimate target and not a missing argument. Changes no permission, no address and no storage: department is a label on the organisation's side of the world.",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "log": true,
+      "params": {
+        "nid": {
+          "type": "string",
+          "required": true,
+          "doc": "Workspace to move - yp.hub.id. NOT hub_id, which addresses the caller's own hub."
+        },
+        "department_id": {
+          "type": "string",
+          "required": false,
+          "doc": "Target department, or empty to make the workspace ungrouped"
+        }
+      },
+      "errors": [
+        {
+          "code": "NOT_IN_ORGANISATION",
+          "description": "caller is still on the default public domain"
+        },
+        {
+          "code": "NOT_ENOUGH_PRIVILEGE",
+          "description": "caller is not an organisation admin"
+        },
+        {
+          "code": "WORKSPACE_NOT_FOUND",
+          "description": "no such workspace in this organisation"
+        },
+        {
+          "code": "DEPARTMENT_NOT_FOUND",
+          "description": "no such department in this organisation"
+        }
+      ]
+    }
+  },
+  "modules": {
+    "private": "service/private/organization"
+  }
+}
