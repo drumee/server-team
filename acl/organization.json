@@ -1,7 +1,7 @@
 {
   "services": {
     "overview": {
-      "doc": "Everything the org view and the org dropdown draw, in one call: the organisation row with its department / workspace / member counts, the department sections in display order, and every workspace in the domain tagged with the department it belongs to. Workspace rows carry desk.home column names (hub_id, home_id, filename, area, filetype) so the org view opens a workspace through the same client helper the desk's home grid uses. READ-OPEN TO ANY MEMBER: the dropdown that consumes this sits in the top bar of every session, and nothing here is privileged beyond the member directory. A caller still on the default public domain has no organisation and gets nulls plus empty lists rather than an error. can_manage reports whether THIS caller may run the department mutations below, so the client's rename / New department affordances are decided by the same privilege read that would refuse the write.",
+      "doc": "The organisation header for everyone, the inventory for admins. Any member gets the organisation row with its department / workspace / member COUNTS plus their own role (owner | admin | member) - it is their own organisation and the counts are aggregate. The department list and the workspace list are returned ONLY to a caller at dom_admin_security or above: both are scoped by domain_id alone, so they carry the name and member count of every workspace in the org including private ones the caller cannot open - handing those to a plain member disclosed a list they had no access to and could not act on. Filtering per caller is not viable here: per-workspace membership lives in each hub's own database, which is why yp.workspace_members is a count-only rollup. Workspace rows carry desk.home column names (hub_id, home_id, filename, area, filetype) so the org view opens one through the same client helper the desk's home grid uses. A caller still on the default public domain has no organisation and gets nulls plus empty lists, not an error. can_manage reports whether THIS caller may run the department mutations below; can_browse reports whether the client should offer the org view at all - reported rather than inferred from an empty list, because 'no departments yet' and 'not allowed to see them' must not render alike.",
       "scope": "hub",
       "permission": {
         "src": "read"
@@ -12,17 +12,25 @@
           "type": "object",
           "doc": "Org row plus department_count, workspace_count and member_count. null outside an organisation."
         },
+        "role": {
+          "type": "string",
+          "doc": "owner (>= dom_owner) | admin (>= dom_admin_security) | member (everything below, including privilege 0). null outside an organisation."
+        },
         "departments": {
           "type": "array",
-          "doc": "Departments in rank order, each with workspace_count and member_count. Empty departments ARE included - the design draws them as a header with no grid."
+          "doc": "Departments in rank order with counts. EMPTY for a caller below dom_admin_security. Empty departments ARE included for those who may see them - the design draws them as a header with no grid."
         },
         "workspaces": {
           "type": "array",
-          "doc": "Every workspace in the domain. department_id is null for ungrouped ones, which the org view draws in a bare row at the bottom."
+          "doc": "Every workspace in the domain, department_id null for ungrouped. EMPTY for a caller below dom_admin_security."
         },
         "can_manage": {
           "type": "number",
-          "doc": "1 when the caller may add / rename / delete departments"
+          "doc": "1 when the caller may add / rename / delete departments (>= dom_admin)"
+        },
+        "can_browse": {
+          "type": "number",
+          "doc": "1 when the caller may see departments and workspaces (>= dom_admin_security)"
         }
       }
     },

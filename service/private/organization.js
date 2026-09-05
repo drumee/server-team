@@ -264,7 +264,43 @@ class __private_adminpanel extends Entity {
     if (domain_id <= 1) return null;
     const priv = await this.yp.await_proc('domain_privilege', domain_id, this.uid);
     const privilege = ~~(priv && priv.privilege);
-    return { domain_id, privilege, write: privilege >= Remit.dom_admin };
+    return {
+      domain_id,
+      privilege,
+      // WRITES -- rename the org, add/rename/remove/assign departments.
+      write: privilege >= Remit.dom_admin,
+      // THE ORG VIEW -- the department tree and the workspace inventory.
+      //
+      // A LOWER BAR THAN WRITES, and deliberately the same bar as the "admin"
+      // label below, so a panel that calls you an admin never then refuses to
+      // open. dom_admin_security (15) administers the organisation without
+      // holding dom_admin (31), and reading the map of it is squarely within
+      // that.
+      browse: privilege >= Remit.dom_admin_security,
+      role: this._role(privilege),
+    };
+  }
+
+  /**
+   * The viewer's role, as three words rather than six tiers.
+   *
+   * yp.privilege runs a six-step Remit ladder (63/31/15/7/3/1) that means
+   * nothing to a reader, and four of those steps have one person or fewer on a
+   * live install. Owner / Admin / Member is what the panel says.
+   *
+   * The boundaries are chosen so the label never over-promises: "admin" starts
+   * at exactly the tier that can open the org view (see browse above), and
+   * everything below it -- including a privilege of 0, which is real in the
+   * data and is not the same as dom_member -- reads as "member". A person with
+   * no privilege row at all never gets here: _org() returns null for them.
+   *
+   * @param {Number} privilege
+   * @returns {String} 'owner' | 'admin' | 'member'
+   */
+  _role(privilege) {
+    if (privilege >= Remit.dom_owner) return 'owner';
+    if (privilege >= Remit.dom_admin_security) return 'admin';
+    return 'member';
   }
 
   /**
@@ -287,13 +323,39 @@ class __private_adminpanel extends Entity {
    */
   async overview() {
     const org = await this._org();
-    if (!org) return this.output.data({ organisation: null, departments: [], workspaces: [] });
+    if (!org) {
+      return this.output.data({
+        organisation: null, role: null,
+        departments: [], workspaces: [], can_manage: 0, can_browse: 0,
+      });
+    }
 
-    const [summary, departments, workspaces] = await Promise.all([
-      this.yp.await_proc('org_summary', org.domain_id),
-      this.yp.await_proc('org_departments', org.domain_id),
-      this.yp.await_proc('org_workspaces', org.domain_id),
-    ]);
+    // THE HEADER IS FOR EVERYONE; THE INVENTORY IS NOT.
+    //
+    // org_summary is aggregate -- the org's name, its address, and three
+    // COUNTS. Any member may see that: it is their own organisation, and the
+    // member directory already tells them how many of them there are.
+    //
+    // org_departments and org_workspaces are the opposite. Both are scoped by
+    // domain_id and by nothing else, so they carry the NAME, member count and
+    // grouping of every workspace in the organisation -- including private
+    // ones the caller cannot open. Handing those to a plain member disclosed a
+    // list they have no access to and could not act on: clicking one refuses
+    // at media.attributes, so the name leaked and the access still failed.
+    //
+    // Filtering them per caller is the alternative and it is not cheap:
+    // per-workspace membership is not in yp at all, it is a permission row
+    // inside each hub's OWN database (which is why yp.workspace_members exists
+    // as a count-only rollup). Withholding the two lists costs a member
+    // nothing they could use, and needs no membership index.
+    const reads = [this.yp.await_proc('org_summary', org.domain_id)];
+    if (org.browse) {
+      reads.push(
+        this.yp.await_proc('org_departments', org.domain_id),
+        this.yp.await_proc('org_workspaces', org.domain_id),
+      );
+    }
+    const [summary, departments, workspaces] = await Promise.all(reads);
 
     // await_proc collapses a single-row result to a bare object and answers
     // undefined for an empty one, so a one-department organisation would hand
@@ -301,9 +363,14 @@ class __private_adminpanel extends Entity {
     // listings are normalised here, once, rather than in each consumer.
     this.output.data({
       organisation: isEmpty(summary) ? null : summary,
+      role: org.role,
       departments: this._rows(departments),
       workspaces: this._rows(workspaces),
       can_manage: org.write ? 1 : 0,
+      // Whether the client should offer "Open" at all. Reported rather than
+      // inferred from an empty list: "no departments yet" and "not allowed to
+      // see the departments" are different states and must not render alike.
+      can_browse: org.browse ? 1 : 0,
     });
   }
 
