@@ -54,6 +54,8 @@ class __private_drumate extends Entity {
     let metadata = {}
     let res = {};
     let chk;
+    // HOME, DELIBERATELY -- the third copy of the move-semantics guard
+    // (payment.js _validateOrgIdent, promo.js redeem). Not the acting domain.
     if (this.user.domain_id() > 1) {
       return this.output.data({ status: 'PRO_USER' });
     }
@@ -1238,6 +1240,17 @@ class __private_drumate extends Entity {
     const ident = this.input.need(Attr.ident);
     const id = this.input.need(Attr.id);
     let chk;
+    // HOME, DELIBERATELY. A username must be unique within the domain that
+    // OWNS the identity record this call is about to rewrite -- which is what
+    // my_organisation now answers, and what is_authoritative marks. Do not
+    // migrate to the acting domain.
+    //
+    // This is also the site that made my_organisation's missing LIMIT
+    // dangerous rather than merely wrong: two memberships made it return an
+    // array, my_org.domain_id went undefined, and get_user_in_domain(ident,
+    // NULL) could no longer match its username clause -- so the collision
+    // check silently passed. It failed OPEN, where every other caller of that
+    // procedure failed closed.
     let my_org = await this.yp.await_proc('my_organisation', id)
     if (isEmpty(my_org)) {
       chk = await this.yp.await_proc('get_user_in_domain', ident, 1)

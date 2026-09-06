@@ -1354,13 +1354,29 @@ class __private_hub extends Hub {
     // Refuse the whole call rather than filling the remaining seats and
     // dropping the rest: a partial invite silently loses people, and the
     // caller cannot tell which of the addresses they typed actually went out.
-    const budget = await this._seatBudget(this.user.domain_id());
+    // Charged to the organisation that owns the WORKSPACE, not to the
+    // inviter's own. Those were the same number while a person could belong to
+    // only one org; once they can belong to several, billing the inviter's
+    // home is wrong in both directions and exploitable in both: a member of a
+    // Free org invites into a paid org's workspace and is refused at the Free
+    // cap, while a member of a paid org invites into a Free org's workspace
+    // and the Free cap never applies. A seat is occupied where the workspace
+    // is, so that is what pays for it.
+    //
+    // entity.dom_id via _hubDomainId, deliberately, and NOT the acting domain
+    // from service/lib/acting-domain.js: that resolver admits any org the
+    // caller is a member of, which is a low enough bar to be worth forging
+    // when money is on the other side. This value is read out of the hub row
+    // and is not client-supplied in any form. Same reasoning, and the same
+    // call, as the redemption-side cap in accept_invitation below.
+    const seatDom = await this._hubDomainId(this.hub.get(Attr.id));
+    const budget = await this._seatBudget(seatDom);
     // Charge for PEOPLE the org does not already have. Someone already a
     // member, or already holding a live invitation, is being added to one
     // more folder — the budget counts them once and this must not count them
     // again (see _seatedIdentities).
     const newcomers = budget
-      ? await this._newcomers(this.user.domain_id(), invitees)
+      ? await this._newcomers(seatDom, invitees)
       : invitees;
     if (budget && newcomers.length > budget.free) {
       return this.output.data({
@@ -1850,22 +1866,41 @@ class __private_hub extends Hub {
 
     // Same seat rule as `invite` — this is the multi-workspace variant of the
     // same act, so it cannot be the way around the cap.
-    const budget = await this._seatBudget(this.user.domain_id());
-    // ...including the part that matters most here: this call assigns ONE
-    // person to SEVERAL workspaces at once, so counting the entries would
-    // charge a seat per workspace for a single human being.
-    const newcomers = budget
-      ? await this._newcomers(this.user.domain_id(), users)
-      : users;
-    if (budget && newcomers.length > budget.free) {
-      return this.output.data({
-        success: false,
-        status: 'SEAT_LIMIT_REACHED',
-        seat: budget.seat,
-        used: budget.used,
-        free: budget.free,
-        requested: newcomers.length,
-      });
+    //
+    // PER ORGANISATION, because the workspaces named here need not share one.
+    // Each assignment carries its own hub_id and a seat is occupied where the
+    // workspace is, so a call spanning two orgs spends a seat in each — which
+    // is not double-charging, it is two memberships. Charging the inviter's
+    // own domain instead (what this did) was wrong in both directions once a
+    // person could belong to more than one org, and was the way around the cap
+    // that the comment above says this function must not be.
+    //
+    // Every domain is checked before ANY is charged: a partial invite silently
+    // loses people and the caller cannot tell which addresses went out.
+    const seatDoms = new Set();
+    for (const a of assignments) {
+      if (!a || !a.hub_id) continue;
+      const d = await this._hubDomainId(a.hub_id);
+      if (d > 1) seatDoms.add(d);
+    }
+    for (const dom of seatDoms) {
+      const budget = await this._seatBudget(dom);
+      if (!budget) continue;
+      // ...including the part that matters most here: this call assigns ONE
+      // person to SEVERAL workspaces at once, so counting the entries would
+      // charge a seat per workspace for a single human being.
+      const newcomers = await this._newcomers(dom, users);
+      if (newcomers.length > budget.free) {
+        return this.output.data({
+          success: false,
+          status: 'SEAT_LIMIT_REACHED',
+          domain_id: dom,
+          seat: budget.seat,
+          used: budget.used,
+          free: budget.free,
+          requested: newcomers.length,
+        });
+      }
     }
 
     const username = this.user.get('fullname');

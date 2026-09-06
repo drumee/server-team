@@ -291,6 +291,10 @@ class __private_promo extends Entity {
     // OK, user presses Redeem again). Let an owner through: org_provision
     // returns their existing org rather than a second one, and the grant
     // proc answers already=1 without re-granting.
+    // HOME, DELIBERATELY -- see the identical guard in payment.js
+    // _validateOrgIdent. Not the acting domain: "are you already somebody's
+    // member" is a question about your identity, not about what you are
+    // currently looking at.
     if (needsOrg && ~~this.user.domain_id() > 1) {
       const own = this._row2(await this.yp.await_proc(
         'organisation_get', String(this.user.domain_id()),

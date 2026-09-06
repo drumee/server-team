@@ -765,6 +765,54 @@ class __media extends Mfs {
 
     let { storage, domain_id, unlimited } = quotaInfo || {};
 
+    // METERED WHERE THE BYTES LAND, not where the uploader lives.
+    //
+    // get_quota reads the entitlement off drumate, i.e. the uploader's HOME
+    // org. That was the same thing as "the org that owns this workspace" only
+    // while a person could belong to one org. Now that they can belong to
+    // several, uploading into another org's workspace is measured against, and
+    // refused by, an allowance that has nothing to do with the storage the
+    // file actually consumes -- in both directions: a member of a Free org
+    // cannot fill a paid org's workspace, and a member of a paid org fills a
+    // Free one without ever meeting its cap.
+    //
+    // The whole entitlement is re-resolved, not just the usage domain. Reading
+    // org B's usage against org A's `storage` would be worse than either
+    // original: it would compare two unrelated numbers. Same route as
+    // hub.js _seatBudget -- domain -> organisation -> the owner's quota row.
+    //
+    // entity.dom_id, deliberately, and not the acting domain: that is
+    // membership-gated, which is a low enough bar to be worth forging when
+    // storage is on the other side of it. This value is read out of the hub
+    // row and is not client-supplied in any form.
+    try {
+      const _hub = this.hub && this.hub.get(Attr.id);
+      if (_hub) {
+        const _row = await this.yp.await_query("SELECT dom_id FROM entity WHERE id=? LIMIT 1", _hub);
+        const _r = Array.isArray(_row) ? _row[0] : _row;
+        const _hubDom = ~~(_r && _r.dom_id);
+        if (_hubDom > 1 && _hubDom !== ~~domain_id) {
+          const _org = await this.yp.await_proc("organisation_get", String(_hubDom));
+          const _o = Array.isArray(_org) ? _org[0] : _org;
+          if (_o && _o.owner_id) {
+            let _q = await this.yp.await_proc("get_quota", _o.owner_id);
+            if (_q && _q.length > 0) _q = _q[0];
+            if (typeof _q === 'string') { try { _q = JSON.parse(_q); } catch (e) { _q = null; } }
+            if (_q && _q.storage != null) {
+              storage = _q.storage;
+              domain_id = _hubDom;
+              unlimited = _q.unlimited;
+              this.debug(`[QUOTA] metered against workspace owner domain=${_hubDom}`);
+            }
+          }
+        }
+      }
+    } catch (e) {
+      // Fail OPEN, like every other branch here: a lookup failure must not
+      // block an upload, it just falls back to the uploader's own allowance.
+      this.warn('[QUOTA] workspace-owner quota lookup failed:', e && e.message);
+    }
+
     // UNLIMITED ENTITLEMENT — the claim-reward prize (5 years, source='reward'
     // in yp.quota). $.unlimited is the explicit signal, surfaced by the
     // get_quota PROCEDURE as this column.

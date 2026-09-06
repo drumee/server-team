@@ -30,6 +30,12 @@ class __private_nudgelab extends Entity {
 
   /** The caller's scope: their org (domain > 1) or their own account. */
   async _scope() {
+    // HOME, and left that way on purpose. This scope drives quota WRITES
+    // (_setOrgSeatCap, and the UPDATE quota SET plan=... paths below) with no
+    // privilege check of its own beyond the nudge_lab flag. Moving it to the
+    // acting domain would widen what a plain member can mutate from "my home
+    // org" to "any org I have joined" -- a lab tool is not where to spend that.
+    // Give it an ownership check first, then migrate.
     const dom = ~~this.user.domain_id();
     if (dom > 1) {
       const org = firstRow(await this.yp.await_query(

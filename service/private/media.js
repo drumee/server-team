@@ -2410,7 +2410,26 @@ class __private_media extends Media {
     try {
       const OverLimit = require('../lib/over-limit');
       if (!OverLimit.enabled()) return;
-      const dom = ~~this.user.domain_id();
+      // The domain whose usage actually moved is the one that OWNS the
+      // workspace the bytes were freed in, not the actor's home. Those were
+      // the same number until a person could belong to two orgs; after that,
+      // emptying a bin in org B re-measured org A and left B's flags stale --
+      // so the org that had just come back under its limit stayed locked, and
+      // the one that had not looked resolved.
+      //
+      // entity.dom_id rather than the acting domain: this decides whether a
+      // read-only clamp lifts, so it takes the value read off the hub row and
+      // not one the client can name.
+      let dom = 0;
+      try {
+        const _hub = this.hub && this.hub.get(Attr.id);
+        if (_hub) {
+          const _row = await this.yp.await_query("SELECT dom_id FROM entity WHERE id=? LIMIT 1", _hub);
+          const _r = Array.isArray(_row) ? _row[0] : _row;
+          dom = ~~(_r && _r.dom_id);
+        }
+      } catch (e) { /* falls back to home below */ }
+      if (dom <= 1) dom = ~~this.user.domain_id();
       if (dom <= 1) return;
       await OverLimit.evaluate(this.yp, dom, {
         notify: (state) => OverLimit.notifyDomain(this.yp, RedisStore, state),

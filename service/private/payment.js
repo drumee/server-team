@@ -120,6 +120,17 @@ class __private_payment extends Entity {
     }
     // Move-semantics membership: a payer already inside another domain
     // cannot bootstrap a second organisation.
+    //
+    // HOME, DELIBERATELY -- do not migrate this to the acting domain. The
+    // question is "does an organisation already own your identity", which is
+    // exactly what drumate.domain_id answers; asking it of whichever org you
+    // happen to be looking at would let the same person provision one org per
+    // membership. See service/lib/acting-domain.js for the distinction.
+    //
+    // Its own premise is worth revisiting separately though: domain_join can
+    // now make a joined org somebody's home, and this then blocks them from
+    // ever creating one of their own. The policy is "one org per OWNER", so
+    // the faithful test is organisation.owner_id = uid rather than membership.
     if (~~this.user.domain_id() > 1) {
       return { status: 'ALREADY_IN_OTHER_DOMAIN', ident };
     }
@@ -980,7 +991,13 @@ class __private_payment extends Entity {
   // push if the org has quietly come back within limits).
   async over_limit_state() {
     const OverLimit = require('../lib/over-limit');
-    const dom = ~~this.user.domain_id();
+    // The org being LOOKED AT, not home. A member of two orgs, one of them
+    // over its limit, was told about home regardless of which org's desk they
+    // were on -- so the banner appeared where nothing was wrong and stayed
+    // absent where something was. Must resolve identically to
+    // over_limit_dismiss below, or the snooze lands on a different org than
+    // the banner it came from.
+    const dom = ~~(this.user.get('acting_domain_id') || this.user.domain_id());
     if (!OverLimit.enabled() || dom <= 1) {
       return this.output.data({ state: 'ok', enabled: OverLimit.enabled() ? 1 : 0 });
     }
@@ -1008,7 +1025,9 @@ class __private_payment extends Entity {
   // OVER_LIMIT_SNOOZE_SEC to tune per environment.
   async over_limit_dismiss() {
     const OverLimit = require('../lib/over-limit');
-    const dom = ~~this.user.domain_id();
+    // Same resolution as over_limit_state, deliberately identical: the snooze
+    // must land on the org whose banner was dismissed.
+    const dom = ~~(this.user.get('acting_domain_id') || this.user.domain_id());
     if (!OverLimit.enabled() || dom <= 1) return this.output.data({ status: 'OK' });
     let org = await this.yp.await_query(
       `SELECT id FROM organisation WHERE domain_id = ? LIMIT 1`, dom
