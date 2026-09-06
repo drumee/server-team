@@ -378,6 +378,35 @@ class conference extends __yp {
     let metadata = this.input.need(Attr.metadata);
     let event = this.input.get('event');
     let hub_id = this.hub.get(Attr.id);
+    // Client-side audio diagnostics (ui-team webrtc/room/jitsi.js
+    // postAudioDiagnostics): mic device + label, local audio level, outbound /
+    // inbound RTP counters, selected ICE pair, browser. Kept in the service log
+    // so a "they could not hear me" report can be investigated after the call:
+    // yp.conference rows are deleted on leave, so the DB retains nothing.
+    // A pure diagnostics ping (event=diag) is log-only. It carries no state
+    // change, so there is nothing to persist or to fan out to every socket of
+    // the hub every 30 seconds per participant.
+    if (metadata && typeof metadata === "object" && metadata.diag) {
+      const diag = metadata.diag;
+      delete metadata.diag;
+      let line;
+      try {
+        line = JSON.stringify({
+          room_id,
+          socket_id,
+          uid: this.uid,
+          participant_id: metadata.participant_id,
+          ...diag,
+        }).slice(0, 6000);
+      } catch (e) {
+        line = `unserializable diagnostics: ${e && e.message}`;
+      }
+      this.debug("[conference.diag]", line);
+      if (event === "diag") {
+        this.output.data();
+        return;
+      }
+    }
     let user = await this.yp.await_proc("socket_get", socket_id);
     let exclude = [socket_id];
     if (user.user_id == this.uid) {
