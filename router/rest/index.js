@@ -378,15 +378,42 @@ class Acl {
             console.warn("[acl] secure-share ceiling check failed (fail-open):", e && e.message);
           }
         }
+        // Which organisation is this request acting in? Resolved once, here,
+        // before anything reads it — the clamp below is the first consumer and
+        // every worker is the next. Stashed on session.user so a worker reads
+        // it with a plain get() and no import.
+        //
+        // This is a no-op today: nobody holds a second membership, so it
+        // resolves to home for all 306 accounts. It is placed here rather than
+        // inside each service because the clamp immediately below is one of
+        // the sites that has been asking the wrong question.
+        try {
+          const ActingDomain = require("../../service/lib/acting-domain");
+          const acting = await ActingDomain.resolve(session);
+          if (acting > 0 && session.user) {
+            session.user.set("acting_domain_id", acting);
+          }
+        } catch (e) {
+          // resolve() does not throw; this guard is for the require itself.
+          console.warn("[acl] acting domain resolution failed (fail-open):", e && e.message);
+        }
         // Downgrade over-limit read-only clamp. One cached, indexed yp read
         // (30s TTL inside getState) per domain; personal domains (id<=1) and
         // platforms without over_limit_enforcement never reach the lookup.
         // Fail-OPEN like the ceiling above — a failed check keeps the last
         // known state and never invents a lock.
+        //
+        // The domain here is the ACTING one, not home. Keyed on home it got
+        // the question backwards in both directions: someone whose home org
+        // was hard-locked was clamped inside a perfectly healthy org they had
+        // switched into, and — the expensive half — someone whose home was
+        // fine BYPASSED the lock of the org they were actually filling up. The
+        // clamp exists to stop writes into an over-limit org, so it has to ask
+        // about the org being written to.
         try {
           const OverLimit = require("../../service/lib/over-limit");
           if (OverLimit.enabled() && session.user && session.user.get("signed_in")) {
-            const dom = ~~session.user.domain_id();
+            const dom = ~~(session.user.get("acting_domain_id") || session.user.domain_id());
             if (dom > 1) {
               const st = await OverLimit.getState(session.yp, dom);
               if (st && (st.state === "over_limit" || st.state === "hard_lock")) {

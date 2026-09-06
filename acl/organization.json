@@ -12,6 +12,10 @@
           "type": "object",
           "doc": "Org row plus department_count, workspace_count and member_count. null outside an organisation."
         },
+        "organisations": {
+          "type": "array",
+          "doc": "Every organisation the caller belongs to, each with id, domain_id, name, link, ident, privilege and the flags is_current / is_home / is_owner. Returned to EVERYONE regardless of can_browse - a person's own memberships are not the org's inventory. Exactly one entry today (yp.privilege still has a unique key on uid alone); the list shape is the contract so the client needs no change when a second membership becomes possible. Domain 1 is excluded: the default public domain is not an organisation anyone owns."
+        },
         "role": {
           "type": "string",
           "doc": "owner (>= dom_owner) | admin (>= dom_admin_security) | member (everything below, including privilege 0). null outside an organisation."

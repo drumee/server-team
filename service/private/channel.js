@@ -987,9 +987,21 @@ class __private_channel extends Entity {
     let res = {};
     let metadata = {};
     let support_domain_id = Cache.getSysConf("support_domain");
-    let my_org = await this.yp.await_proc("my_organisation", this.uid);
 
-    if (my_org.domain_id != support_domain_id) {
+    // ARE YOU HELPDESK STAFF? That is a question about whether you belong to
+    // the support organisation, and it used to be asked as "is the one
+    // organisation you are in the support one" -- which was the same question
+    // only because nobody could be in two. Now that they can, scalar equality
+    // gets it wrong in both directions: an agent whose home is elsewhere is
+    // locked out, and my_organisation answering a row for some other org reads
+    // as a plain refusal rather than as the wrong question.
+    //
+    // domain_privilege asks it properly. It is keyed on (uid, domain_id) and
+    // answers privilege 0 when there is no row, so membership of the support
+    // domain -- and nothing else about the caller -- decides.
+    const _support = await this.yp.await_proc("domain_privilege", support_domain_id, this.uid);
+    const _sp = Array.isArray(_support) ? _support[0] : _support;
+    if (!(_sp && ~~_sp.privilege > 0)) {
       res.status = "INVALID_DOMAIN";
       return this.output.data(res);
     }

@@ -260,7 +260,18 @@ class __private_adminpanel extends Entity {
    * @returns {Promise<Object|null>} { domain_id, write } or null
    */
   async _org() {
-    const domain_id = ~~this.user.domain_id();
+    // The ACTING organisation, not home. These endpoints are the org panel:
+    // "which departments does it have", "rename it", "move this workspace" --
+    // every one of them means the organisation the caller is looking at, and
+    // once somebody belongs to two, home stops being that. The router resolved
+    // it before this worker ran, from the hub already authorised for the
+    // request (or, for the hubless calls, from a membership-checked header),
+    // so what arrives here is a domain the caller demonstrably belongs to.
+    //
+    // Falls back to home, which is what it has always been: with one
+    // membership per person the two are the same number, so this changes
+    // nothing for any account that exists today.
+    const domain_id = ~~(this.user.get('acting_domain_id') || this.user.domain_id());
     if (domain_id <= 1) return null;
     const priv = await this.yp.await_proc('domain_privilege', domain_id, this.uid);
     const privilege = ~~(priv && priv.privilege);
@@ -325,7 +336,7 @@ class __private_adminpanel extends Entity {
     const org = await this._org();
     if (!org) {
       return this.output.data({
-        organisation: null, role: null,
+        organisation: null, organisations: [], role: null,
         departments: [], workspaces: [], can_manage: 0, can_browse: 0,
       });
     }
@@ -348,14 +359,29 @@ class __private_adminpanel extends Entity {
     // inside each hub's OWN database (which is why yp.workspace_members exists
     // as a count-only rollup). Withholding the two lists costs a member
     // nothing they could use, and needs no membership index.
-    const reads = [this.yp.await_proc('org_summary', org.domain_id)];
+    // my_organisations is read for EVERYONE, alongside the header and
+    // regardless of `browse`: it lists the organisations this person belongs
+    // to, which is their own membership and not the org's inventory. A member
+    // who may not see a workspace list may still be told which orgs are theirs.
+    //
+    // The second argument is the acting domain, which the procedure cannot
+    // derive for itself: it used to compute is_current by joining drumate,
+    // whose domain_id IS home, so is_current was identically is_home and could
+    // never mark an organisation someone had merely joined. Passing
+    // org.domain_id keeps today's answer exactly as it was -- acting and home
+    // are the same thing until an acting domain is resolved per request -- and
+    // gives that resolution one place to land later.
+    const reads = [
+      this.yp.await_proc('org_summary', org.domain_id),
+      this.yp.await_proc('my_organisations', this.uid, org.domain_id),
+    ];
     if (org.browse) {
       reads.push(
         this.yp.await_proc('org_departments', org.domain_id),
         this.yp.await_proc('org_workspaces', org.domain_id),
       );
     }
-    const [summary, departments, workspaces] = await Promise.all(reads);
+    const [summary, organisations, departments, workspaces] = await Promise.all(reads);
 
     // await_proc collapses a single-row result to a bare object and answers
     // undefined for an empty one, so a one-department organisation would hand
@@ -363,6 +389,9 @@ class __private_adminpanel extends Entity {
     // listings are normalised here, once, rather than in each consumer.
     this.output.data({
       organisation: isEmpty(summary) ? null : summary,
+      // Every organisation this person belongs to, each flagged is_current /
+      // is_home / is_owner. One entry today; the shape is the contract.
+      organisations: this._rows(organisations),
       role: org.role,
       departments: this._rows(departments),
       workspaces: this._rows(workspaces),

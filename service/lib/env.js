@@ -61,7 +61,42 @@ async function get_env() {
   let { usage } = await this.yp.await_proc("disk_usage", this.uid) || {};
   data.user.disk_usage = usage;
   data.user.otp_key = this.session.get('secret');
-  data.organization = await this.yp.await_proc("my_organisation", this.uid);
+  // WHICH ORGANISATION DOES THE SPA BOOT INTO?
+  //
+  // my_organisation answers home, and until somebody holds a second
+  // membership that is the only answer there is. Once they do, the boot
+  // payload has to be able to name the one they were last acting in --
+  // otherwise a switch survives exactly as long as the page does, and every
+  // reload silently drags them back to home.
+  //
+  // The acting domain arrives as a header (see service/lib/acting-domain.js)
+  // and MUST be validated here rather than trusted: acl/yp.json declares
+  // get_env as fast_check "public-api", so the ACL never looks at it. A domain
+  // the caller does not belong to is not an error, it is simply not honoured.
+  //
+  // Note this cannot go through session.user.get('acting_domain_id') the way
+  // a normal worker does -- get_env is served on the public-api fast path,
+  // which returns before the router's resolution step runs.
+  const _acting = ~~this.input.get("acting-domain");
+  data.organization = null;
+  if (_acting > 1) {
+    const _priv = await this.yp.await_proc("domain_privilege", _acting, this.uid);
+    const _p = isArray(_priv) ? _priv[0] : _priv;
+    if (_p && ~~_p.privilege > 0) {
+      const _org = await this.yp.await_proc("organisation_get", String(_acting));
+      if (!isEmpty(_org)) {
+        data.organization = isArray(_org) ? _org[0] : _org;
+        // my_organisation carries the caller's tier alongside the org row and
+        // data.user.privilege below is read straight off it, so a switched org
+        // has to supply its own -- otherwise the client keeps HOME's bitmask
+        // and every Visitor.domainCan() gate answers for the wrong org.
+        data.organization.privilege = ~~_p.privilege;
+      }
+    }
+  }
+  if (isEmpty(data.organization)) {
+    data.organization = await this.yp.await_proc("my_organisation", this.uid);
+  }
   const { main_domain } = sysEnv();
   if (isEmpty(data.organization)) {
     let host = main_domain;
