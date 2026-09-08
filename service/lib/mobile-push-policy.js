@@ -21,13 +21,13 @@ function permanentFcmError(status, body) {
 }
 
 function buildFcmMessage(delivery, pushToken, notification = GENERIC_NOTIFICATION) {
+  const title = String(notification.title || GENERIC_NOTIFICATION.title);
+  const body = String(notification.body || GENERIC_NOTIFICATION.body);
+  const subtitle = String(notification.subtitle || '');
   return {
     message: {
       token: pushToken,
-      notification: {
-        title: String(notification.title || GENERIC_NOTIFICATION.title),
-        body: String(notification.body || GENERIC_NOTIFICATION.body),
-      },
+      notification: {title, body},
       data: {
         event_id: String(delivery.event_id),
         event_type: String(delivery.type),
@@ -40,7 +40,11 @@ function buildFcmMessage(delivery, pushToken, notification = GENERIC_NOTIFICATIO
       android: {
         priority: 'high',
         ttl: '3600s',
-        notification: {channel_id: 'drumee_activity'},
+        // Android has no subtitle slot, so the workspace line leads the body.
+        notification: {
+          channel_id: 'drumee_activity',
+          ...(subtitle ? {body: `${subtitle}\n${body}`} : {}),
+        },
       },
       apns: {
         headers: {
@@ -48,7 +52,11 @@ function buildFcmMessage(delivery, pushToken, notification = GENERIC_NOTIFICATIO
           'apns-priority': '10',
           'apns-push-type': 'alert',
         },
-        payload: {aps: {'content-available': 1}},
+        // iOS draws the three lines natively: title / subtitle / body.
+        payload: {aps: {
+          alert: {title, ...(subtitle ? {subtitle} : {}), body},
+          'content-available': 1,
+        }},
       },
     },
   };

@@ -1,12 +1,20 @@
 /**
  * Notification text for a mobile push.
  *
- * The banner names who acted and which workspace they acted in, and nothing
- * else: no message body, no filename, no task title, no email address. Those
- * belong to the authenticated Activity feed, which stays the source of truth —
- * a push only says enough to be worth opening. Every string here reaches
- * Google and Apple infrastructure and shows on a locked screen, so widening
- * this module widens that exposure.
+ * A banner names who acted, which workspace they acted in, and — for a chat
+ * message — what they said. The product decision of 2026-09-08 (Aaron):
+ * a chat push reads
+ *
+ *     <sender>                         (title)
+ *     To <workspace>                   (subtitle; absent for a direct message)
+ *     <message excerpt>                (body)
+ *
+ * instead of "<sender> / Posted in <workspace>", so the banner is worth
+ * opening. The excerpt is the only content that leaves the identity-and-
+ * workspace envelope, and it is bounded (`EXCERPT_LIMIT`), stripped of markup,
+ * and read at delivery time through a stored procedure — the queue and Redis
+ * still carry identifiers only, and a message trashed before delivery is never
+ * quoted. Filenames, task titles and email addresses still never enter a push.
  *
  * A name that cannot be resolved is not an error. Push is advisory, so a
  * missing name degrades to the generic banner and the delivery still wakes the
@@ -16,26 +24,26 @@
 const GENERIC_NOTIFICATION = {title: 'Drumee', body: 'You have new activity'};
 const NAME_TTL_MS = 5 * 60 * 1000;
 const NAME_CACHE_LIMIT = 5000;
+const EXCERPT_LIMIT = 140;
 
 /**
  * One entry per admitted event type. Each returns the body only; the title is
- * the acting identity, resolved by `composeNotification` below. `workspace` is
- * an empty string for events that carry no hub, so every phrasing has to read
- * correctly without it.
+ * the acting identity and the subtitle the workspace, both resolved by
+ * `composeNotification` below. A chat body is the message excerpt when there
+ * is one and the plain verb when there is not (attachment-only message, or a
+ * message that could not be read).
  */
 const EVENT_BODY = {
-  'chat.post': () => 'Sent you a message',
-  'channel.post': workspace =>
-    workspace ? `Posted in ${workspace}` : 'Posted a new message',
-  'hub.invite_received': workspace =>
-    workspace ? `Invited you to ${workspace}` : 'Invited you to a workspace',
-  'task.assigned': workspace =>
-    workspace ? `Assigned you a task in ${workspace}` : 'Assigned you a task',
-  'task.mention': workspace =>
-    workspace ? `Mentioned you in ${workspace}` : 'Mentioned you in a task',
-  'room.reminder': (workspace, phase) =>
+  'chat.post': (_workspace, _phase, excerpt) => excerpt || 'Sent you a message',
+  'channel.post': (_workspace, _phase, excerpt) => excerpt || 'Sent a message',
+  'task.assigned': () => 'Assigned you a task',
+  'task.mention': () => 'Mentioned you in a task',
+  'room.reminder': (_workspace, phase) =>
     phase === 'start' ? 'A meeting is starting' : 'A meeting starts soon',
 };
+
+/** Event types whose subtitle names the workspace ("To Marketing"). */
+const WORKSPACE_SUBTITLED = new Set(['channel.post', 'task.assigned', 'task.mention']);
 
 function asArray(value) {
   if (Array.isArray(value)) return value;
@@ -47,6 +55,42 @@ function text(value) {
 }
 
 /**
+ * The stored message text, as a one-line quote. Mentions are stored as
+ * `[@Name](user:<uid>)` and read back as `@Name` (the web chat item does the
+ * same); HTML tags go; a meeting marker (`[[MEETING: start: …]]`) is a system
+ * message with nothing worth quoting; whitespace collapses; the rest is cut at
+ * `EXCERPT_LIMIT` on a word boundary with an ellipsis.
+ */
+function excerptOf(message, attachment) {
+  let value = text(message);
+  if (/^\[\[MEETING:/i.test(value)) value = '';
+  value = value
+    .replace(/\[@(.+?)\]\((?:user|mention)[^)]*\)/g, '@$1')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!value) {
+    const files = asArray(attachment && typeof attachment === 'string'
+      ? safeJson(attachment)
+      : attachment);
+    return files.length ? 'Sent an attachment' : '';
+  }
+  if (value.length <= EXCERPT_LIMIT) return value;
+  const cut = value.slice(0, EXCERPT_LIMIT);
+  const atWord = cut.lastIndexOf(' ');
+  return `${(atWord > EXCERPT_LIMIT / 2 ? cut.slice(0, atWord) : cut).trimEnd()}…`;
+}
+
+function safeJson(value) {
+  try {
+    return JSON.parse(value);
+  } catch (_) {
+    return value ? [value] : [];
+  }
+}
+
+/**
  * A reminder has no author worth naming — the meeting creator did not just do
  * something — so the workspace carries the title instead of a person.
  */
@@ -54,12 +98,14 @@ function isWorkspaceTitled(type) {
   return type === 'room.reminder';
 }
 
-function composeNotification({type, actorName, workspaceName, eventPhase} = {}) {
+function composeNotification({type, actorName, workspaceName, eventPhase, excerpt} = {}) {
   const body = EVENT_BODY[type];
   const workspace = text(workspaceName);
   const identity = isWorkspaceTitled(type) ? workspace : text(actorName);
   if (!body || !identity) return GENERIC_NOTIFICATION;
-  return {title: identity, body: body(workspace, text(eventPhase))};
+  const notification = {title: identity, body: body(workspace, text(eventPhase), text(excerpt))};
+  if (WORKSPACE_SUBTITLED.has(type) && workspace) notification.subtitle = `To ${workspace}`;
+  return notification;
 }
 
 function createMobilePushContent(yp) {
@@ -99,21 +145,46 @@ function createMobilePushContent(yp) {
     return row ? text(row.workspace_name) : '';
   }
 
+  /**
+   * The message a chat event is about, read where it was written: a direct
+   * message lives in the SENDER's database (`chat.js _distributeMessage` →
+   * `p2p_post_message` through the actor), a workspace message in the hub's
+   * (`channel_post_message`). `key_id` is the message id on both events. Not
+   * cached — every event is a different message — and best-effort: a failed
+   * read leaves the verb-only body.
+   */
+  async function messageExcerpt(event) {
+    if (!event.key_id) return '';
+    const [db, proc] = event.type === 'chat.post'
+      ? [event.actor_id, 'p2p_get_message']
+      : [event.hub_id, 'channel_get_message'];
+    if (!db) return '';
+    try {
+      const row = asArray(await yp.await_proc('forward_proc', db, proc, `'${event.key_id}'`))[0];
+      return row ? excerptOf(row.message, row.attachment) : '';
+    } catch (_) {
+      return '';
+    }
+  }
+
   async function resolveNotification(event) {
     try {
-      const [actor, workspace] = await Promise.all([
+      const wantsExcerpt = event.type === 'chat.post' || event.type === 'channel.post';
+      const [actor, workspace, excerpt] = await Promise.all([
         event.actor_id
           ? cachedName(`actor:${event.actor_id}`, () => actorName(event.actor_id))
           : '',
         event.hub_id
           ? cachedName(`hub:${event.hub_id}`, () => workspaceName(event.hub_id))
           : '',
+        wantsExcerpt ? messageExcerpt(event) : '',
       ]);
       return composeNotification({
         type: event.type,
         actorName: actor,
         workspaceName: workspace,
         eventPhase: event.event_phase,
+        excerpt,
       });
     } catch (_) {
       return GENERIC_NOTIFICATION;
@@ -125,7 +196,9 @@ function createMobilePushContent(yp) {
 
 module.exports = {
   EVENT_BODY,
+  EXCERPT_LIMIT,
   GENERIC_NOTIFICATION,
   composeNotification,
   createMobilePushContent,
+  excerptOf,
 };
