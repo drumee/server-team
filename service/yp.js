@@ -33,6 +33,8 @@ let keyFile = resolve(credential_dir, `crypto/public.pem`);
 const publicKey = readFileSync(keyFile);
 
 const { butlerFrom } = require("./lib/mail-sender");
+const Crypto = require('crypto');
+const {createDeviceRegistrationV2} = require('./lib/device-registration-v2');
 
 
 //########################################
@@ -103,6 +105,95 @@ class __yp extends Entity {
       "active"
     );
     this.output.data(data);
+  }
+
+  /**
+   * Authenticated, versioned mobile push registration. The legacy endpoint
+   * remains available for older clients; v2 never returns or logs the token.
+   */
+  async device_registration_v2() {
+    if (!this.uid || (this.session && this.session.isAnonymous && this.session.isAnonymous())) {
+      return this.exception.bad_request('AUTHENTICATION_REQUIRED');
+    }
+    const registration_kind = String(this.input.need('registration_kind'));
+    const push_token = String(this.input.need('push_token'));
+    const device_id = String(this.input.need('device_id'));
+    const device_type = String(this.input.need('device_type'));
+    const registrationIdInput = this.input.use('registration_id');
+    const bindingVersionInput = this.input.use('binding_version');
+    const stateVersionInput = this.input.use('state_version');
+    const casInputs = [registrationIdInput, bindingVersionInput, stateVersionInput];
+    const casPresent = casInputs.map(value => value !== undefined && value !== null && value !== '');
+    const hasCas = casPresent.every(Boolean);
+    const hasPartialCas = casPresent.some(Boolean) && !hasCas;
+    const registration_id = Number(registrationIdInput || 0);
+    const binding_version = Number(bindingVersionInput || 0);
+    const state_version = Number(stateVersionInput || 0);
+
+    if (registration_kind !== 'token' ||
+        !push_token || push_token.length > 4096 ||
+        !device_id || device_id.length > 255 ||
+        !device_type || device_type.length > 32 ||
+        hasPartialCas ||
+        (hasCas && (
+          !Number.isSafeInteger(registration_id) || registration_id < 1 ||
+          !Number.isSafeInteger(binding_version) || binding_version < 1 ||
+          !Number.isSafeInteger(state_version) || state_version < 1))) {
+      return this.exception.bad_request('INVALID_DATA');
+    }
+
+    // Keep the initial CAS tuple as SQL NULL and the raw token out of the SQL
+    // debug formatter used by await_proc.
+    const rows = await createDeviceRegistrationV2(this.yp, {
+      uid: this.uid,
+      registrationKind: registration_kind,
+      registrationDigest: Crypto.createHash('sha256').update(push_token).digest('hex'),
+      pushToken: push_token,
+      deviceId: device_id,
+      deviceType: device_type,
+      registrationId: hasCas ? registration_id : null,
+      bindingVersion: hasCas ? binding_version : null,
+      stateVersion: hasCas ? state_version : null,
+    });
+    const result = toArray(rows)[0] || {};
+    this.output.data({
+      registration_id: result.registration_id,
+      uid: result.uid,
+      registration_kind: result.registration_kind,
+      state: result.state,
+      binding_version: result.binding_version,
+      state_version: result.state_version,
+      expires_at: result.expires_at,
+    });
+  }
+
+  async device_registration_v2_unregister() {
+    if (!this.uid || (this.session && this.session.isAnonymous && this.session.isAnonymous())) {
+      return this.exception.bad_request('AUTHENTICATION_REQUIRED');
+    }
+    const registration_id = Number(this.input.need('registration_id'));
+    const binding_version = Number(this.input.need('binding_version'));
+    const state_version = Number(this.input.need('state_version'));
+    if (!Number.isSafeInteger(registration_id) || registration_id <= 0 ||
+        !Number.isSafeInteger(binding_version) || binding_version <= 0 ||
+        !Number.isSafeInteger(state_version) || state_version <= 0) {
+      return this.exception.bad_request('INVALID_DATA');
+    }
+    const rows = await this.yp.await_proc(
+      'device_registration_v2_unregister',
+      this.uid,
+      registration_id,
+      binding_version,
+      state_version,
+    );
+    const result = toArray(rows)[0] || {};
+    this.output.data({
+      registration_id: result.registration_id,
+      state: result.state,
+      binding_version: result.binding_version,
+      state_version: result.state_version,
+      changed: result.changed,
+    });
   }
 
   /**

@@ -22,6 +22,7 @@ const { stringify } = JSON;
 const { mkdirSync } = require("fs");
 const { isEmpty, isArray, map, includes } = require("lodash");
 const { CAN_CHAT, privilegeAllows } = require("../lib/member-capability");
+const {admit: admitMobilePush} = require('../lib/mobile-push');
 const { markFeatureUsage } = require("../lib/feature-usage");
 
 const ENTITY_ID_RE = /^[0-9a-zA-Z_-]{1,32}$/;
@@ -865,6 +866,13 @@ class privateChat extends Entity {
     let res = await this._distributeMessage(input, message, thread_id, [
       entity_id,
     ]);
+    await admitMobilePush({
+      type: 'chat.post',
+      actor_id: this.uid,
+      key_id: message_id,
+      occurred_at: Date.now(),
+      recipient_uids: [entity_id],
+    });
     this.output.data(res);
     // Core function -> the Chat bar and Avg messages/user. All three message
     // paths mark 'chat' (p2p here, workspace and file threads in channel.js):

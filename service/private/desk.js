@@ -19,6 +19,8 @@ const { after, union, filter, isEmpty } = require('lodash');
 const Media = require('../media');
 const { writeAudit } = require('./_audit');
 const { pushReferralLive } = require('./_referral_live');
+const { markFeatureUsage } = require("../lib/feature-usage");
+const { ctaFeature } = require("../lib/cta-click");
 
 const {
   Attr, Privilege, toArray,
@@ -508,6 +510,29 @@ class __private_desk extends Media {
     // upload path uses too — see there for why the row is read back from
     // referral_members rather than assembled here.
     pushReferralLive(this, this.uid);
+    this.output.data({ ok: 1 });
+  }
+
+  /**
+   * Record that the caller clicked a tracked CTA, for the analytics
+   * Engagement > Extended page. Tracking only; never blocks or alters the
+   * screen it reports, exactly as track_workspace above does not.
+   *
+   * NOT `log: true` LIKE ITS NEIGHBOUR. track_workspace lets the router write
+   * a yp.services_log row and keeps its handler a stub, and the Referral users
+   * table counts those rows. This one writes to yp.feature_usage instead,
+   * because drumate_delete.sql records that services_log retention is a policy
+   * call -- and a workspace count that decays after a prune is recoverable
+   * from yp.entity, while a click that was never durably recorded is simply
+   * gone.
+   *
+   * AN UNKNOWN cta IS DROPPED SILENTLY, not raised. The caller is a UI that
+   * has already opened the screen the user asked for; failing its request
+   * would turn an analytics typo into a visible error on a page that worked.
+   */
+  async cta_click() {
+    const feature = ctaFeature(this.input.get("cta"));
+    if (feature) markFeatureUsage(this, feature);
     this.output.data({ ok: 1 });
   }
 

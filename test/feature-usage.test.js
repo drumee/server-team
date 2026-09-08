@@ -118,6 +118,48 @@ async function main() {
     }
   });
 
+  // ── Aha moment: the two new signals ─────────────────────────────────────
+  // Synchronous `test` and an un-awaited `_flushNow()`, matching every other
+  // test in this file: `_flushNow` is the `flush` function itself (feature-usage
+  // .js:157), which fires the calls synchronously and does not await them, so
+  // ctx.calls is fully populated the moment it returns.
+  test("chat and file_thread accumulate independently for one user", () => {
+    lib._reset();
+    const ctx = fakeCtx();
+    lib.markFeatureUsage(ctx, "chat");
+    lib.markFeatureUsage(ctx, "file_thread");
+    lib.markFeatureUsage(ctx, "chat");
+    lib._flushNow();
+    const byFeature = Object.fromEntries(ctx.calls.map((c) => [c[2], c]));
+    assert.strictEqual(ctx.calls.length, 2, "one call per feature, not one per event");
+    assert.strictEqual(byFeature.chat[3], 2, "two chat hits");
+    assert.strictEqual(byFeature.file_thread[3], 1, "one file_thread hit");
+    assert.strictEqual(byFeature.file_thread[4], 0, "file_thread carries no volume");
+  });
+
+  test("gdrive carries bytes in volume", () => {
+    lib._reset();
+    const ctx = fakeCtx();
+    lib.markFeatureUsage(ctx, "gdrive", { hits: 1, volume: 4096 });
+    lib._flushNow();
+    assert.strictEqual(ctx.calls.length, 1);
+    assert.strictEqual(ctx.calls[0][2], "gdrive");
+    assert.strictEqual(ctx.calls[0][4], 4096);
+  });
+
+  test("upgrade_click and selfhosted_click accumulate independently (PENDING map keyed uid:feature)", () => {
+    lib._reset();
+    const ctx = fakeCtx();
+    lib.markFeatureUsage(ctx, "upgrade_click", { hits: 1 });
+    lib.markFeatureUsage(ctx, "upgrade_click", { hits: 1 });
+    lib.markFeatureUsage(ctx, "selfhosted_click", { hits: 1 });
+    lib._flushNow();
+    const byFeature = Object.fromEntries(ctx.calls.map((c) => [c[2], c]));
+    assert.strictEqual(ctx.calls.length, 2, "one call per feature, not one per event");
+    assert.strictEqual(byFeature.upgrade_click[3], 2, "upgrade_click: 2 hits");
+    assert.strictEqual(byFeature.selfhosted_click[3], 1, "selfhosted_click: 1 hit");
+  });
+
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
 }

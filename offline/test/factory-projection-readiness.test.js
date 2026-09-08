@@ -96,6 +96,10 @@ test("projection publication accepts only a positive READY generation", async ()
   const cases = [
     { result: { state: "READY", generation: 1 }, expected: true },
     { result: [{ state: "READY", generation: "2" }], expected: true },
+    // What the driver actually answers a CALL with: the single SELECT wrapped
+    // in the multi-resultset envelope, rows first, OkPacket last.
+    { result: [[{ state: "READY", generation: 3 }], { affectedRows: 0 }], expected: true },
+    { result: [[], { affectedRows: 0 }], expected: false },
     { result: { state: "BUILDING", generation: 2 }, expected: false },
     { result: { state: "READY", generation: 0 }, expected: false },
     { result: null, expected: false },
@@ -108,17 +112,26 @@ test("projection publication accepts only a positive READY generation", async ()
       const calls = [];
       const factory = {
         db: {
-          await_proc: async (name) => {
-            calls.push(name);
-            return result;
-          },
+          getConnection: async () => ({
+            query: async (sql) => {
+              calls.push(sql);
+              return /^CALL /.test(sql) ? result : undefined;
+            },
+          }),
         },
       };
       assert.strictEqual(
         await publishSearchProjection.call(factory),
         expected
       );
-      assert.deepStrictEqual(calls, ["mfs_search_projection_rebuild"]);
+      // The rebuild must run on the bare connection with no transaction open:
+      // the proc signals SEARCH_PROJECTION_REBUILD_ACTIVE_TRANSACTION when
+      // @@in_transaction is 1, which is exactly what every mariadb_stub
+      // helper leaves behind.
+      assert.deepStrictEqual(calls, [
+        "COMMIT",
+        "CALL mfs_search_projection_rebuild()",
+      ]);
     }
   } finally {
     console.error = originalError;
