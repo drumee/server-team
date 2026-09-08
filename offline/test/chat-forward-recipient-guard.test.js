@@ -34,7 +34,6 @@ const { join } = require("path");
 
 const {
   CAN_CHAT,
-  CAN_READ,
   privilegeAllows,
 } = require("../../service/lib/member-capability");
 
@@ -54,7 +53,6 @@ const METHOD_NAMES = [
   "_drumateFor",
   "_p2pAllowed",
   "_hubChatAllowed",
-  "_hubMemberAllowed",
   "_sourceMemberAllowed",
   "_canChatWith",
   "forward_eligibility",
@@ -127,7 +125,6 @@ function compileMethod(body, RedisStore) {
     "DB_NAME_RE",
     "MAX_ELIGIBILITY_HUBS",
     "CAN_CHAT",
-    "CAN_READ",
     "privilegeAllows",
     `return (${body});`
   );
@@ -142,7 +139,6 @@ function compileMethod(body, RedisStore) {
     DB_NAME_RE,
     MAX_ELIGIBILITY_HUBS,
     CAN_CHAT,
-    CAN_READ,
     privilegeAllows
   );
 }
@@ -609,20 +605,21 @@ test("missing source messages return an error before distribution", async () => 
 // Source-workspace confinement
 // ---------------------------------------------------------------------------
 
-// A workspace conversation may only be relayed to MEMBERS of that workspace.
-// Recipient shapes, and why each verdict holds:
+// A workspace conversation may only be relayed to that workspace's own CHAT
+// members. Recipient shapes, and why each verdict holds:
 //
 //   member-chat   person, chat row in the source hub        -> allowed
-//   member-view   person, view-only row in the source hub   -> allowed
+//   member-view   person, view-only row in the source hub   -> refused
 //   outsider      person, no row in the source hub          -> refused
 //   source-hub    the source workspace itself               -> allowed
 //   other-hub     another hub the caller may chat in        -> refused
 //
-// member-view is allowed on purpose: membership is the rule for a recipient
-// (user decision 2026-08-11), while the CALLER relaying the message is held to
-// the chat bit. `other-hub` is the case the rule exists for — the caller's own
-// right there is irrelevant, because forwarding to it would move the message
-// out of the workspace it was written in.
+// member-view is refused on purpose (QA decision 2026-08-15): a view-only
+// member has no access to that workspace's conversation, so handing them one of
+// its messages would grant what the workspace never did. `other-hub` is the case
+// the confinement rule exists for — the caller's own right there is irrelevant,
+// because forwarding to it would move the message out of the workspace it was
+// written in.
 function makeConfinedForward(entities, overrides = {}) {
   const members = { "member-chat": 7, "member-view": 3, "sender-uid": 7 };
   return makeService({
@@ -656,7 +653,7 @@ function makeConfinedForward(entities, overrides = {}) {
   });
 }
 
-test("a workspace message reaches only that workspace's members", async () => {
+test("a workspace message reaches only that workspace's chat members", async () => {
   const { output, service } = makeConfinedForward([
     "member-chat",
     "member-view",
@@ -672,21 +669,19 @@ test("a workspace message reaches only that workspace's members", async () => {
 
   await service.forward();
 
-  assert.deepStrictEqual(distributedEntities, [
-    "member-chat",
+  assert.deepStrictEqual(distributedEntities, ["member-chat", "source-hub"]);
+  assert.deepStrictEqual(output()[0].rejected, [
     "member-view",
-    "source-hub",
+    "outsider",
+    "other-hub",
   ]);
-  assert.deepStrictEqual(output()[0].rejected, ["outsider", "other-hub"]);
 });
 
-test("the caller needs the chat right the recipient does not", async () => {
-  // The two sides of the rule are deliberately different bars, which is exactly
-  // the pair a future refactor is most likely to collapse into one check:
-  //   caller    -> CAN_CHAT  (they are reading the conversation)
-  //   recipient -> CAN_READ  (membership alone; view-only counts)
-  // A view-only CALLER must therefore be refused outright, even when relaying to
-  // a recipient who would be perfectly valid.
+test("both sides of a forward need the chat right, not mere membership", async () => {
+  // Held to ONE bar on purpose. `privilegeAllows` is (p & bit) === bit, and the
+  // view role (0b000011) shares the read bit with every other role — so gating
+  // on anything but the download/chat bit silently admits exactly the role this
+  // test exists to exclude (see member-capability.js).
   const { calls, output, service } = makeConfinedForward(["member-chat"], {
     ypQuery: (sql, entityId) =>
       entityId === "sender-uid" ? [{ privilege: 3 }] : [{ privilege: 7 }],
@@ -700,16 +695,18 @@ test("the caller needs the chat right the recipient does not", async () => {
   assert.deepStrictEqual(output(), { status: "INVALID_SOURCE", rejected: [] });
   assert.ok(!calls.dbProc.some(({ name }) => name === "forward_message_get"));
 
-  // And the mirror: a view-only RECIPIENT is fine once the caller may chat.
+  // The recipient side of the same bar: a view-only member is refused even when
+  // the caller may chat, and the message is never distributed to anyone.
   const member = makeConfinedForward(["member-view"]);
-  let distributedEntities;
-  member.service._distributeMessage = async (input, message, threadId, entities) => {
-    distributedEntities = entities;
-    return [{ message_id: "forwarded" }];
+  member.service._distributeMessage = async () => {
+    throw new Error("a view-only recipient must not be distributed to");
   };
 
   await member.service.forward();
-  assert.deepStrictEqual(distributedEntities, ["member-view"]);
+  assert.deepStrictEqual(member.output(), {
+    status: "INVALID_RECIPIENT",
+    rejected: ["member-view"],
+  });
 });
 
 test("a non-member cannot relay a workspace message at all", async () => {
@@ -783,9 +780,11 @@ test("eligibility scores recipients against the source workspace", async () => {
 
   await service.forward_eligibility();
 
+  // The picker must grey out a view-only member exactly as forward() refuses
+  // them — a row scored 1 here but rejected there is a selectable dead end.
   assert.deepStrictEqual({ ...output() }, {
     "member-chat": 1,
-    "member-view": 1,
+    "member-view": 0,
     outsider: 0,
     "other-hub": 0,
     "source-hub": 1,

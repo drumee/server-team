@@ -898,50 +898,31 @@ class __dmz extends Mfs {
       );
     }
 
-    // socket_id must be passed so entity_sockets() includes this guest socket in
-    // hub broadcasts (e.g. secure_share_revoked). page.js ensures the hub cookie
-    // has its own independent session id, so this never touches the authenticated
-    // user's regsid row (belt-and-suspenders: the _isAuthSession guard above).
+    // Bind the isolated cookie, its live socket, numeric ceiling, and durable share
+    // marker in one YP transaction. A partial bind without ceiling_uid would turn a
+    // later tokenless request into apparently normal authenticated traffic, so this
+    // step fails the share login instead of preserving an unsafe half-written session.
+    // The _isAuthSession guard above still prevents any write to the main regsid.
     if (bindUid && !_isAuthSession) {
       try {
-        await this.yp.await_proc('cookie_touch', {
-          sid       : this.input.sid(),
-          uid       : bindUid,
-          socket_id : this.input.get(Attr.socket_id)
+        const contextResult = await this.yp.await_proc('set_session_share_context', {
+          sid          : this.input.sid(),
+          uid          : bindUid,
+          socket_id    : this.input.get(Attr.socket_id),
+          priv_ceiling : ceilingToStamp
         });
-      } catch (e) {
-        this.warn('[dmz.login] secure_share cookie_touch failed:', e && e.message);
-      }
-    }
-
-    // Stamp the session privilege ceiling computed above (read-only 3 / chat 7), bound
-    // to bindUid. get_session_priv_ceiling() returns it ONLY while cookie.uid still
-    // equals ceiling_uid, so it self-clears if an anonymous visitor later signs up (uid
-    // changes). router/rest enforces it: read-only (3) denies ALL mutations incl
-    // channel.post; chat (7) additionally PERMITS channel.post (text chat) while still
-    // denying file-writes/calls/invite. The ceiling lands on THIS share session's sid
-    // (the hub cookie — page.js gives it an independent sid), so a signed-in recipient's
-    // main account (regsid) is never clamped. Owner/member/edit → ceilingToStamp null →
-    // no clamp. Best-effort; on failure we keep the prior (un-clamped) binding.
-    //
-    // Set the ceiling when there is a real one (3/7); otherwise CLEAR any ceiling
-    // left on this sid by an earlier lower-level open. get_session_priv_ceiling()
-    // self-clears only on a uid CHANGE, so a same-uid elevation (view/chat → edit, or
-    // a recipient who became a member) would otherwise keep a stale clamp and the
-    // router would wrongly deny their writes. clear_session_priv_ceiling avoids
-    // passing NULL to set_session_priv_ceiling's TINYINT `_ceiling` (the driver
-    // serialises JS null to '' → ER_TRUNCATED_WRONG_VALUE). Best-effort: on failure
-    // (e.g. the SP not yet applied to this DB) we keep the prior binding — fail-open
-    // to today's behaviour, never blocking access.
-    if (bindUid && !_isAuthSession) {
-      try {
-        if (ceilingToStamp != null) {
-          await this.yp.await_proc('set_session_priv_ceiling', this.input.sid(), ceilingToStamp, bindUid);
-        } else {
-          await this.yp.await_proc('clear_session_priv_ceiling', this.input.sid());
+        // Mariadb.await_proc normally rethrows only when throwOnError is set;
+        // the default wrapper swallows ordinary SQL failures and resolves
+        // undefined (or a failed envelope).  A try/catch alone would therefore
+        // report a successful login with an unmarked cookie.  Treat every
+        // missing/failed result as a hard binding failure so the share remains
+        // fail-closed even when the shared YP client is not configured to throw.
+        if (contextResult == null || contextResult.failed === 1) {
+          throw new Error('SECURE_SHARE_SESSION_CONTEXT_FAILED');
         }
       } catch (e) {
-        this.warn('[dmz.login] secure_share priv ceiling update failed:', e && e.message);
+        this.warn('[dmz.login] secure_share session context update failed:', e && e.message);
+        return this.exception.user('SECURE_SHARE_SESSION_CONTEXT_FAILED');
       }
     }
 

@@ -1,12 +1,18 @@
 {
   "services": {
     "list": {
-      "doc": "List tasks scoped to a folder node, ordered by Kanban column then rank. Returns all statuses for that folder.",
+      "doc": "List a board's tasks. With workspace=1 returns EVERY task in the workspace (the board is workspace-level); otherwise scoped to a folder node.",
       "scope": "hub",
       "permission": {
         "src": "read"
       },
       "params": {
+        "workspace": {
+          "type": "number",
+          "required": false,
+          "default": 0,
+          "doc": "When 1, return every task in this workspace regardless of the folder it was created in. A workspace is a database, so this filters on nothing. Takes precedence over nid."
+        },
         "nid": {
           "type": "string",
           "required": false,
@@ -53,6 +59,10 @@
               "type": "string",
               "doc": "UID of the user who created the task"
             },
+            "reporter_uid": {
+              "type": "string",
+              "doc": "UID of the reporter. Editable, unlike created_by; falls back to created_by for tasks predating the reporter field."
+            },
             "nid": {
               "type": "string",
               "doc": "Folder node id the task belongs to, null if workspace-level (legacy)"
@@ -76,13 +86,25 @@
             "label_ids": {
               "type": "string",
               "doc": "Comma-separated list of label IDs attached to the task, null if none"
+            },
+            "parent_task_id": {
+              "type": "string",
+              "doc": "Id of the parent task when this row is a subtask, null otherwise."
+            },
+            "subtask_total": {
+              "type": "number",
+              "doc": "Number of subtasks under this task (0 for a subtask, which cannot have children)."
+            },
+            "subtask_done": {
+              "type": "number",
+              "doc": "How many of those subtasks sit in a column flagged is_done. Drives the done/total badge; computed server-side so client filters cannot skew it."
             }
           }
         }
       }
     },
     "create": {
-      "doc": "Create a new task scoped to a folder node. The task is placed at the bottom of the target status column within that folder.",
+      "doc": "Create a new task scoped to a folder node. The task is placed at the bottom of the target status column within that folder. reporter_uid defaults to the caller when omitted.",
       "scope": "hub",
       "permission": {
         "src": "write"
@@ -116,6 +138,11 @@
           ],
           "doc": "Task priority. Defaults to medium."
         },
+        "reporter_uid": {
+          "type": "string",
+          "required": false,
+          "doc": "UID of the reporter (who the task is reported by). Exactly one user; omit to keep the existing value. On create, omitting it defaults the reporter to the caller. Never clears: a task always reads as reported by somebody, falling back to created_by."
+        },
         "due_date": {
           "type": "string",
           "required": false,
@@ -146,6 +173,11 @@
           "items": {
             "type": "string"
           }
+        },
+        "parent_task_id": {
+          "type": "string",
+          "required": false,
+          "doc": "Id of the task this one is a subtask of. Absent/null = a normal top-level task. The parent must exist and must not itself be a subtask (one level of nesting only). The new task inherits the PARENT's nid, so any nid sent alongside this is ignored."
         }
       },
       "returns": {
@@ -157,11 +189,26 @@
           "code": "INVALID_ASSIGNEE",
           "message": "assignee_uid does not reference a valid user",
           "http_status": 400
+        },
+        {
+          "code": "INVALID_REPORTER",
+          "message": "reporter_uid must be an existing user",
+          "http_status": 400
+        },
+        {
+          "code": "PARENT_TASK_NOT_FOUND",
+          "message": "parent_task_id does not reference an existing task",
+          "http_status": 404
+        },
+        {
+          "code": "SUBTASK_NESTING_DENIED",
+          "message": "cannot add a subtask to a task that is itself a subtask",
+          "http_status": 400
         }
       ]
     },
     "update": {
-      "doc": "Update a task's title, description, priority and/or due date. Title / description / priority: omit to keep existing value. due_date is always written through (pass null to clear).",
+      "doc": "Update a task's title, description, priority, due date and/or reporter. Title / description / priority / reporter_uid: omit to keep existing value. due_date is always written through (pass null to clear). created_by is NOT updatable — it is write-once provenance; reporter_uid is the editable field.",
       "scope": "hub",
       "permission": {
         "src": "write"
@@ -193,6 +240,11 @@
           ],
           "doc": "New priority. Omit to keep existing value."
         },
+        "reporter_uid": {
+          "type": "string",
+          "required": false,
+          "doc": "UID of the reporter (who the task is reported by). Exactly one user; omit to keep the existing value. On create, omitting it defaults the reporter to the caller. Never clears: a task always reads as reported by somebody, falling back to created_by."
+        },
         "due_date": {
           "type": "string",
           "required": false,
@@ -221,11 +273,16 @@
           "code": "INVALID_PRIORITY",
           "message": "priority must be one of: low, medium, high, urgent",
           "http_status": 400
+        },
+        {
+          "code": "INVALID_REPORTER",
+          "message": "reporter_uid must be an existing user",
+          "http_status": 400
         }
       ]
     },
     "update_status": {
-      "doc": "Move a task to a different Kanban column. The task is placed at the bottom of the destination column.",
+      "doc": "Move a task to a different Kanban column. The task is placed at the bottom of the destination column. When the moved task is a subtask and this move leaves every sibling in a done column, the PARENT is auto-completed and returned as `parent` on the response.",
       "scope": "hub",
       "permission": {
         "src": "write"
@@ -244,7 +301,7 @@
       },
       "returns": {
         "type": "object",
-        "doc": "Updated task object with new status and rank"
+        "doc": "Updated task object with new status and rank. Carries an extra `parent` key holding the parent's updated row when a subtask rollup auto-completed it; absent otherwise."
       },
       "errors": [
         {
@@ -303,7 +360,7 @@
       ]
     },
     "delete": {
-      "doc": "Delete a task permanently. All linked file and label associations are removed.",
+      "doc": "Delete a task permanently, together with any subtasks. All linked file and label associations are removed.",
       "scope": "hub",
       "permission": {
         "src": "write"
@@ -317,7 +374,7 @@
       },
       "returns": {
         "type": "object",
-        "doc": "Deleted task ID and affected row count",
+        "doc": "Deleted task ID, affected row count (the task PLUS its cascaded subtasks) and the ids of those subtasks.",
         "properties": {
           "id": {
             "type": "string",
@@ -326,6 +383,17 @@
           "affected": {
             "type": "number",
             "doc": "Number of rows deleted (1 if found, 0 if not found)"
+          },
+          "reporter_uid": {
+            "type": "string",
+            "doc": "UID of the reporter. Editable, unlike created_by; falls back to created_by for tasks predating the reporter field."
+          },
+          "subtask_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "doc": "Ids of the subtasks removed with the parent, so callers can prune them locally. Empty when it had none."
           }
         }
       }
@@ -385,6 +453,10 @@
             "filesize": {
               "type": "number",
               "doc": "File size in bytes"
+            },
+            "reporter_uid": {
+              "type": "string",
+              "doc": "UID of the reporter. Editable, unlike created_by; falls back to created_by for tasks predating the reporter field."
             }
           }
         }
@@ -423,6 +495,10 @@
           "affected": {
             "type": "number",
             "doc": "1 if removed, 0 if link did not exist"
+          },
+          "reporter_uid": {
+            "type": "string",
+            "doc": "UID of the reporter. Editable, unlike created_by; falls back to created_by for tasks predating the reporter field."
           }
         }
       }
@@ -488,6 +564,10 @@
             "color": {
               "type": "string",
               "doc": "Label color (hex with leading #)"
+            },
+            "reporter_uid": {
+              "type": "string",
+              "doc": "UID of the reporter. Editable, unlike created_by; falls back to created_by for tasks predating the reporter field."
             }
           }
         }
@@ -523,6 +603,10 @@
           },
           "affected": {
             "type": "number"
+          },
+          "reporter_uid": {
+            "type": "string",
+            "doc": "UID of the reporter. Editable, unlike created_by; falls back to created_by for tasks predating the reporter field."
           }
         }
       }
@@ -604,6 +688,10 @@
             "score": {
               "type": "number",
               "doc": "Match score (higher = better)"
+            },
+            "reporter_uid": {
+              "type": "string",
+              "doc": "UID of the reporter. Editable, unlike created_by; falls back to created_by for tasks predating the reporter field."
             }
           }
         }
@@ -655,6 +743,10 @@
             "mtime": {
               "type": "number",
               "doc": "Unix timestamp of last edit"
+            },
+            "reporter_uid": {
+              "type": "string",
+              "doc": "UID of the reporter. Editable, unlike created_by; falls back to created_by for tasks predating the reporter field."
             }
           }
         }
@@ -737,6 +829,10 @@
           "count": {
             "type": "number",
             "doc": "Remaining count for that emoji"
+          },
+          "reporter_uid": {
+            "type": "string",
+            "doc": "UID of the reporter. Editable, unlike created_by; falls back to created_by for tasks predating the reporter field."
           }
         }
       }
@@ -801,6 +897,10 @@
             "filesize": {
               "type": "number",
               "doc": "Size in bytes"
+            },
+            "reporter_uid": {
+              "type": "string",
+              "doc": "UID of the reporter. Editable, unlike created_by; falls back to created_by for tasks predating the reporter field."
             }
           }
         }
@@ -916,6 +1016,10 @@
           },
           "affected": {
             "type": "number"
+          },
+          "reporter_uid": {
+            "type": "string",
+            "doc": "UID of the reporter. Editable, unlike created_by; falls back to created_by for tasks predating the reporter field."
           }
         }
       }
@@ -927,6 +1031,12 @@
         "src": "read"
       },
       "params": {
+        "workspace": {
+          "type": "number",
+          "required": false,
+          "default": 0,
+          "doc": "When 1, return activity for the whole workspace rather than one folder. Matches task.list's workspace flag."
+        },
         "nid": {
           "type": "string",
           "required": false,
@@ -951,7 +1061,7 @@
       }
     },
     "column_list": {
-      "doc": "List the custom Kanban columns for a folder scope. Built-in columns (todo / in_progress / to_review / complete) are implicit client-side and never stored.",
+      "doc": "List the custom Kanban columns for a workspace. Built-in columns (todo / in_progress / to_review / complete) are implicit client-side and never stored.",
       "scope": "hub",
       "permission": {
         "src": "read"
@@ -960,7 +1070,7 @@
         "nid": {
           "type": "string",
           "required": false,
-          "doc": "Folder node id to scope to (mirrors task.list)"
+          "doc": "Ignored: columns are workspace-level, and the procedures resolve that single scope themselves. Kept so existing clients that still send it keep working."
         }
       },
       "returns": {
@@ -994,13 +1104,17 @@
             },
             "mtime": {
               "type": "number"
+            },
+            "reporter_uid": {
+              "type": "string",
+              "doc": "UID of the reporter. Editable, unlike created_by; falls back to created_by for tasks predating the reporter field."
             }
           }
         }
       }
     },
     "column_create": {
-      "doc": "Create a custom Kanban column for a folder scope.",
+      "doc": "Create a custom Kanban column for a workspace.",
       "scope": "hub",
       "permission": {
         "src": "write"
@@ -1020,7 +1134,7 @@
         "nid": {
           "type": "string",
           "required": false,
-          "doc": "Folder node id the column belongs to"
+          "doc": "Ignored: columns are workspace-level, and the procedures resolve that single scope themselves. Kept so existing clients that still send it keep working."
         }
       },
       "returns": {
@@ -1041,7 +1155,7 @@
       ]
     },
     "column_update": {
-      "doc": "Rename and/or re-theme a column on one board. Omit a field to keep it.",
+      "doc": "Rename and/or re-theme a column. There is one board per workspace, so the change applies workspace-wide. Omit a field to keep it.",
       "scope": "hub",
       "permission": {
         "src": "write"
@@ -1055,7 +1169,7 @@
         "nid": {
           "type": "string",
           "required": false,
-          "doc": "Folder scope the column belongs to. Built-in ids are stored once per folder, so without it the rename would hit every board"
+          "doc": "Ignored: columns are workspace-level, and the procedures resolve that single scope themselves. Kept so existing clients that still send it keep working."
         },
         "name": {
           "type": "string",
@@ -1085,8 +1199,44 @@
         }
       ]
     },
+    "column_set_done": {
+      "doc": "Flag a column as a done column, or clear the flag. A task sitting in a done column counts as complete. Workspace-wide, like the column itself.",
+      "scope": "hub",
+      "permission": {
+        "src": "write"
+      },
+      "params": {
+        "id": {
+          "type": "string",
+          "required": true,
+          "doc": "Column id"
+        },
+        "nid": {
+          "type": "string",
+          "required": false,
+          "doc": "Ignored: columns are workspace-level, and the procedures resolve that single scope themselves. Kept so existing clients that still send it keep working."
+        },
+        "is_done": {
+          "type": "number",
+          "required": false,
+          "default": 0,
+          "doc": "1 marks the column as done, 0 clears it. Any number of columns on a board may be done columns, so this never clears the others"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "doc": "The updated column row"
+      },
+      "errors": [
+        {
+          "code": "COLUMN_NOT_FOUND",
+          "message": "No column with that id",
+          "http_status": 404
+        }
+      ]
+    },
     "column_delete": {
-      "doc": "Delete a column from one board. Its tasks are re-homed onto the first surviving column of that same board (never lost).",
+      "doc": "Delete a column from the workspace's board. Its tasks are re-homed onto the first surviving column, whatever folder each was created in, so nothing is orphaned.",
       "scope": "hub",
       "permission": {
         "src": "write"
@@ -1100,7 +1250,7 @@
         "nid": {
           "type": "string",
           "required": false,
-          "doc": "Folder scope the column belongs to. Built-in ids are stored once per folder, so without it the delete would hit every board"
+          "doc": "Ignored: columns are workspace-level, and the procedures resolve that single scope themselves. Kept so existing clients that still send it keep working."
         }
       },
       "returns": {
@@ -1117,6 +1267,10 @@
           "moved_tasks": {
             "type": "number",
             "doc": "How many tasks were moved back to todo"
+          },
+          "reporter_uid": {
+            "type": "string",
+            "doc": "UID of the reporter. Editable, unlike created_by; falls back to created_by for tasks predating the reporter field."
           }
         }
       }
@@ -1136,7 +1290,7 @@
         "nid": {
           "type": "string",
           "required": false,
-          "doc": "Folder node id the columns belong to. Defaults to workspace root."
+          "doc": "Ignored: columns are workspace-level, and the procedures resolve that single scope themselves. Kept so existing clients that still send it keep working."
         }
       },
       "returns": {
@@ -1145,7 +1299,7 @@
       }
     },
     "column_watch_list": {
-      "doc": "List the column keys the caller is subscribed to (bell on) within a folder scope, so the board can render each column's bell state.",
+      "doc": "List the column keys the caller is subscribed to (bell on) within a workspace, so the board can render each column's bell state.",
       "scope": "hub",
       "permission": {
         "src": "read"
@@ -1154,7 +1308,7 @@
         "nid": {
           "type": "string",
           "required": false,
-          "doc": "Folder node id to scope to (mirrors task.list). Defaults to workspace root."
+          "doc": "Ignored: columns are workspace-level, and the procedures resolve that single scope themselves. Kept so existing clients that still send it keep working."
         }
       },
       "returns": {
@@ -1177,7 +1331,7 @@
         "nid": {
           "type": "string",
           "required": false,
-          "doc": "Folder node id the column belongs to. Defaults to workspace root."
+          "doc": "Ignored: columns are workspace-level, and the procedures resolve that single scope themselves. Kept so existing clients that still send it keep working."
         }
       },
       "returns": {
@@ -1200,7 +1354,7 @@
         "nid": {
           "type": "string",
           "required": false,
-          "doc": "Folder node id the column belongs to. Defaults to workspace root."
+          "doc": "Ignored: columns are workspace-level, and the procedures resolve that single scope themselves. Kept so existing clients that still send it keep working."
         }
       },
       "returns": {

@@ -24,6 +24,55 @@ class __private_payment extends Entity {
     return Array.isArray(res) ? res[0] : res;
   }
 
+  /**
+   * Where a Stripe round trip must put the buyer back down: the desk on the
+   * host they left, endpoint segment included.
+   *
+   * Bare homepath() is NOT that. It answers the CONFIGURED base domain —
+   * Input.domain() maps the request host onto public_domain / private_domain /
+   * main_domain — so an org member checking out from their org vhost
+   * (team-5202.drumee.in) was handed success/cancel URLs on drumee.in. The
+   * session cookie is HOST-scoped, so the desk booted there as a guest and the
+   * buyer came back to login — or, on a fresh session, onboarding — instead of
+   * to their workspace. Reported 2026-09-08 as "clicking a plan CTA sometimes
+   * sends me back to log in", and intermittent because it only bites a browser
+   * with no session on the base domain.
+   *
+   * payment_get_org is the lookup checkout() and subscription_status already
+   * use, and its `link` column exists for exactly this: its own comment reads
+   * "emails must deep-link the RECIPIENT's host (the session cookie is
+   * host-scoped; a main-domain link lands signed-out)". It is keyed on
+   * organisation.owner_id, which is precisely the set of callers who can reach
+   * checkout inside an org — a non-owner is refused with NOT_ORG_OWNER — so no
+   * buyer with a vhost is missed.
+   *
+   * A personal account has no org row (the TEAM bootstrap included, whose
+   * organisation the webhook has not created yet) and the base domain IS its
+   * home, so it keeps the previous URL.
+   *
+   * callback.check_out_success / _cancel then bounce RELATIVELY, so the host
+   * pinned here is the host the desk finally loads on. Both halves are
+   * required — see callback._deskPath.
+   *
+   * @returns {Promise<string>} absolute desk base, e.g. https://team-5202.drumee.in/-/
+   */
+  async _returnHome() {
+    try {
+      const org = this._row(await this.yp.await_proc('payment_get_org', this.uid));
+      // Shape-checked because this becomes Stripe's success_url: a malformed
+      // host makes Stripe reject the session outright, i.e. a failed purchase.
+      // Every organisation.link is a bare hostname today (59/59 on stage);
+      // anything else falls through to the base domain, which is what this
+      // returned before.
+      const vhost = String((org && org.link) || '');
+      if (/^[A-Za-z0-9.-]+$/.test(vhost)) return this.input.homepath(vhost);
+    } catch (e) {
+      // Never let the host refinement block a purchase.
+      this.warn && this.warn('checkout: could not resolve the org vhost, using homepath', e && e.message);
+    }
+    return this.input.homepath();
+  }
+
   // Lazily create (or reuse) the Stripe Coupon for an MKT outreach code.
   // percent_off=0 → no Stripe coupon (free-months / warm_trial use trial_end only).
   // trial_days is applied separately via subscription_data.trial_end.
@@ -419,10 +468,11 @@ class __private_payment extends Entity {
     // the storage bundles (storage_*) are retired with the B2C Pro tier and
     // deactivated in yp.plan, so there are no extra lines to add.
     const line_items = [{ price: plan_row.stripe_price_id, quantity: 1 }];
-    // Build the return URLs from homepath (host-derived, endpoint-aware).
-    // servicepath() resolves the endpoint segment to 'undefined' on dev
-    // endpoints (/-/undefined/svc/...), which broke the post-payment redirect.
-    const svcbase = this.input.homepath().replace(/\/+$/, '') + '/svc/?service=';
+    // Build the return URLs from the buyer's OWN host (see _returnHome), and
+    // keep servicepath() out of it: it resolves the endpoint segment to
+    // 'undefined' on dev endpoints (/-/undefined/svc/...), which broke the
+    // post-payment redirect.
+    const svcbase = (await this._returnHome()).replace(/\/+$/, '') + '/svc/?service=';
     const success_url = `${svcbase}callback.check_out_success&session_id={CHECKOUT_SESSION_ID}`;
     const cancel_url = `${svcbase}callback.check_out_cancel`;
     // payer_id always travels with the subscription so the webhook can
@@ -1020,6 +1070,32 @@ class __private_payment extends Entity {
     await this.yp.await_proc('org_over_limit_dismiss', org.id, this.uid, until);
     OverLimit.invalidate(dom);
     this.output.data({ status: 'OK', snoozed_until: until });
+  }
+
+  // upgrade_nudge_state: the desk's one boot-time question — "does THIS
+  // member get an upgrade nudge right now?". All three trigger families
+  // (storage / seats / age) and both suppression rules (once per threshold,
+  // shared daily cap) are decided server-side in lib/upgrade-nudge + the yp
+  // gate proc; a granted answer is already MARKED shown, so the FE renders
+  // it unconditionally and never writes anything back.
+  async upgrade_nudge_state() {
+    const UpgradeNudge = require('../lib/upgrade-nudge');
+    if (!UpgradeNudge.enabled()) {
+      return this.output.data({ enabled: 0, show: 0 });
+    }
+    const res = await UpgradeNudge.grant(
+      this.yp, this.user.domain_id(), this.uid
+    );
+    if (!res) return this.output.data({ enabled: 1, show: 0 });
+    this.output.data({
+      enabled: 1,
+      show: 1,
+      trigger: res.trigger,
+      family: res.family,
+      plan: res.plan,
+      target_plan: res.target_plan,
+      ...res.numbers,
+    });
   }
 }
 

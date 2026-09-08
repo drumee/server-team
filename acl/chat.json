@@ -505,7 +505,7 @@
     },
 
     "forward_eligibility": {
-      "doc": "Score forward recipients. With source_hub_id, each requested ID is scored as a recipient of that workspace: 1 for a person who is one of its members whatever their role, 1 for the workspace itself when the caller may chat there, 0 for any other workspace. The caller must hold the chat right in source_hub_id or every row reads 0. Without source_hub_id (a P2P conversation) it reports whether the caller may chat in each requested workspace. Missing, inaccessible, expired and failed lookups all return 0.",
+      "doc": "Score forward recipients. With source_hub_id, each requested ID is scored as a recipient of that workspace: 1 for a person who holds the chat right there, 1 for the workspace itself when the caller may chat there, 0 for a view-only member, a non-member and any other workspace. The caller must hold the chat right in source_hub_id or every row reads 0. Without source_hub_id (a P2P conversation) it reports whether the caller may chat in each requested workspace. Missing, inaccessible, expired and failed lookups all return 0.",
       "scope": "hub",
       "permission": {
         "src": "read"

@@ -76,6 +76,12 @@ class __private_promo extends Entity {
         // show Modal B before the page navigates away, so the client no
         // longer tries on the claiming page — it shows once here instead.
         welcome_seen: !!row.welcome_seen_at,
+        // Also reported here, not just in the 'expired' branch below: a trial
+        // whose date has passed reads as claimed_expired from THIS branch for
+        // as long as promoExpiryWorker has not run yet (it sweeps on a timer).
+        // The gate has to work in that window too, or it flickers on for one
+        // mount and off again once the row flips to status='expired'.
+        ended_seen: !!row.ended_seen_at,
       });
     }
     if (row && row.status === 'expired') {
@@ -84,6 +90,11 @@ class __private_promo extends Entity {
         trial_ends_at: row.trial_ends_at,
         home_seen_at: row.home_seen_at,
         billing_seen_at: row.billing_seen_at,
+        // Drives the trial-ended gate. Unlike the *_seen flags this one means
+        // "the owner ANSWERED" — the modal has no close button and returns on
+        // every home mount until it is set, so this is the only thing that
+        // stops it.
+        ended_seen: !!row.ended_seen_at,
       });
     }
 
@@ -104,8 +115,11 @@ class __private_promo extends Entity {
   // seen as soon as it renders, not on explicit dismissal (tester feedback
   // 2026-07-31 #3: the full modal must show at most once per surface).
   async dismiss() {
+    // 'ended' is the trial-ended gate. It is recorded through the same proc,
+    // but it means the owner ANSWERED rather than merely saw — see
+    // promo_launch30_mark_seen.
     const surface = String(this.input.use('surface', '') || '');
-    if (surface !== 'home' && surface !== 'billing' && surface !== 'welcome') {
+    if (!['home', 'billing', 'welcome', 'ended'].includes(surface)) {
       return this.output.status('SURFACE_INVALID');
     }
     await this.yp.await_proc('promo_launch30_mark_seen', this.uid, surface);

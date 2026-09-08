@@ -24,6 +24,8 @@ const { writeAudit } = require("./private/_audit");
 const { secureShareWriteVerdict, secureShareCapVerdict, secureShareCapPrivilege } = require("./lib/secure-share-write-guard");
 const { memberCan, CAN_DOWNLOAD } = require("./lib/member-capability");
 const { notifyHubActivity } = require("./lib/activity-mailer");
+const { markFunnelMilestone } = require("./lib/funnel-milestone");
+const { markFeatureUsage } = require("./lib/feature-usage");
 const { DENIED } = Events;
 const {
   BATCH_FILE,
@@ -117,6 +119,101 @@ const Spawn = require("child_process").spawn;
 const DATA_ROOT = new RegExp(`^${data_dir}`);
 const SPAWN_OPT = { detached: true, stdio: ["ignore", "ignore", "ignore"] };
 const OFFLINE_DIR = resolve(__dirname, "..", "offline", "media");
+
+const SEARCH_NAMES_DB_TIMEOUT_MS = 500;
+const SEARCH_NAMES_PROCESS_LIMIT = 8;
+const SEARCH_NAMES_PROJECTION_NOT_READY = "SEARCH_NAMES_PROJECTION_NOT_READY";
+const SEARCH_NAMES_PROJECTION_SIGNAL_ALIASES = new Set([
+  SEARCH_NAMES_PROJECTION_NOT_READY,
+  // The schema package uses the shorter internal signal while the public
+  // media contract intentionally keeps the SEARCH_NAMES_ prefix.
+  "SEARCH_PROJECTION_NOT_READY",
+  "SEARCH_PROJECTION_DISABLED",
+  "SEARCH_PROJECTION_BUSY",
+  "SEARCH_NAMES_PROJECTION_BUSY",
+]);
+const SEARCH_NAMES_TYPED_SQL_ERRORS = new Set([
+  "TREE_CYCLE",
+  "TREE_DEPTH_EXCEEDED",
+  "MENTION_PATH_TOO_LONG",
+  "SEARCH_PROJECTION_TREE_CYCLE",
+  "SEARCH_PROJECTION_DEPTH_EXCEEDED",
+  "SEARCH_PROJECTION_PATH_TOO_LONG",
+  "SEARCH_PROJECTION_NODE_INVALID",
+  SEARCH_NAMES_PROJECTION_NOT_READY,
+]);
+const activeSearchNameScopes = new Set();
+let activeSearchNames = 0;
+
+function acquireSearchNamesScope(scopeKey) {
+  if (!scopeKey || activeSearchNameScopes.has(scopeKey)) return false;
+  if (activeSearchNames >= SEARCH_NAMES_PROCESS_LIMIT) return false;
+  activeSearchNameScopes.add(scopeKey);
+  activeSearchNames += 1;
+  return true;
+}
+
+function releaseSearchNamesScope(scopeKey) {
+  if (!activeSearchNameScopes.delete(scopeKey)) return;
+  activeSearchNames = Math.max(0, activeSearchNames - 1);
+}
+
+/**
+ * A projection is deliberately fail-closed.  The routine normally emits the
+ * stable signal below when its local state row is absent, BUILDING, FAILED,
+ * or from an incompatible contract generation.  During a mixed-version
+ * rollout the routine (or one of its additive tables) can also be missing;
+ * classify only errors that identify the search projection, and leave all
+ * unrelated database failures observable.  In particular, do not classify
+ * MariaDB's query-interrupted errno (1317) as a projection/readiness result.
+ */
+function isSearchNamesProjectionNotReady(error) {
+  if (!error) return false;
+  const message = String(error.sqlMessage || error.message || "");
+  for (const signal of SEARCH_NAMES_PROJECTION_SIGNAL_ALIASES) {
+    if (message.includes(signal)) return true;
+  }
+
+  if (error.code === "ER_SP_DOES_NOT_EXIST") {
+    return /mfs_search_names/i.test(message);
+  }
+  if (error.code === "ER_NO_SUCH_TABLE") {
+    return /mfs_search_(?:state|node|closure)/i.test(message);
+  }
+  if (error.code === "ER_BAD_FIELD_ERROR") {
+    return /mfs_search_(?:state|node|closure)|contract_version|generation|readiness/i.test(message);
+  }
+  return false;
+}
+
+async function runSearchNamesQuery(db, args) {
+  const values = ["mfs_search_names", ...args];
+  const sql = db.statement(values, "call");
+  const connection = db.connection();
+  if (!connection || typeof connection.query !== "function") {
+    const error = new Error("Search names database connection is unavailable");
+    error.code = "SEARCH_NAMES_DB_CONNECTION_UNAVAILABLE";
+    throw error;
+  }
+
+  await connection.beginTransaction();
+  try {
+    const rows = await connection.query({
+      sql,
+      timeout: SEARCH_NAMES_DB_TIMEOUT_MS,
+      logParam: false,
+    }, values);
+    await connection.commit();
+    return rows && typeof rows.get_rows === "function" ? rows.get_rows() : rows;
+  } catch (error) {
+    try {
+      await connection.rollback();
+    } catch (_) {
+      // Preserve the query error; rollback failure must not hide its cause.
+    }
+    throw error;
+  }
+}
 
 class __media extends Mfs {
   /**
@@ -350,6 +447,23 @@ class __media extends Mfs {
       node = await this.db.await_proc("mfs_access_node", uid, node.nid);
     }
     await this.changelog_write({ src: node, event: "media.new" });
+
+    // Activation funnel -> "Create folder". Reported AFTER the changelog write,
+    // like the upload leg in store(), so the two stages are recorded in the
+    // same order the user performed them.
+    //
+    // EVERY folder create reports; the first one is the only one that lands.
+    // yp.funnel_milestone is keyed (uid, milestone), so this is idempotent in
+    // the database rather than guarded here.
+    //
+    // The folders an account is BORN with are not counted, and need no
+    // exclusion: Photos/Documents/Videos/Musics come from the drumate factory
+    // template and "Personal Workspace" from loby's make_default_folers, all
+    // of which call mfs_make_dir procedure-to-procedure and never reach this
+    // service at all. Only a folder a user actually asked for gets here.
+    //
+    // Never awaited: the folder already exists and its response is owed.
+    markFunnelMilestone(this, "folder");
 
     if (/^(.|.+\/.+| )$/.test(dirname)) {
       this.exception.user("INVALID_FILENAME");
@@ -1130,6 +1244,32 @@ class __media extends Mfs {
     // media.replace is not an upload the board counts, so it is not reported.
     if (service === "media.new") {
       require('./private/_referral_live').pushReferralLive(this, this.uid);
+      // Activation funnel -> "Upload file", and -> "Activated" if this user
+      // had already created a folder. Which of those two it is, is decided by
+      // yp.funnel_mark, not here. Inside the media.new branch for the same
+      // reason the referral push is: a replace is not a first upload.
+      //
+      // THE /__chat__/ TEST IS THE SAME ONE changelog_write APPLIES, repeated
+      // rather than inherited. Chat attachments are stored by this very
+      // store(), so they arrive here like any other file; changelog_write
+      // returns early for them and leaves no upload row, and the funnel has to
+      // agree with that or the two would count different populations. The
+      // stage means "put a file in their workspace", which sending one in a
+      // chat message is not.
+      const ownpth = (res && (res.ownpth || res.ownpath)) || "";
+      if (!/^\/__chat__\//.test(ownpth)) {
+        markFunnelMilestone(this, "upload");
+        // Core function -> the Upload bar, Total uploads and the GB figure.
+        // INSIDE the same /__chat__/ guard on purpose: the funnel stage and
+        // the adoption bar have to count one population, or the two pages
+        // disagree about who has uploaded. `volume` is the file's own size --
+        // cumulative bytes uploaded, which is what the page reports, and NOT
+        // a live disk footprint (a later delete does not take it back).
+        markFeatureUsage(this, "upload", {
+          hits: 1,
+          volume: Number(res && res.filesize) || 0,
+        });
+      }
     }
 
     let hub_id = this.hub.get(Attr.id);
@@ -1340,8 +1480,16 @@ class __media extends Mfs {
   /**
    * 
    */
+  /**
+   * `opt.notify === 0` writes the changelog row (so the in-app notification is
+   * produced) WITHOUT the activity email. Added for the editor-save path, which
+   * had no changelog row at all until 2026-08-21 and therefore produced no
+   * notification: giving it one is what Duy asked for, but silently turning
+   * every note save into a hub-wide email to offline members is a channel nobody
+   * asked for. Every existing caller omits the flag and mails exactly as before.
+   */
   async changelog_write(opt) {
-    let { src, dest, event } = opt;
+    let { src, dest, event, notify } = opt;
     let { metadata, md5Hash } = src;
     if (!md5Hash && metadata && metadata.md5Hash) {
       src.md5Hash = metadata.md5Hash;
@@ -1373,7 +1521,7 @@ class __media extends Mfs {
       this.warn("changelog_write failed:", e)
     }
     this.__changelog = changelog
-    if (changelog) {
+    if (changelog && notify !== 0) {
       // Email leg of the notification fan-out: offline members only, one
       // mail per hub per cooldown window. Deliberately not awaited — mail
       // must never delay or fail the file operation.
@@ -1707,6 +1855,104 @@ class __media extends Mfs {
 
       // Return empty list on error instead of throwing exception
       this.output.list([]);
+    }
+  }
+
+  /**
+   * Search live names below the read-authorized source folder.
+   * Service: media.search_names
+   */
+  async search_names() {
+    const rawToken = this.input.get(Attr.token) || this.input.get("mfs_token");
+    const secureShareSession = this.user.get("is_secure_share_session");
+    const dmzHubCopy = this.user.get("is_dmz_hub_copy");
+    const shareContext = secureShareSession === true ||
+      Number(secureShareSession) === 1 ||
+      this.user.get("dmz_token") ||
+      dmzHubCopy === "yes" ||
+      dmzHubCopy === true ||
+      Number(dmzHubCopy) === 1 ||
+      this.user.get("connection") === "token";
+
+    if (rawToken || shareContext) {
+      return this.exception.user("SEARCH_NAMES_UNSUPPORTED_CONTEXT");
+    }
+    if (this.session.isAnonymous()) return this.exception.forbiden();
+
+    const granted = this.source_granted();
+    const node = granted && granted.node;
+    const filetype = node && (node.filetype || node.category || node.ftype);
+    // mfs_access_node represents the workspace root as `root`, while a folder
+    // window may legitimately be opened at that root. Only accept the caller's
+    // actual home root; arbitrary root-like media nodes remain invalid scopes.
+    const isScopeContainer = filetype === "folder" ||
+      (filetype === "root" && node.id === node.actual_home_id);
+    const hidden = node && (node.status === "hidden" || node.status === "deleted");
+    const linked = node && (node.isalink === true || Number(node.isalink) === 1);
+    if (!granted || !granted.id || !node || !isScopeContainer || hidden || linked ||
+      (Number(granted.privilege) & 2) !== 2) {
+      return this.exception.forbiden();
+    }
+
+    const inputQuery = this.input.get(Attr.query);
+    if (typeof inputQuery !== "string") {
+      return this.exception.user("INVALID_SEARCH_QUERY");
+    }
+    const query = inputQuery.trim().replace(/\s+/g, " ");
+    if (query.length < 1 || query.length > 128) {
+      return this.exception.user("INVALID_SEARCH_QUERY");
+    }
+
+    const requestedLimit = Number(this.input.use(Attr.limit, 6));
+    const limit = Number.isFinite(requestedLimit) ?
+      Math.min(6, Math.max(1, Math.trunc(requestedLimit))) : 6;
+    const hubId = this.hub.get(Attr.id);
+    if (!this.uid || !hubId) return this.exception.forbiden();
+
+    const scopeKey = `${this.uid}\u0000${hubId}`;
+    if (!acquireSearchNamesScope(scopeKey)) {
+      return this.exception.user("SEARCH_NAMES_BUSY");
+    }
+
+    try {
+      const rows = await runSearchNamesQuery(this.db, [
+        this.uid,
+        granted.id,
+        query,
+        limit,
+      ]);
+      return this.output.list(rows || []);
+    } catch (error) {
+      if (error && Number(error.errno) === 1969) {
+        return this.exception.user("SEARCH_NAMES_TIMEOUT");
+      }
+      if (isSearchNamesProjectionNotReady(error)) {
+        return this.exception.user(SEARCH_NAMES_PROJECTION_NOT_READY);
+      }
+      const sqlSignal = error && (error.sqlMessage || error.message);
+      const isSqlSignal = error &&
+        (error.errno === 1644 || error.code === "ER_SIGNAL_EXCEPTION");
+      if (isSqlSignal && SEARCH_NAMES_PROJECTION_SIGNAL_ALIASES.has(sqlSignal)) {
+        return this.exception.user(SEARCH_NAMES_PROJECTION_NOT_READY);
+      }
+      if (isSqlSignal && SEARCH_NAMES_TYPED_SQL_ERRORS.has(sqlSignal)) {
+        const publicSignal = {
+          SEARCH_PROJECTION_TREE_CYCLE: "TREE_CYCLE",
+          SEARCH_PROJECTION_DEPTH_EXCEEDED: "TREE_DEPTH_EXCEEDED",
+          SEARCH_PROJECTION_PATH_TOO_LONG: "MENTION_PATH_TOO_LONG",
+          SEARCH_PROJECTION_NODE_INVALID: "FORBIDDEN",
+        }[sqlSignal] || sqlSignal;
+        return this.exception.user(publicSignal);
+      }
+      if (isSqlSignal && sqlSignal === "SEARCH_NAMES_SCOPE_INVALID") {
+        return this.exception.forbiden();
+      }
+      if (isSqlSignal && sqlSignal === "SEARCH_NAMES_QUERY_INVALID") {
+        return this.exception.user("INVALID_SEARCH_QUERY");
+      }
+      throw error;
+    } finally {
+      releaseSearchNamesScope(scopeKey);
     }
   }
 

@@ -74,6 +74,34 @@
       "errors": []
     },
 
+    "contact": {
+      "doc": "Resolve the account that answers Contact Support, so the client can open a 1:1 conversation with it. Reads the support_contact key from yp.sys_conf (an entity id or an email) and resolves it through drumate_exists. Answers {configured:0} when no key is set or the named account no longer exists, so the caller can fall back to the support mail link.",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "params": {},
+      "returns": {
+        "type": "object",
+        "description": "{configured, is_self, entity_id, firstname, lastname, display} when a support account is resolved; {configured: 0} otherwise."
+      },
+      "errors": []
+    },
+
+    "greet": {
+      "doc": "Seed the caller's support conversation with the greeting message, posted as the support account, when support has never written to that user. Idempotent: answers {posted:0} when support already spoke to the caller, when no support account is configured, when the caller IS the support account, or when the caller is anonymous. The greeting text is server-side (yp.sys_conf key support_greeting, otherwise the shipped default) and never supplied by the client. Gated like support.contact rather than on hub write: the greeting is written into the support account's own p2p tables and touches nothing in the hub the caller happens to be browsing, so requiring write there would deny anyone visiting a hub they only read.",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "params": {},
+      "returns": {
+        "type": "object",
+        "description": "{posted: 1, message_id, message} when the greeting was written; {posted: 0} otherwise."
+      },
+      "errors": []
+    },
+
     "list_feedback": {
       "doc": "List all submitted feedback with sorting and pagination. Requires special_access preproc with remit level 1. Calls support_list_feedback stored procedure with column, order, and page parameters.",
       "scope": "hub",

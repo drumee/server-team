@@ -51,6 +51,19 @@ const SEAT_UNLIMITED = 100000;
 // this moves with it.
 const FREE_SEAT_CAP = 3;
 
+// Free's storage allowance, and a LAST RESORT only: the query below reads the
+// canonical free fallback row, and this is what answers when that row is
+// missing or reads 0. Same contract as FREE_SEAT_CAP — it mirrors the catalog
+// (yp.plan free.quota.$.disk) and moves when the catalog moves. Raised from
+// 5 GB by the 2026-08-18 pricing change (schemas
+// yellow_page/patches/2026-08-18-free-plan-25gb.sql).
+//
+// Erring HIGH is the safe direction here: this figure is a disk LIMIT, so a
+// value below the real allowance would mark a free org storage-over and drop
+// it into graced read-only on a fallback path — punishing users for a missing
+// row. Too high merely fails to flag someone.
+const FREE_DISK_BYTES = 25000000000;
+
 // domainId -> { at: epoch-ms, row: {...}|null } — null row = no org / clean.
 const cache = new Map();
 const CACHE_TTL_MS = 30 * 1000;
@@ -115,7 +128,7 @@ async function _limits(yp, domainId, orgId) {
   let free = firstRow(await yp.await_query(
     `SELECT disk FROM quota WHERE payer_id = 'ffffffffffffffff' LIMIT 1`
   ));
-  return { plan: "free", disk: Number(free && free.disk) || 5000000000, seat: FREE_SEAT_CAP };
+  return { plan: "free", disk: Number(free && free.disk) || FREE_DISK_BYTES, seat: FREE_SEAT_CAP };
 }
 
 /**

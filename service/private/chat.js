@@ -21,7 +21,9 @@ const { remove_node, move_node, copy_node } = MfsTools;
 const { stringify } = JSON;
 const { mkdirSync } = require("fs");
 const { isEmpty, isArray, map, includes } = require("lodash");
-const { CAN_CHAT, CAN_READ, privilegeAllows } = require("../lib/member-capability");
+const { CAN_CHAT, privilegeAllows } = require("../lib/member-capability");
+const {admit: admitMobilePush} = require('../lib/mobile-push');
+const { markFeatureUsage } = require("../lib/feature-usage");
 
 const ENTITY_ID_RE = /^[0-9a-zA-Z_-]{1,32}$/;
 const DB_NAME_RE = /^[A-Za-z0-9_]+$/;
@@ -484,32 +486,18 @@ class privateChat extends Entity {
   }
 
   /**
-   * Is this entity a member of the hub at all, whatever their role?
-   *
-   * A recipient only needs membership, while the caller relaying the message
-   * needs the chat right — they are the one reading the conversation. CAN_READ
-   * is the lowest bit every stored role carries (view 0b000011 up to owner
-   * 0b111111), so it tests "has an active wildcard row" without admitting the
-   * `entity_id='*'` placeholder rows, whose privilege is 0.
-   */
-  async _hubMemberAllowed(hub_id, entity_id) {
-    return this._hubChatAllowed(hub_id, entity_id, CAN_READ);
-  }
-
-  /**
    * Confinement rule for a message read out of a workspace conversation: it may
-   * only reach members of that same workspace.
+   * only reach that workspace's own chat members.
    *
    * A recipient id is either a person (contact row) or a hub (share-room row),
    * and both are checked against the SOURCE workspace:
    *   - the source workspace itself  -> allowed when the caller may chat there
    *     (forwarding back into the room the message came from)
-   *   - a person                     -> allowed when they are a MEMBER of the
-   *     source workspace, whatever their role. Membership is the rule, not the
-   *     chat right: a view-only member is still someone the workspace has
-   *     already admitted (user decision 2026-08-11). The caller doing the
-   *     relaying is held to the higher chat bar, since they are the one reading
-   *     the conversation.
+   *   - a person                     -> allowed when they hold the CHAT right
+   *     in the source workspace. Membership alone is not enough: a view-only
+   *     member cannot read that workspace's conversation, so forwarding one to
+   *     them would hand them content the workspace never granted them
+   *     (QA decision 2026-08-15, superseding the membership-only rule).
    *   - any other hub                -> refused, even one the caller may chat
    *     in, because that would move the message out of its workspace
    *
@@ -539,7 +527,7 @@ class privateChat extends Entity {
       }
       allowed = isEmpty(drumate)
         ? false
-        : await this._hubMemberAllowed(source_hub_id, entity_id);
+        : await this._hubChatAllowed(source_hub_id, entity_id);
     }
     eligCache.set(key, allowed);
     return allowed;
@@ -878,7 +866,19 @@ class privateChat extends Entity {
     let res = await this._distributeMessage(input, message, thread_id, [
       entity_id,
     ]);
+    await admitMobilePush({
+      type: 'chat.post',
+      actor_id: this.uid,
+      key_id: message_id,
+      occurred_at: Date.now(),
+      recipient_uids: [entity_id],
+    });
     this.output.data(res);
+    // Core function -> the Chat bar and Avg messages/user. All three message
+    // paths mark 'chat' (p2p here, workspace and file threads in channel.js):
+    // "used chat" means sent a message, and splitting it three ways would put
+    // a user who only ever posts in their workspace outside chat adoption.
+    markFeatureUsage(this, "chat");
   }
 
   /**

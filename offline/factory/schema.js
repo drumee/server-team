@@ -31,6 +31,7 @@ class __schema extends Logger {
     this.initialize = this.initialize.bind(this);
     this.create_media_root = this.create_media_root.bind(this);
     this.create_vfs_root = this.create_vfs_root.bind(this);
+    this.publish_search_projection = this.publish_search_projection.bind(this);
     this.create_entity = this.create_entity.bind(this);
     this.delete_entity = this.delete_entity.bind(this);
     this.load_sql = this.load_sql.bind(this);
@@ -112,6 +113,53 @@ class __schema extends Logger {
     return true;
   }
 
+  /**
+   * Build the synchronous file-name search projection before this database is
+   * advertised as a clean pool entity. The template intentionally starts in
+   * BUILDING generation 0; media-root creation is the first authoritative
+   * write, so publication must happen after that write succeeds.
+   *
+   * RUN IT ON THE BARE CONNECTION, NOT THROUGH `await_proc`.
+   *
+   * `mfs_search_projection_rebuild` is a top-level maintenance call: it reads
+   * `@@in_transaction` and signals SEARCH_PROJECTION_REBUILD_ACTIVE_TRANSACTION
+   * when a caller transaction is already open. Every mariadb_stub helper
+   * (`await_proc`, `await_query`, `await_func`) issues `c.beginTransaction()`
+   * before its statement, and START TRANSACTION on its own already sets
+   * `in_transaction` — so calling this proc through the stub tripped the guard
+   * on EVERY build. No entity was marked `pool_state='clean'` after that, both
+   * pools drained to nothing pickupEntity could hand out, and `desk.create_hub`
+   * answered CREATION_FAILED with "Pool private is empty. Considerer runing
+   * factory" for every new workspace.
+   *
+   * The COMMIT is not ceremony: the previous helper (mfs_create_node, through
+   * create_media_root) opened its transaction on this same connection and its
+   * `c.commit()` is fire-and-forget, so close the connection's transaction
+   * explicitly before handing it to the guard.
+   *
+   * @returns {Promise<boolean>}
+   */
+  async publish_search_projection() {
+    const c = await this.db.getConnection();
+    await c.query("COMMIT");
+    let projection = await c.query("CALL mfs_search_projection_rebuild()");
+    // A CALL's single SELECT comes back inside the multi-resultset envelope
+    // ([rows, OkPacket]), so unwrap to the first row whatever the depth. An
+    // empty resultset lands on undefined and fails the checks below.
+    while (Array.isArray(projection)) projection = projection[0];
+    const generation = Number(projection && projection.generation);
+    if (
+      !projection ||
+      projection.state !== "READY" ||
+      !Number.isSafeInteger(generation) ||
+      generation < 1
+    ) {
+      console.error("FAILED TO PUBLISH FILE-NAME SEARCH PROJECTION");
+      return false;
+    }
+    return true;
+  }
+
   // ========================
   // create_entity
   // ========================
@@ -130,6 +178,9 @@ class __schema extends Logger {
       res = await this.load_sql();
       if (!res) return;
       res = await this.create_vfs_root();
+      if (!res) return;
+      res = await this.publish_search_projection();
+      if (!res) return;
     }
     const { id, db_name, home_id } = this.entity;
     let sql = `UPDATE entity SET settings=JSON_SET(settings, "$.pool_state", "clean") WHERE id='${id}'`;

@@ -54,12 +54,28 @@ function loadMediaMethods() {
 // cannot certify a call the real procedure would reject. An earlier version of
 // this file returned success unconditionally, which let a rejected reason pass
 // every test while emitting nothing in production.
-function transitionDirectProc({ reservations } = {}) {
+function transitionDirectProc({ reservations, mediaRows } = {}) {
   return (transition_id, lineage_id, actor_id, hub_id, file_nid, thread_id,
     target_state, reason) => {
     if (!["active", "unavailable"].includes(target_state)
       || !["direct_trash", "direct_restore"].includes(reason)) {
       return [{ failed: 1, transitioned: 0, status: "INVALID_DIRECT_TRANSITION" }];
+    }
+    // Each reason asserts the media-table state its file operation was
+    // supposed to leave behind. Trash REMOVES the row (mfs_pre_trash_next
+    // copies to trash_media, then deletes from media), restore puts it back.
+    //
+    // Modelled here because omitting it is what let a real defect ship: the
+    // procedure demanded the row still be PRESENT after a trash, so every
+    // direct_trash returned DURABLE_STATE_MISMATCH, no event was emitted, and
+    // deleting a file silently stopped closing the threads discussing it —
+    // while this suite stayed green throughout.
+    if (mediaRows) {
+      const present = mediaRows.has(`${hub_id}:${file_nid}`);
+      if ((reason === "direct_trash" && present)
+        || (reason === "direct_restore" && !present)) {
+        return [{ failed: 0, transitioned: 0, status: "DURABLE_STATE_MISMATCH" }];
+      }
     }
     // 'unavailable' requires the lineage to be reserved under this same
     // transition id — the reserve-then-transition protocol.
@@ -272,6 +288,69 @@ test("a workspace move does not attempt a direct thread revocation", () => {
   assert.doesNotMatch(body, /_transitionDirectFileThreadAccess/,
     "workspace_move cannot use the direct access procedures — see the comment in it");
   assert.doesNotMatch(body, /channel_file_thread_list_subtree/);
+});
+
+// The regression this suite missed. Trashing a file removes its media row, so
+// the transition runs with the row already gone; a procedure that demands the
+// row still be there transitions nothing and the viewer is never told. Asserts
+// the event reaches the wire under the state a real trash leaves behind.
+test("a trashed file still announces the revoke once its media row is gone", async () => {
+  const reservations = new Map();
+  // Present while the reservation is taken, removed by the trash itself —
+  // the same order as trash(): reserve, mfs_pre_trash_next, then transition.
+  const mediaRows = new Set(["hub-a:file-1"]);
+  const target = {
+    hub_id: "hub-a",
+    file_nid: "file-1",
+    file_thread_id: "thread-1",
+    filename: "Quarterly.pdf",
+  };
+  const { stub, sent } = makeStub({
+    procs: {
+      file_thread_access_transition_direct: transitionDirectProc({ reservations, mediaRows }),
+      file_thread_access_reserve_direct: reserveDirectProc(reservations),
+      entity_sockets: [{ socket_id: "s1", uid: "viewer" }],
+    },
+  });
+
+  await runMethod("_reserveDirectFileThreadTrash", stub, [target]);
+  mediaRows.delete("hub-a:file-1");
+  await runMethod("_transitionDirectFileThreadAccess", stub, [
+    target, "unavailable", "direct_trash",
+  ]);
+
+  const events = accessEvents(sent);
+  assert.strictEqual(events.length, 1,
+    "a trash whose file is gone must still emit the revoke");
+  assert.strictEqual(events[0].payload.state, "revoked");
+});
+
+// The mirror, and the reason the predicate is an equality on state rather than
+// a blanket "row may be missing": a file that never left must not have its
+// thread revoked.
+test("a trash whose file never left is refused and announces nothing", async () => {
+  const reservations = new Map();
+  const mediaRows = new Set(["hub-a:file-1"]);
+  const target = {
+    hub_id: "hub-a",
+    file_nid: "file-1",
+    file_thread_id: "thread-1",
+    filename: "Quarterly.pdf",
+  };
+  const { stub, sent } = makeStub({
+    procs: {
+      file_thread_access_transition_direct: transitionDirectProc({ reservations, mediaRows }),
+      file_thread_access_reserve_direct: reserveDirectProc(reservations),
+      entity_sockets: [{ socket_id: "s1", uid: "viewer" }],
+    },
+  });
+
+  await runMethod("_reserveDirectFileThreadTrash", stub, [target]);
+  await runMethod("_transitionDirectFileThreadAccess", stub, [
+    target, "unavailable", "direct_trash",
+  ]);
+
+  assert.strictEqual(accessEvents(sent).length, 0);
 });
 
 

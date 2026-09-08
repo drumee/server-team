@@ -189,6 +189,14 @@
         "src": "read"
       },
       "params": {}
+    },
+    "upgrade_nudge_state": {
+      "doc": "Upgrade nudges: asks whether THIS member gets an upsell popup right now (storage 70/80/90%, seats 70/90%, workspace age 14/30d). The server owns both suppression rules -- once per threshold per workspace and a shared daily cap, in yp organisation.metadata.$.upgrade_nudge -- and a granted answer is already marked shown, so the client renders it and writes nothing back. Any signed-in member may ask (the popups go to all members).",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "params": {}
     }
   },
   "modules": {
