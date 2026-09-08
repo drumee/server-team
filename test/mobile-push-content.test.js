@@ -52,6 +52,18 @@ test('quotes the message as the body of a chat push', () => {
   );
 });
 
+test('says an instant meeting was started, with the workspace on the subtitle', () => {
+  assert.deepEqual(
+    composeNotification({
+      type: 'channel.post',
+      actorName: 'Temp Test',
+      workspaceName: 'Marketing',
+      excerpt: 'Started an instant meeting',
+    }),
+    {title: 'Temp Test', subtitle: 'To Marketing', body: 'Started an instant meeting'},
+  );
+});
+
 test('reads correctly when an event carries no workspace', () => {
   assert.deepEqual(
     composeNotification({type: 'channel.post', actorName: 'Temp Test'}),
@@ -73,7 +85,9 @@ test('no longer composes a banner for a workspace invitation', () => {
 test('turns stored message text into a bounded one-line excerpt', () => {
   assert.equal(excerptOf('[@Temp Test](user:abc123) can you <b>review</b> this?'), '@Temp Test can you review this?');
   assert.equal(excerptOf('  line one\n\n  line two  '), 'line one line two');
-  assert.equal(excerptOf('[[MEETING: start: room-1]]'), '');
+  // An instant meeting is a channel.post carrying a sentinel, not typed text.
+  assert.equal(excerptOf('[[MEETING:start:{"room_id":"r1","filename":"Standup"}]]'), 'Started an instant meeting');
+  assert.equal(excerptOf('[[MEETING:end:{"room_id":"r1"}]]'), 'Ended the meeting');
   assert.equal(excerptOf('', '[{"nid":"n1"}]'), 'Sent an attachment');
   assert.equal(excerptOf(null, []), '');
   const long = Array.from({length: 60}, (_, i) => `word${i}`).join(' ');

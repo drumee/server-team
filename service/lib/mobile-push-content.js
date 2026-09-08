@@ -27,6 +27,20 @@ const NAME_CACHE_LIMIT = 5000;
 const EXCERPT_LIMIT = 140;
 
 /**
+ * An instant meeting is not a typed message: the meeting window posts a
+ * `channel.post` whose body is the sentinel `[[MEETING:start|end:{json}]]`
+ * (`ui-team` window/meeting `_postMeetingSystemMessage`; the same regex lives
+ * in `service/private/channel.js` and the chat export). Quoting the raw markup
+ * would be nonsense and dropping it would read "Sent a message", so the
+ * sentinel gets its own sentence.
+ */
+const MEETING_SENTINEL = /^\[\[MEETING:(start|end):/i;
+const MEETING_BODY = {
+  start: 'Started an instant meeting',
+  end: 'Ended the meeting',
+};
+
+/**
  * One entry per admitted event type. Each returns the body only; the title is
  * the acting identity and the subtitle the workspace, both resolved by
  * `composeNotification` below. A chat body is the message excerpt when there
@@ -55,15 +69,16 @@ function text(value) {
 }
 
 /**
- * The stored message text, as a one-line quote. Mentions are stored as
- * `[@Name](user:<uid>)` and read back as `@Name` (the web chat item does the
- * same); HTML tags go; a meeting marker (`[[MEETING: start: …]]`) is a system
- * message with nothing worth quoting; whitespace collapses; the rest is cut at
- * `EXCERPT_LIMIT` on a word boundary with an ellipsis.
+ * The stored message text, as a one-line quote. A meeting sentinel becomes its
+ * own sentence; mentions are stored as `[@Name](user:<uid>)` and read back as
+ * `@Name` (the web chat item does the same); HTML tags go; whitespace
+ * collapses; the rest is cut at `EXCERPT_LIMIT` on a word boundary with an
+ * ellipsis.
  */
 function excerptOf(message, attachment) {
   let value = text(message);
-  if (/^\[\[MEETING:/i.test(value)) value = '';
+  const meeting = value.match(MEETING_SENTINEL);
+  if (meeting) return MEETING_BODY[meeting[1].toLowerCase()] || '';
   value = value
     .replace(/\[@(.+?)\]\((?:user|mention)[^)]*\)/g, '@$1')
     .replace(/<[^>]+>/g, ' ')
@@ -197,6 +212,7 @@ function createMobilePushContent(yp) {
 module.exports = {
   EVENT_BODY,
   EXCERPT_LIMIT,
+  MEETING_BODY,
   GENERIC_NOTIFICATION,
   composeNotification,
   createMobilePushContent,
