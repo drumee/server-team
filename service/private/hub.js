@@ -1419,6 +1419,12 @@ class __private_hub extends Hub {
     const results = [];
 
     for (const email of invitees) {
+      // WHAT ACTUALLY LANDED before the email step, so a mail failure can say
+      // so rather than reading as "nothing happened" — see _inviteFailureReason
+      // and the catch at the bottom of this loop. Reset per invitee: one bad
+      // address must not colour the next one's report.
+      let granted = false;
+      let pending = false;
       try {
         let drumate = await this.yp.await_proc("drumate_exists", email);
         if (isArray(drumate)) drumate = drumate[0];
@@ -1429,6 +1435,10 @@ class __private_hub extends Hub {
           // Existing account: grant membership now and push it over the socket, so
           // the workspace shows up in a live session without a reload.
           const r = await this._grantMembership(drumate.id, privilege, 0, message, mfs_home, hubname, username);
+          // `r`, not "it did not throw": _grantMembership returns null when
+          // add_member hands back no row, and it bails BEFORE permission_grant
+          // in that case — so a null there means no membership was written.
+          granted = !!r;
           // The ONLY record this branch leaves of the invitation. Everything
           // else here is the grant, not the invite: no token, no pending row,
           // and the writeAudit below belongs to the other branch. Tracked
@@ -1503,6 +1513,7 @@ class __private_hub extends Hub {
             had_account: false,
             source: "hub_invite",
           });
+          pending = true;
         }
 
         // --- One email for everyone, varying only by workspace scope ---
@@ -1521,7 +1532,7 @@ class __private_hub extends Hub {
             recent_messages,
           },
         );
-        results.push({ email, status: "ok" });
+        results.push({ email, status: "ok", granted, pending });
         // Queue for address-book bookkeeping — only invitees whose branch
         // actually succeeded (a failure throws above and must leave no contact).
         // Deliberately deferred until every invite is done, see below.
@@ -1532,7 +1543,15 @@ class __private_hub extends Hub {
         }
       } catch (err) {
         this.warn("[hub] invite failed for", email, err && err.message);
-        results.push({ email, status: "failed", reason: err && err.message });
+        results.push({
+          email,
+          status: "failed",
+          // The caller needs these to know whether "failed" means "nothing
+          // happened" or "everything happened except the email".
+          granted,
+          pending,
+          reason: this._inviteFailureReason(email, hubname, granted, pending, err),
+        });
       }
     }
 
@@ -1775,6 +1794,51 @@ class __private_hub extends Hub {
       this.warn("[hub] invite: recent messages fetch failed", err && err.message);
       return [];
     }
+  }
+
+  /**
+   * WHAT TO TELL THE CALLER when one invitee's turn threw.
+   *
+   * The loop above is ordered grant-then-notify, so where the throw happened
+   * decides what is true afterwards:
+   *
+   *   - after _grantMembership  → the person IS a member. Access is live, the
+   *     `hub.member_joined` push has already gone out, and only the email is
+   *     missing.
+   *   - after the pending row   → nothing is granted yet, but the invitation is
+   *     recorded and signup will honour it. Only the email is missing.
+   *   - before either           → nothing happened.
+   *
+   * Reporting all three as a bare "the MTA rejected <address>" is wrong in the
+   * direction that costs the admin the most: they read it as "the invite did
+   * not go through", re-invite, get the identical failure, and never learn the
+   * person already has access — while the permissions matrix in front of them
+   * shows no new row, because the panel treats `status: "failed"` as "nothing
+   * to refetch". State what LANDED first, then what did not.
+   *
+   * @param {String} email    the invitee
+   * @param {String} hubname  workspace display name, for the message
+   * @param {Boolean} granted membership was written
+   * @param {Boolean} pending an invitation was recorded for a future signup
+   * @param {Error}  err      whatever threw
+   * @returns {String} the `reason` the caller surfaces
+   */
+  _inviteFailureReason(email, hubname, granted, pending, err) {
+    const why = (err && err.message) || "unknown error";
+    const ws = hubname ? `'${hubname}'` : "this workspace";
+    // Kept to one sentence of consequence each: what failed, then what stands.
+    // The advice that used to follow ("tell them another way", "do not
+    // re-invite") is what the fact already implies, and it pushed the card past
+    // the height its message deserves.
+    if (granted) {
+      return `${why}. Membership was actually granted: ${email} HAS been added `
+        + `to ${ws} and can open it now.`;
+    }
+    if (pending) {
+      return `${why}. The invitation to ${ws} is recorded and will be honoured `
+        + `when ${email} signs up.`;
+    }
+    return `${why}. Nothing was granted — ${email} has no access to ${ws}.`;
   }
 
   /**
