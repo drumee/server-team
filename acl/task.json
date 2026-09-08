@@ -1,12 +1,18 @@
 {
   "services": {
     "list": {
-      "doc": "List tasks scoped to a folder node, ordered by Kanban column then rank. Returns all statuses for that folder.",
+      "doc": "List a board's tasks. With workspace=1 returns EVERY task in the workspace (the board is workspace-level); otherwise scoped to a folder node.",
       "scope": "hub",
       "permission": {
         "src": "read"
       },
       "params": {
+        "workspace": {
+          "type": "number",
+          "required": false,
+          "default": 0,
+          "doc": "When 1, return every task in this workspace regardless of the folder it was created in. A workspace is a database, so this filters on nothing. Takes precedence over nid."
+        },
         "nid": {
           "type": "string",
           "required": false,
@@ -1025,6 +1031,12 @@
         "src": "read"
       },
       "params": {
+        "workspace": {
+          "type": "number",
+          "required": false,
+          "default": 0,
+          "doc": "When 1, return activity for the whole workspace rather than one folder. Matches task.list's workspace flag."
+        },
         "nid": {
           "type": "string",
           "required": false,
@@ -1049,7 +1061,7 @@
       }
     },
     "column_list": {
-      "doc": "List the custom Kanban columns for a folder scope. Built-in columns (todo / in_progress / to_review / complete) are implicit client-side and never stored.",
+      "doc": "List the custom Kanban columns for a workspace. Built-in columns (todo / in_progress / to_review / complete) are implicit client-side and never stored.",
       "scope": "hub",
       "permission": {
         "src": "read"
@@ -1058,7 +1070,7 @@
         "nid": {
           "type": "string",
           "required": false,
-          "doc": "Folder node id to scope to (mirrors task.list)"
+          "doc": "Ignored: columns are workspace-level, and the procedures resolve that single scope themselves. Kept so existing clients that still send it keep working."
         }
       },
       "returns": {
@@ -1102,7 +1114,7 @@
       }
     },
     "column_create": {
-      "doc": "Create a custom Kanban column for a folder scope.",
+      "doc": "Create a custom Kanban column for a workspace.",
       "scope": "hub",
       "permission": {
         "src": "write"
@@ -1122,7 +1134,7 @@
         "nid": {
           "type": "string",
           "required": false,
-          "doc": "Folder node id the column belongs to"
+          "doc": "Ignored: columns are workspace-level, and the procedures resolve that single scope themselves. Kept so existing clients that still send it keep working."
         }
       },
       "returns": {
@@ -1143,7 +1155,7 @@
       ]
     },
     "column_update": {
-      "doc": "Rename and/or re-theme a column on one board. Omit a field to keep it.",
+      "doc": "Rename and/or re-theme a column. There is one board per workspace, so the change applies workspace-wide. Omit a field to keep it.",
       "scope": "hub",
       "permission": {
         "src": "write"
@@ -1157,7 +1169,7 @@
         "nid": {
           "type": "string",
           "required": false,
-          "doc": "Folder scope the column belongs to. Built-in ids are stored once per folder, so without it the rename would hit every board"
+          "doc": "Ignored: columns are workspace-level, and the procedures resolve that single scope themselves. Kept so existing clients that still send it keep working."
         },
         "name": {
           "type": "string",
@@ -1187,8 +1199,44 @@
         }
       ]
     },
+    "column_set_done": {
+      "doc": "Flag a column as a done column, or clear the flag. A task sitting in a done column counts as complete. Workspace-wide, like the column itself.",
+      "scope": "hub",
+      "permission": {
+        "src": "write"
+      },
+      "params": {
+        "id": {
+          "type": "string",
+          "required": true,
+          "doc": "Column id"
+        },
+        "nid": {
+          "type": "string",
+          "required": false,
+          "doc": "Ignored: columns are workspace-level, and the procedures resolve that single scope themselves. Kept so existing clients that still send it keep working."
+        },
+        "is_done": {
+          "type": "number",
+          "required": false,
+          "default": 0,
+          "doc": "1 marks the column as done, 0 clears it. Any number of columns on a board may be done columns, so this never clears the others"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "doc": "The updated column row"
+      },
+      "errors": [
+        {
+          "code": "COLUMN_NOT_FOUND",
+          "message": "No column with that id",
+          "http_status": 404
+        }
+      ]
+    },
     "column_delete": {
-      "doc": "Delete a column from one board. Its tasks are re-homed onto the first surviving column of that same board (never lost).",
+      "doc": "Delete a column from the workspace's board. Its tasks are re-homed onto the first surviving column, whatever folder each was created in, so nothing is orphaned.",
       "scope": "hub",
       "permission": {
         "src": "write"
@@ -1202,7 +1250,7 @@
         "nid": {
           "type": "string",
           "required": false,
-          "doc": "Folder scope the column belongs to. Built-in ids are stored once per folder, so without it the delete would hit every board"
+          "doc": "Ignored: columns are workspace-level, and the procedures resolve that single scope themselves. Kept so existing clients that still send it keep working."
         }
       },
       "returns": {
@@ -1242,7 +1290,7 @@
         "nid": {
           "type": "string",
           "required": false,
-          "doc": "Folder node id the columns belong to. Defaults to workspace root."
+          "doc": "Ignored: columns are workspace-level, and the procedures resolve that single scope themselves. Kept so existing clients that still send it keep working."
         }
       },
       "returns": {
@@ -1251,7 +1299,7 @@
       }
     },
     "column_watch_list": {
-      "doc": "List the column keys the caller is subscribed to (bell on) within a folder scope, so the board can render each column's bell state.",
+      "doc": "List the column keys the caller is subscribed to (bell on) within a workspace, so the board can render each column's bell state.",
       "scope": "hub",
       "permission": {
         "src": "read"
@@ -1260,7 +1308,7 @@
         "nid": {
           "type": "string",
           "required": false,
-          "doc": "Folder node id to scope to (mirrors task.list). Defaults to workspace root."
+          "doc": "Ignored: columns are workspace-level, and the procedures resolve that single scope themselves. Kept so existing clients that still send it keep working."
         }
       },
       "returns": {
@@ -1283,7 +1331,7 @@
         "nid": {
           "type": "string",
           "required": false,
-          "doc": "Folder node id the column belongs to. Defaults to workspace root."
+          "doc": "Ignored: columns are workspace-level, and the procedures resolve that single scope themselves. Kept so existing clients that still send it keep working."
         }
       },
       "returns": {
@@ -1306,7 +1354,7 @@
         "nid": {
           "type": "string",
           "required": false,
-          "doc": "Folder node id the column belongs to. Defaults to workspace root."
+          "doc": "Ignored: columns are workspace-level, and the procedures resolve that single scope themselves. Kept so existing clients that still send it keep working."
         }
       },
       "returns": {

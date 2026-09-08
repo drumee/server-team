@@ -8,13 +8,19 @@
  * Record that a user used a core feature, for the analytics
  * Engagement > Core function page.
  *
- * Six callers, all reporting work that has already committed:
+ * Seven callers, all reporting work that has already committed:
  *   service/media.js store()                  -> 'upload'  (+ filesize)
  *   service/private/chat.js post()            -> 'chat'
  *   service/private/channel.js post()         -> 'chat'
  *   service/private/channel.js file_thread_post() -> 'chat'
+ *   service/private/channel.js file_thread_post() -> 'file_thread' (is_new only)
  *   service/private/task.js create()          -> 'task'
  *   service/conference.js join()              -> 'meeting' (deduped per room)
+ *
+ * gdrive is NOT among these: offline/workers/gdrive/mark-usage.js calls the
+ * `feature_mark` proc directly from the migration worker process, which
+ * cannot require this module (see that file's header). It shares the same
+ * proc and the same feature_usage table, just not this batching lib.
  *
  * NEVER THROWS, NEVER AWAITED BY THE CALLER, for the same reasons as
  * markFunnelMilestone and pushReferralLive next door: the file, the message or
@@ -99,7 +105,7 @@ function flush() {
 
 /**
  * @param {Object} ctx      the handler `this` (needs yp.await_proc)
- * @param {String} feature  'upload' | 'chat' | 'task' | 'meeting'
+ * @param {String} feature  'upload' | 'chat' | 'task' | 'meeting' | 'file_thread'
  * @param {Object} [opts]
  * @param {String} [opts.uid]     defaults to ctx.uid
  * @param {Number} [opts.hits]    defaults to 1

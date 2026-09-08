@@ -26,6 +26,7 @@
  */
 
 const { Mariadb, RedisStore } = require('@drumee/server-essentials');
+const {admit: admitMobilePush} = require('../../service/lib/mobile-push');
 
 const WORKER_NAME = process.env.WORKER_NAME || 'reminder-worker-1';
 const INTERVAL_MS = (parseInt(process.env.REMINDER_INTERVAL_SEC, 10) || 60) * 1000;
@@ -172,6 +173,16 @@ async function notify(m, lead) {
   // The organizer wants a reminder too, not just the invitees.
   const uids = [...new Set([...attendees, m.created_by].filter(Boolean))];
   if (!uids.length) return 0;
+
+  await admitMobilePush({
+    type: 'room.reminder',
+    actor_id: m.created_by || '',
+    hub_id: m.hub_id,
+    key_id: m.nid,
+    occurred_at: Number(m.stime) || Math.floor(Date.now() / 1000),
+    event_phase: lead ? 'upcoming' : 'start',
+    recipient_uids: uids,
+  });
 
   const recipients = asArray(await yp.await_proc('user_sockets', uids));
   if (!recipients.length || !redisInitialized) return 0;

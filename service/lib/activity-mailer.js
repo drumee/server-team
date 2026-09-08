@@ -240,6 +240,20 @@ function _describe(event, src, dest) {
         action: item ? `copied the ${kind} “${item}” in` : "copied content in",
         filename: item,
       };
+    case "media.copy_workspace":
+      // A duplicate leaves this workspace exactly as it was; the sentence is
+      // about what was made FROM it.
+      return {
+        action: item ? `made a copy of the ${kind} “${item}” in` : "duplicated",
+        filename: item,
+      };
+    case "media.merge_workspace":
+      // A merge empties this workspace into a folder of another one, so the
+      // sentence has to end pointing OUT of the hub it is being mailed about.
+      return {
+        action: item ? `moved the ${kind} “${item}” out of` : "moved content out of",
+        filename: item,
+      };
     default:
       return { action: "made changes in", filename: item };
   }

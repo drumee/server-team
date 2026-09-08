@@ -7,7 +7,8 @@
     "dev": "drumee-server-devel",
     "add-dev-endpoint": "drumee-server-endpoint add --endpoin=devel --watchDirs=/mnt/devel --baseDir=/mnt/devel",
     "deploy": "drumee-server-deploy",
-    "setup": "node node_modules/@drumee/server-dev-tools/env/write-env.js --type=app --output devel --base-dir=$(pwd)"
+    "setup": "node node_modules/@drumee/server-dev-tools/env/write-env.js --type=app --output devel --base-dir=$(pwd)",
+    "worker:mobile-push": "node offline/workers/mobilePushWorker.js"
   },
   "dependencies": {
     "@drumee/schemas-utils": "^1.0.0",

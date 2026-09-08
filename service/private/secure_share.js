@@ -249,6 +249,31 @@ class __secure_share extends Mfs {
   }
 
   /**
+   * Remove a share-open notification group (token + recipient) for good -- the
+   * trash button, as opposed to `mark_open_seen`, which since 2026-08-28 means
+   * only "I have read this" and leaves the row in the feed.
+   *
+   * The two were the same operation while the panel opened unread-only: marking
+   * seen filtered the row out, so it looked deleted. Now that read rows stay
+   * (Lexis), "seen" can no longer double as "gone", and this writes the separate
+   * creator_deleted_at marker that activity_get_deleted_ids filters on.
+   *
+   * A new procedure rather than a parameter on secure_share_mark_open_seen:
+   * changing that one's arity would break every existing caller the moment it
+   * was applied, MariaDB having no default parameters.
+   *
+   * Scoped server-side to the caller's own shares (creator_id), exactly like
+   * mark_open_seen -- this table is shared across every creator in yp.
+   * Endpoint: POST /secure_share.delete_open
+   */
+  async delete_open() {
+    const token_id = this.input.need('token_id');
+    const recipient_email = this.input.use('recipient_email', null) || null;
+    await this.yp.await_proc('secure_share_delete_open', this.uid, token_id, recipient_email);
+    this.output.data({ status: 'OK' });
+  }
+
+  /**
    * Turn the sender's "notify me when someone opens this" preference on or off
    * for one of their OWN links, after the link has been created.
    *
@@ -732,6 +757,22 @@ class __secure_share extends Mfs {
     // will add them to the hub with this privilege when they register.
     if (!uid) {
       await this.yp.await_proc('yp_add_pending_invitation', hub_id, 0, privilege, email);
+      // Viral loop: this branch, and ONLY this branch, is a workspace
+      // invitation. It queues the pending row that signup turns into
+      // add_member plus a '*' grant, which is what workspace membership means.
+      // The existing-user branch below is deliberately NOT tracked — it grants
+      // node-scoped access to one shared folder and explicitly avoids making
+      // the recipient a member of the workspace root (see its comment). Counting
+      // it here would report invitations into workspaces nobody ever joined,
+      // and would put the workspace in the avg-team-size denominator on the
+      // strength of a single shared subfolder.
+      try {
+        await this.yp.await_proc(
+          'invite_track_mark', this.uid, hub_id, email, null, 0, 'secure_share'
+        );
+      } catch (err) {
+        this.warn('[secure_share] invite tracking failed for', email, err && err.message);
+      }
       return;
     }
 

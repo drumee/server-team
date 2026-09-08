@@ -15,6 +15,7 @@
 const migrationQueue = require('../queues/migrationQueue');
 const { Mariadb } = require('@drumee/server-essentials');
 const GoogleDriveImporter = require('./gdrive/importer');
+const { markMigrationUsage } = require('./gdrive/mark-usage');
 
 const CONCURRENCY = parseInt(process.env.GDRIVE_WORKER_CONCURRENCY || '2');
 const WORKER_NAME = process.env.WORKER_NAME || 'gdrive-worker-1';
@@ -27,7 +28,14 @@ let yp;
 async function processJob(job) {
   console.log(`[GDriveWorker] Processing job ${job.id} for user ${job.data.user_id}`);
   const importer = new GoogleDriveImporter(job, yp);
-  return await importer.run();
+  const result = await importer.run();
+  // Aha moment -> the "Google migration" bar. Marked HERE rather than on a Bull
+  // 'completed' listener because this function already holds the worker's
+  // long-lived yp handle and the job data; a listener would need its own
+  // handle and would fire in whichever process attached it. Awaited but
+  // non-throwing (see mark-usage.js), so the job's own result is unaffected.
+  await markMigrationUsage(yp, job.data.user_id, result);
+  return result;
 }
 
 async function startWorker() {

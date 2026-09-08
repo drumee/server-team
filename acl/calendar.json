@@ -1,0 +1,119 @@
+{
+  "modules": {
+    "private": "service/private/calendar"
+  },
+  "services": {
+    "list": {
+      "doc": "Personal Calendar aggregated read. Returns one flat, time-sorted list of the caller's Tasks and Meetings across every workspace they belong to, plus their personal-hub items. READ-ONLY: the Calendar writes through the owning service (task.update / task.update_status / room.book / room.update) addressed with each row's own hub_id, so ACL and audit stay identical to editing the item in its folder. Meetings come from one indexed read of the global yp.meeting_schedule index (organizer or attendee); tasks come from task_list_range run against the caller's own database plus each workspace database.",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "params": {
+        "from": {
+          "type": "string",
+          "required": true,
+          "doc": "Inclusive start of the window, YYYY-MM-DD. Rejected with INVALID_DATE_RANGE if malformed."
+        },
+        "to": {
+          "type": "string",
+          "required": true,
+          "doc": "Inclusive end of the window, YYYY-MM-DD. Must not precede `from`."
+        },
+        "kinds": {
+          "type": "array",
+          "required": false,
+          "doc": "Restrict to 'task' and/or 'meeting'. Omit for both."
+        }
+      },
+      "returns": {
+        "type": "array",
+        "doc": "Time-sorted calendar rows. Meetings carry epoch stime/etime; tasks are all-day and carry due_date (plus start_date when the task spans a range).",
+        "items": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "doc": "'task' | 'meeting'"
+            },
+            "id": {
+              "type": "string",
+              "doc": "Record id in its own store: task id, or the meeting node id"
+            },
+            "hub_id": {
+              "type": "string",
+              "doc": "Owning hub. REQUIRED by the client: every write goes back to this hub, and 'Open in folder' cannot be built without it"
+            },
+            "nid": {
+              "type": "string",
+              "doc": "Owning folder node for a task (null at workspace root); the meeting node for a meeting"
+            },
+            "scope": {
+              "type": "string",
+              "doc": "'folder' | 'personal'"
+            },
+            "origin_name": {
+              "type": "string",
+              "doc": "Folder name for a folder task, workspace name for a workspace meeting or a root task, null when personal"
+            },
+            "title": {
+              "type": "string",
+              "doc": "Display title"
+            },
+            "description": {
+              "type": "string",
+              "doc": "Task description, or the meeting agenda"
+            },
+            "due_date": {
+              "type": "string",
+              "doc": "Tasks only, YYYY-MM-DD. Tasks are all-day items"
+            },
+            "start_date": {
+              "type": "string",
+              "doc": "Tasks only. Set when the task spans start_date..due_date"
+            },
+            "stime": {
+              "type": "integer",
+              "doc": "Meetings only. UNIX-epoch seconds — the canonical meeting time"
+            },
+            "etime": {
+              "type": "integer",
+              "doc": "Meetings only. UNIX-epoch seconds"
+            },
+            "status": {
+              "type": "string",
+              "doc": "Column key: a built-in (todo|in_progress|to_review|complete) or a custom task_column id"
+            },
+            "status_label": {
+              "type": "string",
+              "doc": "Resolved column name, or null when the scope's columns were never seeded — a custom column belongs to a folder the client never loads, so the label has to travel with the row"
+            },
+            "status_theme": {
+              "type": "string",
+              "doc": "Resolved column palette key, same rationale as status_label"
+            },
+            "priority": {
+              "type": "string",
+              "doc": "low | medium | high | urgent"
+            },
+            "can_write": {
+              "type": "integer",
+              "doc": "1 when the caller may edit this row from the Calendar. Folder-owned rows answer 0: they are edited in their folder. Meetings answer 1 only for the creator, matching room.update's creator-only rule"
+            },
+            "recur": {
+              "type": "object",
+              "doc": "Recurrence rule {freq, until} or null. Occurrences are expanded CLIENT-side, per the room service's stated contract"
+            }
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": "CALENDAR_UNAVAILABLE",
+          "message": "Every task source failed to answer — the calendar could not be read. Distinct from an empty calendar, which returns an empty list.",
+          "http_status": 503
+        }
+      ]
+    }
+  }
+}

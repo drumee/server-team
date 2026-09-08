@@ -161,6 +161,71 @@
         }
       ]
     },
+    "device_registration_v2": {
+      "doc": "Register or refresh an authenticated mobile push installation. The server binds the registration to the current UID and never returns the push token.",
+      "scope": "hub",
+      "permission": {
+        "src": "owner",
+        "fast_check": "public-api"
+      },
+      "params": {
+        "registration_kind": {
+          "type": "string",
+          "required": true,
+          "doc": "token"
+        },
+        "push_token": {
+          "type": "string",
+          "required": true
+        },
+        "device_id": {
+          "type": "string",
+          "required": true
+        },
+        "device_type": {
+          "type": "string",
+          "required": true
+        },
+        "registration_id": {
+          "type": "integer",
+          "required": false
+        },
+        "binding_version": {
+          "type": "integer",
+          "required": false
+        },
+        "state_version": {
+          "type": "integer",
+          "required": false
+        }
+      },
+      "returns": {
+        "type": "object",
+        "doc": "Registration id, binding/state versions, and state; push token is never returned"
+      },
+      "errors": [
+        {
+          "code": "INVALID_DATA",
+          "message": "registration_kind, push_token, device_id, and device_type are required; registration_id, binding_version, and state_version must be supplied together",
+          "http_status": 400
+        }
+      ]
+    },
+    "device_registration_v2_unregister": {
+      "doc": "Tombstone the current user's mobile push registration using binding and state versions.",
+      "scope": "hub",
+      "permission": {
+        "src": "owner",
+        "fast_check": "public-api"
+      },
+      "params": {
+        "registration_id": {"type": "integer", "required": true},
+        "binding_version": {"type": "integer", "required": true},
+        "state_version": {"type": "integer", "required": true}
+      },
+      "returns": {"type": "object"},
+      "errors": []
+    },
     "email_exists": {
       "doc": "Check whether an email address is already registered in the system.",
       "scope": "hub",

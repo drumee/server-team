@@ -199,9 +199,33 @@ class conference extends __yp {
             // hub_id) it comes back empty and details.filename, which the
             // notification used to render, is undefined. Carry the workspace
             // name explicitly.
+            // Who is actually IN the room, for the card's "N joined" line.
+            // `attendees` is everyone already present — the joiner was
+            // filtered out of it above — so the starter is added back: they
+            // are, by definition, in the meeting they just started.
+            //
+            // Trimmed to what the card renders (a name, which Avatar hashes
+            // for its fallback colour) rather than forwarding whole
+            // conference rows, which carry socket ids, permissions and quota.
+            //
+            // This is what lets the client tell "N joined" from "N invited":
+            // a schedule notice has an invitee list and nobody in the room,
+            // a started meeting has people in it. No extra query — both
+            // values were already in hand.
+            const roster = [...toArray(attendees), user]
+              .filter(Boolean)
+              .map((a) => ({
+                uid: a.uid,
+                name:
+                  [a.firstname, a.lastname].filter(Boolean).join(' ') ||
+                  a.username ||
+                  '',
+              }));
             const startPayload = {
               ...user, details, room_type, hub_id,
               hub_name: this.hubDisplayName(),
+              attendees: roster,
+              joined: roster.length,
             };
             await RedisStore.sendData(this.payload(startPayload, { service: 'conference.start' }), toArray(hubMembers));
           }
@@ -354,6 +378,35 @@ class conference extends __yp {
     let metadata = this.input.need(Attr.metadata);
     let event = this.input.get('event');
     let hub_id = this.hub.get(Attr.id);
+    // Client-side audio diagnostics (ui-team webrtc/room/jitsi.js
+    // postAudioDiagnostics): mic device + label, local audio level, outbound /
+    // inbound RTP counters, selected ICE pair, browser. Kept in the service log
+    // so a "they could not hear me" report can be investigated after the call:
+    // yp.conference rows are deleted on leave, so the DB retains nothing.
+    // A pure diagnostics ping (event=diag) is log-only. It carries no state
+    // change, so there is nothing to persist or to fan out to every socket of
+    // the hub every 30 seconds per participant.
+    if (metadata && typeof metadata === "object" && metadata.diag) {
+      const diag = metadata.diag;
+      delete metadata.diag;
+      let line;
+      try {
+        line = JSON.stringify({
+          room_id,
+          socket_id,
+          uid: this.uid,
+          participant_id: metadata.participant_id,
+          ...diag,
+        }).slice(0, 6000);
+      } catch (e) {
+        line = `unserializable diagnostics: ${e && e.message}`;
+      }
+      this.debug("[conference.diag]", line);
+      if (event === "diag") {
+        this.output.data();
+        return;
+      }
+    }
     let user = await this.yp.await_proc("socket_get", socket_id);
     let exclude = [socket_id];
     if (user.user_id == this.uid) {
