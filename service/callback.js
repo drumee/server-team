@@ -22,9 +22,44 @@ const {Entity} = require('@drumee/server-core');
 // UX-only Checkout return redirects. Entitlement is applied by the webhook;
 // the FE plan updates via the WS payment.plan_updated event.
 class __callback extends Entity {
+  // The desk path every bounce below redirects to — RELATIVE, path only, never
+  // a host. Two separate reasons, and both have to hold or the user lands
+  // signed out.
+  //
+  // 1. The bounce itself. Each of these is the return leg of a cross-site
+  //    top-level navigation (back from checkout.stripe.com / billing.stripe.com,
+  //    or a link clicked in Gmail). The session cookie is SameSite=Strict, so
+  //    the browser withholds it on that FIRST request. Landing straight on the
+  //    SPA would boot it cookie-less → yp.get_env sees a guest → the user
+  //    appears logged out. This tiny HTML page makes the arrival a SAME-SITE
+  //    navigation (our own script setting location), so the cookie IS sent on
+  //    the desk load.
+  //
+  // 2. No host. The session cookie is HOST-scoped, and an org member's session
+  //    lives on their org vhost (team-5202.drumee.in). homepath() answers the
+  //    CONFIGURED base domain — Input.domain() maps the request host onto
+  //    public_domain/private_domain/main_domain — so an absolute redirect jumps
+  //    off the vhost onto drumee.in, where that cookie does not exist. Keeping
+  //    only homepath's PATH preserves the endpoint segment (/-/<endpoint>/)
+  //    while the browser keeps the host it is already on.
+  //
+  // portal_return was fixed this way (verified live). check_out_success and
+  // check_out_cancel kept the absolute form and carried the same defect, which
+  // is why a plan CTA taken through to Stripe and back — paid OR cancelled —
+  // could drop an org user onto the base domain's login / onboarding
+  // (reported 2026-09-08). They share this helper now so the two cannot drift
+  // apart again. Note the return URLs themselves must also stay on the
+  // caller's host — see payment.checkout's svcbase.
+  _deskPath() {
+    let path = '/';
+    try { path = new URL(this.input.homepath()).pathname || '/'; } catch (e) { }
+    if (!/\/$/.test(path)) path = `${path}/`;
+    return path;
+  }
+
   async check_out_cancel() {
     // ?checkout=cancel lets the desk show the payment-failure/cancel modal.
-    this.output.html(`<script> window.location.href = '${this.input.homepath()}?checkout=cancel#/desk/' </script>`);
+    this.output.html(`<script> window.location.href = '${this._deskPath()}?checkout=cancel#/desk/' </script>`);
   }
 
   async check_out_success() {
@@ -33,30 +68,13 @@ class __callback extends Entity {
     // whitelisted to Stripe's session-id alphabet before being echoed into HTML.
     const sid = String(this.input.use('session_id', '')).replace(/[^a-zA-Z0-9_]/g, '');
     const flag = sid ? `?checkout=success&session_id=${sid}` : '?checkout=success';
-    this.output.html(`<script> window.location.href = '${this.input.homepath()}${flag}#/desk/' </script>`);
+    this.output.html(`<script> window.location.href = '${this._deskPath()}${flag}#/desk/' </script>`);
   }
 
-  // Same-site bounce into the desk. Used as the Stripe Billing Portal
-  // return_url AND as the "Open Drumee" target in outgoing emails, on purpose:
-  // the session cookie is SameSite=Strict, so it is withheld on the FIRST
-  // request of a cross-site top-level navigation (coming back from
-  // billing.stripe.com, or clicking a link in Gmail). Landing directly on the
-  // SPA would boot it without the cookie → yp.get_env sees a guest → the user
-  // appears logged out. This tiny HTML bounce turns the arrival into a
-  // SAME-SITE navigation (our own script setting location), so the cookie IS
-  // sent on the desk load and the session survives.
-  //
-  // The redirect is RELATIVE (path only, no host): the session cookie is
-  // HOST-scoped — an org member's session lives on their org vhost
-  // (e.g. team.drumee.in), and homepath() on this cookie-less request resolves
-  // to the MAIN domain, which would jump off the vhost and land signed-out
-  // (verified live). Keeping only homepath's PATH preserves the endpoint
-  // segment (/-/<endpoint>/) while the browser keeps the host.
+  // Stripe Billing Portal return_url, and the "Open Drumee" target in outgoing
+  // emails. See _deskPath above for why this is a bounce and why it is relative.
   async portal_return() {
-    let path = '/';
-    try { path = new URL(this.input.homepath()).pathname || '/'; } catch (e) { }
-    if (!/\/$/.test(path)) path = `${path}/`;
-    this.output.html(`<script> window.location.href = '${path}#/desk/' </script>`);
+    this.output.html(`<script> window.location.href = '${this._deskPath()}#/desk/' </script>`);
   }
 }
 
