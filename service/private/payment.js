@@ -733,7 +733,15 @@ class __private_payment extends Entity {
     // direct return lands the SPA as a guest → apparent logout. The bounce
     // makes the final desk navigation same-site, so the cookie is sent. Same
     // pattern as the checkout success/cancel URLs above.
-    const return_url = this.input.homepath().replace(/\/+$/, '') + '/svc/?service=callback.portal_return';
+    //
+    // And on the buyer's OWN host, for the same reason those use _returnHome:
+    // bare homepath() answers the configured base domain, so an org owner
+    // opening the Portal from team-5202.drumee.in came back to drumee.in
+    // without their host-scoped cookie — the bounce faithfully kept them on
+    // the wrong host. Only a subscriber reaches this endpoint at all, and a
+    // subscriber inside an org is its owner, so this is the path where the
+    // vhost is MOST likely to be the one that matters.
+    const return_url = (await this._returnHome()).replace(/\/+$/, '') + '/svc/?service=callback.portal_return';
     const session = await stripe.billingPortal.sessions.create({
       customer: customer_id,
       return_url,

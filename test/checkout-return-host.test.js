@@ -174,3 +174,30 @@ test('the endpoint segment survives on a dev endpoint', async () => {
   ctx.input = input(BASE, '/-/duynguyen/svc/');
   assert.equal(await home(ctx), `https://${VHOST}/-/duynguyen/`);
 });
+
+// ── every Stripe return URL is built the same way ─────────────────────────
+
+test('no Stripe return URL is built from a bare homepath()', () => {
+  // _returnHome is behaviour-tested above; this is what stops a THIRD return
+  // URL being added later with the bare call and quietly reintroducing the bug.
+  // The Billing Portal was exactly that: portal()'s return_url kept the bare
+  // form after checkout() was fixed, so an org owner opening the Portal still
+  // came back to the base domain — the same apparent logout, from a button on
+  // the same page.
+  const { readFileSync } = require('node:fs');
+  const { join } = require('node:path');
+  const src = readFileSync(join(__dirname, '..', 'service/private/payment.js'), 'utf8');
+
+  const urls = src.split('\n')
+    .filter((l) => /(success_url|cancel_url|return_url|svcbase)\s*=/.test(l) && !/^\s*(\/\/|\*)/.test(l));
+  assert.ok(urls.length >= 3, `expected the return-URL builders, found ${urls.length}`);
+  for (const line of urls) {
+    assert.doesNotMatch(line, /this\.input\.homepath\(\)/,
+      `builds a Stripe return URL from a bare homepath(): ${line.trim()}`);
+  }
+
+  // Both entry points must reach _returnHome — checkout() and portal().
+  const calls = src.match(/await this\._returnHome\(\)/g) || [];
+  assert.equal(calls.length, 2,
+    `checkout() and portal() must both resolve the buyer's host, found ${calls.length}`);
+});
