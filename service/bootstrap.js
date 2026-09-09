@@ -22,6 +22,10 @@ const { RuntimeEnv } = require('@drumee/server-core');
 const { uniqueId, Attr, sysEnv } = require("@drumee/server-essentials");
 const TPL_BASE = "client/templates";
 
+// report_error throttling state (module-level, per worker process).
+let __noiseSampleAt = 0;
+const __reportsBySession = new Map();
+
 class __bootstrap extends RuntimeEnv {
 
   /**
@@ -141,6 +145,35 @@ class __bootstrap extends RuntimeEnv {
     ].some((re) => re.test(msg || ''));
 
     if (isExtension || isNoiseMsg) {
+      // Dropped silently until now, which hid what a runaway tab was actually
+      // throwing (2026-09-09: ~110k noise reports from one tab, message never
+      // seen). Keep one sample a minute per worker so the next storm is
+      // diagnosable, without turning noise into log volume.
+      const now = Date.now();
+      if (now - __noiseSampleAt > 60000) {
+        __noiseSampleAt = now;
+        this.warn("client_error_noise_sample", {
+          msg: String(msg || "").slice(0, 200),
+          url: String(url || "").slice(0, 200),
+          stack: String(stack || "").slice(0, 300),
+        });
+      }
+      return this.output.text("OK");
+    }
+
+    // Per-session cap: a page that keeps throwing gets its first reports logged
+    // and the rest acknowledged without the log write. The client budgets
+    // itself too (errors-handlers.tpl); this covers clients still running the
+    // unbudgeted script.
+    const sid = String(this.input.sid ? this.input.sid() : "") || "anon";
+    const now2 = Date.now();
+    let slot = __reportsBySession.get(sid);
+    if (!slot || now2 - slot.start > 60000) {
+      slot = { start: now2, n: 0 };
+      if (__reportsBySession.size > 5000) __reportsBySession.clear();
+      __reportsBySession.set(sid, slot);
+    }
+    if (++slot.n > 30) {
       return this.output.text("OK");
     }
 
