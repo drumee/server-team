@@ -25,6 +25,7 @@ const {
   COMMENT,
   DESTINATION_IS_NOT_DIRECTORY,
   FILENAME,
+  FILESIZE,
   FILETYPE,
   FOLDER,
   HUB,
@@ -49,6 +50,9 @@ const Media = require("../media");
 const { writeAudit } = require("./_audit");
 const { movePlanRows } = require("./_move-plan");
 const { createHub } = require("../lib/env");
+const { ARCHIVE_EXTENSIONS, inspect } = require("../lib/archive");
+/** filecap.category for every archive extension — what media.filetype carries. */
+const ARCHIVE_CATEGORY = "zip";
 const { stringify } = JSON;
 const { isEmpty, isString, values } = require("lodash");
 const { join, resolve, basename, extname, dirname } = require("path");
@@ -3349,6 +3353,94 @@ class __private_media extends Media {
     const nid = this.input.need(Attr.nid);
     let data = await this.db.await_proc("mfs_node_summary", nid);
     this.output.data(data);
+  }
+
+  /**
+   * Extract an archive into the folder it sits in.
+   *
+   * Inspects here and extracts in offline/media/unzip.js. The split is not
+   * incidental: reading an archive's table of contents is cheap and bounded
+   * (it is the central directory, not the payload), so every refusal a user
+   * could plausibly hit — wrong file type, password-protected, corrupt,
+   * absurdly large, over quota — is decided inside the request, where it can
+   * be answered with a reason. Only the expensive half runs detached.
+   *
+   * The ACL entry is `{src: read, dest: write}`: read on the archive, write on
+   * the destination. That is also what puts unzip under the downgrade
+   * over-limit clamp and the secure-share read-only ceiling, both of which key
+   * off `dest > read` in router/rest — an unzip only ever ADDS bytes, so it
+   * must be refused wherever an upload would be, and declaring `dest` is what
+   * makes that automatic rather than something to remember here.
+   */
+  async unzip() {
+    const socket_id = this.input.need(Attr.socket_id);
+    const node = this.granted_node();
+    if (isEmpty(node) || !node.id) {
+      this.exception.forbiden();
+      return;
+    }
+
+    // Two independent tests that have to agree. `category` is what the UI
+    // gates its menu item on, and the extension list is what 7z was verified
+    // to open on BOTH deployed versions. Between them they also keep Office
+    // files out: docx/xlsx/odt are zip containers and 7z would happily explode
+    // one into its parts, but they are `document` category, not `zip`.
+    const ext = String(node.extension || "").toLowerCase();
+    if (node.filetype !== ARCHIVE_CATEGORY || !ARCHIVE_EXTENSIONS.includes(ext)) {
+      this.exception.user("NOT_AN_ARCHIVE");
+      return;
+    }
+
+    const archivePath = join(node.home_dir, node.id, `orig.${ext}`);
+    if (!existsSync(archivePath)) {
+      this.exception.user("NODE_NOT_FOUND");
+      return;
+    }
+
+    const info = await inspect(archivePath);
+    if (!info.ok) {
+      this.warn(`unzip refused ${node.id}: ${info.reason} ${info.detail || ""}`);
+      this.exception.user(info.reason);
+      return;
+    }
+
+    // Quota is measured against the UNCOMPRESSED total, which is the whole
+    // point — a 40MB zip of a 6GB folder costs 6GB. chekcDiskLimit reads the
+    // size off the input, the same field an upload sets, so free-vs-domain
+    // plans and the unlimited entitlement are all handled in one place rather
+    // than re-derived here. It raises its own user exception when it refuses.
+    this.input.set(FILESIZE, info.totalBytes);
+    if (!(await this.chekcDiskLimit())) return;
+
+    // REQUIRED, never defaulted. The ACL's `dest: write` check runs against
+    // acl._normalize_destination, which reads `heap.pid` — the raw request
+    // field — and falls back to '0', the hub ROOT, when the client omits it.
+    // Defaulting here to anything else (the archive's own parent, say) would
+    // mean the folder we were authorised to write and the folder we actually
+    // extract into are two different nodes, and per-folder privileges make
+    // that a real gap rather than a theoretical one. Requiring it keeps the
+    // node the ACL checked and the node we write to the same node.
+    const pid = this.input.need(PID);
+    const transactionid = this.randomString();
+    const args = {
+      nid: node.id,
+      pid,
+      recipient_id: this.heap.recipient_id || this.hub.get(Attr.id),
+      uid: this.uid,
+      socket_id,
+      transactionid,
+    };
+    const cmd = resolve(server_location, "offline", "media", "unzip.js");
+    const child = Spawn(cmd, [stringify(args)], SPAWN_OPT);
+    child.unref();
+
+    this.output.data({
+      nid: node.id,
+      transactionid,
+      files: info.files,
+      folders: info.folders,
+      size: info.totalBytes,
+    });
   }
 }
 
