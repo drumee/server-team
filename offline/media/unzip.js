@@ -563,9 +563,17 @@ class __offline_media_unzip extends Offline {
     await RedisStore.sendData(
       this.payload({}, { service: "notification.resync" }), recipients);
 
+    // `folder_nid` is what lets the client SHOW the user where the files went
+    // (Lexis, 2026-09-10): it highlights and scrolls to that cell rather than
+    // opening it. Sent AFTER the media.new broadcast above, so by the time the
+    // client reads it the tile it names already exists — and the client polls
+    // anyway, because these travel on two different Redis deliveries and the
+    // ordering between them is not something we get to promise.
+    const root = this.nodes.find((n) => n.lvl === 0);
     await this.send({
       phase: "completed",
       progress: 100,
+      folder_nid: root ? root.id : null,
       files: this.nodes.filter((n) => n.category !== FOLDER).length,
       folders: this.nodes.filter((n) => n.category === FOLDER).length,
       transactionid: this.transactionid,
