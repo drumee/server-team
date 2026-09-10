@@ -26,6 +26,9 @@
     <link rel="icon" href="<%= icon %>?v=3" type="image/svg+xml">
     <link rel="stylesheet" href="/-/static/styles/loader.css?v=1.0.3">
     <link rel="stylesheet" href="/-/static/fonts/Armin-Grotesk/stylesheet.css">
+    <% if (typeof(styles) !== "undefined" && styles) { %>
+    <link rel="stylesheet" href="<%= styles %>">
+    <% } %>
     
     <script>
     <%= renderer.include('bootstrap.js.tpl') %>
