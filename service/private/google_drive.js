@@ -457,6 +457,9 @@ class GoogleDrive extends ExtImport {
       total_files:     prog.total_files     || ret.total_files     || 0,
       total_folders:   prog.total_folders   || ret.total_folders   || 0,
       current_filename: prog.current_filename || null,
+      bytes_total:      prog.bytes_total     || 0,
+      bytes_done:       prog.bytes_done      || 0,
+      bytes_in_flight:  prog.bytes_in_flight || 0,
       errors:           ret.errors || prog.errors || [],
       // The GoogleDriveMigration folder's nid — "Open in Drumee" target.
       dest_nid:         ret.dest_nid || null,

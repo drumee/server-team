@@ -1214,6 +1214,142 @@
       },
       "returns": {}
     },
+    "archive_info": {
+      "doc": "Report how big an archive is without extracting it: file and folder counts, total uncompressed size, and whether it is small enough to extract without asking. Reads the archive table of contents only; creates nothing.",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "params": {
+        "nid": {
+          "type": "string",
+          "required": true,
+          "doc": "Node ID of the archive to inspect"
+        }
+      },
+      "returns": {
+        "nid": {"type": "string", "doc": "Node ID of the archive"},
+        "filename": {"type": "string", "doc": "Archive name without extension"},
+        "extension": {"type": "string", "doc": "Archive extension"},
+        "files": {"type": "number", "doc": "Number of files the archive holds"},
+        "folders": {"type": "number", "doc": "Number of folders the archive holds"},
+        "size": {"type": "number", "doc": "Total uncompressed size in bytes"},
+        "small": {"type": "boolean", "doc": "True when the archive is small enough to extract without confirmation"}
+      },
+      "errors": [
+        {"code": "NOT_AN_ARCHIVE", "message": "The file is not an archive Drumee can extract", "http_status": 400},
+        {"code": "ARCHIVE_FORMAT_UNSUPPORTED", "message": "Drumee cannot extract this archive format", "http_status": 400},
+        {"code": "NODE_NOT_FOUND", "message": "The archive does not exist", "http_status": 404},
+        {"code": "ARCHIVE_UNREADABLE", "message": "The archive is corrupt or not a supported format", "http_status": 400},
+        {"code": "ARCHIVE_ENCRYPTED", "message": "The archive is password protected", "http_status": 400},
+        {"code": "ARCHIVE_EMPTY", "message": "The archive holds no files", "http_status": 400},
+        {"code": "ARCHIVE_UNSAFE_PATH", "message": "The archive holds entries that point outside the destination", "http_status": 400}
+      ]
+    },
+    "unzip": {
+      "doc": "Extract an uploaded archive into a folder. Inspects the archive inline (type, encryption, entry count, uncompressed size, quota) and refuses with a reason; extraction and node creation run detached in offline/media/unzip.js and report progress over the socket.",
+      "scope": "hub",
+      "permission": {
+        "src": "read",
+        "dest": "write"
+      },
+      "params": {
+        "nid": {
+          "type": "string",
+          "required": true,
+          "doc": "Node ID of the archive to extract"
+        },
+        "pid": {
+          "type": "string",
+          "required": true,
+          "doc": "Destination folder ID. The ACL checks write permission on this node, so it must be the folder the archive is actually extracted into"
+        },
+        "socket_id": {
+          "type": "string",
+          "required": true,
+          "doc": "WebSocket ID that receives progress and completion"
+        }
+      },
+      "returns": {
+        "nid": {
+          "type": "string",
+          "doc": "Node ID of the archive"
+        },
+        "transactionid": {
+          "type": "string",
+          "doc": "Correlates the socket progress messages with this call"
+        },
+        "files": {
+          "type": "number",
+          "doc": "Number of files the archive holds"
+        },
+        "folders": {
+          "type": "number",
+          "doc": "Number of folders the archive holds"
+        },
+        "size": {
+          "type": "number",
+          "doc": "Total uncompressed size in bytes"
+        }
+      },
+      "errors": [
+        {
+          "code": "NOT_AN_ARCHIVE",
+          "message": "The file is not an archive Drumee can extract",
+          "http_status": 400
+        },
+        {
+          "code": "ARCHIVE_FORMAT_UNSUPPORTED",
+          "message": "Drumee cannot extract this archive format",
+          "http_status": 400
+        },
+        {
+          "code": "NODE_NOT_FOUND",
+          "message": "The archive does not exist",
+          "http_status": 404
+        },
+        {
+          "code": "ARCHIVE_UNREADABLE",
+          "message": "The archive is corrupt or not a supported format",
+          "http_status": 400
+        },
+        {
+          "code": "ARCHIVE_ENCRYPTED",
+          "message": "The archive is password protected",
+          "http_status": 400
+        },
+        {
+          "code": "ARCHIVE_EMPTY",
+          "message": "The archive holds no files",
+          "http_status": 400
+        },
+        {
+          "code": "ARCHIVE_TOO_MANY_ENTRIES",
+          "message": "The archive holds too many files to extract",
+          "http_status": 400
+        },
+        {
+          "code": "ARCHIVE_TOO_LARGE",
+          "message": "The archive is too large to extract",
+          "http_status": 400
+        },
+        {
+          "code": "ARCHIVE_UNSAFE_PATH",
+          "message": "The archive holds entries that point outside the destination",
+          "http_status": 400
+        },
+        {
+          "code": "your_limit_exceeded",
+          "message": "Your storage limit exceeded",
+          "http_status": 507
+        },
+        {
+          "code": "limit_exceeded",
+          "message": "Organization storage limit exceeded",
+          "http_status": 507
+        }
+      ]
+    },
     "save": {
       "doc": "Save text content to file (text editor function)",
       "scope": "hub",

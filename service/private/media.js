@@ -25,6 +25,7 @@ const {
   COMMENT,
   DESTINATION_IS_NOT_DIRECTORY,
   FILENAME,
+  FILESIZE,
   FILETYPE,
   FOLDER,
   HUB,
@@ -49,6 +50,12 @@ const Media = require("../media");
 const { writeAudit } = require("./_audit");
 const { movePlanRows } = require("./_move-plan");
 const { createHub } = require("../lib/env");
+const {
+  ARCHIVE_EXTENSIONS, SMALL_MAX_BYTES, SMALL_MAX_ENTRIES,
+  UNEXTRACTABLE_EXTENSIONS, inspect,
+} = require("../lib/archive");
+/** filecap.category for every archive extension — what media.filetype carries. */
+const ARCHIVE_CATEGORY = "zip";
 const { stringify } = JSON;
 const { isEmpty, isString, values } = require("lodash");
 const { join, resolve, basename, extname, dirname } = require("path");
@@ -3349,6 +3356,162 @@ class __private_media extends Media {
     const nid = this.input.need(Attr.nid);
     let data = await this.db.await_proc("mfs_node_summary", nid);
     this.output.data(data);
+  }
+
+  /**
+   * Extract an archive into the folder it sits in.
+   *
+   * Inspects here and extracts in offline/media/unzip.js. The split is not
+   * incidental: reading an archive's table of contents is cheap and bounded
+   * (it is the central directory, not the payload), so every refusal a user
+   * could plausibly hit — wrong file type, password-protected, corrupt,
+   * absurdly large, over quota — is decided inside the request, where it can
+   * be answered with a reason. Only the expensive half runs detached.
+   *
+   * The ACL entry is `{src: read, dest: write}`: read on the archive, write on
+   * the destination. That is also what puts unzip under the downgrade
+   * over-limit clamp and the secure-share read-only ceiling, both of which key
+   * off `dest > read` in router/rest — an unzip only ever ADDS bytes, so it
+   * must be refused wherever an upload would be, and declaring `dest` is what
+   * makes that automatic rather than something to remember here.
+   */
+  /**
+   * The ACL-granted node, confirmed to be an archive that exists on disk.
+   * Shared by unzip() and archive_info() so the two can never disagree about
+   * what counts as extractable. Raises the user exception and returns null
+   * when it does not qualify.
+   */
+  _grantedArchive() {
+    const node = this.granted_node();
+    if (isEmpty(node) || !node.id) {
+      this.exception.forbiden();
+      return null;
+    }
+
+    // Two independent tests that have to agree. `category` is what the UI
+    // gates its menu item on, and the extension list is what 7z was verified
+    // to open on BOTH deployed versions. Between them they also keep Office
+    // files out: docx/xlsx/odt are zip containers and 7z would happily explode
+    // one into its parts, but they are `document` category, not `zip`.
+    const ext = String(node.extension || "").toLowerCase();
+    if (node.filetype !== ARCHIVE_CATEGORY) {
+      this.exception.user("NOT_AN_ARCHIVE");
+      return null;
+    }
+    // A format we can read but not decompress — rar, whose decoder is absent
+    // on both deployed 7z builds. Distinguished from "not an archive" because
+    // it IS one, and the difference is what the user is told: "Drumee cannot
+    // extract this format" beats "this is not an archive" in front of a file
+    // that plainly is.
+    if (UNEXTRACTABLE_EXTENSIONS.includes(ext)) {
+      this.exception.user("ARCHIVE_FORMAT_UNSUPPORTED");
+      return null;
+    }
+    if (!ARCHIVE_EXTENSIONS.includes(ext)) {
+      this.exception.user("NOT_AN_ARCHIVE");
+      return null;
+    }
+
+    const path = join(node.home_dir, node.id, `orig.${ext}`);
+    if (!existsSync(path)) {
+      this.exception.user("NODE_NOT_FOUND");
+      return null;
+    }
+    return { node, ext, path };
+  }
+
+  /**
+   * How big an archive is, without extracting it — the read half of unzip.
+   *
+   * Exists because a click on an archive has to choose between two behaviours
+   * (Natrix, 2026-09-10): a SMALL one is extracted straight away, a BIG one
+   * asks first and then shows progress. Reading the central directory is what
+   * makes that choice possible before committing to anything.
+   *
+   * `small` is the SERVER's verdict, not two numbers for the client to
+   * re-judge against its own copy of the thresholds — that is how the two ends
+   * drift apart. The counts come back too, but only so the confirmation can
+   * say what it is about to extract.
+   *
+   * src:read only — it reads a file the caller may already read and creates
+   * nothing, so it must stay callable while a workspace is over its limit
+   * (where the answer "this is an archive of N files" is still true and still
+   * worth showing).
+   */
+  async archive_info() {
+    const a = this._grantedArchive();
+    if (!a) return;
+
+    const info = await inspect(a.path);
+    if (!info.ok) {
+      this.warn(`archive_info refused ${a.node.id}: ${info.reason}`);
+      this.exception.user(info.reason);
+      return;
+    }
+
+    this.output.data({
+      nid: a.node.id,
+      filename: a.node.filename,
+      extension: a.ext,
+      files: info.files,
+      folders: info.folders,
+      size: info.totalBytes,
+      small:
+        info.files + info.folders <= SMALL_MAX_ENTRIES &&
+        info.totalBytes <= SMALL_MAX_BYTES,
+    });
+  }
+
+  async unzip() {
+    const socket_id = this.input.need(Attr.socket_id);
+    const a = this._grantedArchive();
+    if (!a) return;
+    const node = a.node;
+
+    const info = await inspect(a.path);
+    if (!info.ok) {
+      this.warn(`unzip refused ${node.id}: ${info.reason} ${info.detail || ""}`);
+      this.exception.user(info.reason);
+      return;
+    }
+
+    // Quota is measured against the UNCOMPRESSED total, which is the whole
+    // point — a 40MB zip of a 6GB folder costs 6GB. chekcDiskLimit reads the
+    // size off the input, the same field an upload sets, so free-vs-domain
+    // plans and the unlimited entitlement are all handled in one place rather
+    // than re-derived here. It raises its own user exception when it refuses.
+    this.input.set(FILESIZE, info.totalBytes);
+    if (!(await this.chekcDiskLimit())) return;
+
+    // REQUIRED, never defaulted. The ACL's `dest: write` check runs against
+    // acl._normalize_destination, which reads `heap.pid` — the raw request
+    // field — and falls back to '0', the hub ROOT, when the client omits it.
+    // Defaulting here to anything else (the archive's own parent, say) would
+    // mean the folder we were authorised to write and the folder we actually
+    // extract into are two different nodes, and per-folder privileges make
+    // that a real gap rather than a theoretical one. Requiring it keeps the
+    // node the ACL checked and the node we write to the same node.
+    const pid = this.input.need(PID);
+    const transactionid = this.randomString();
+    const args = {
+      nid: node.id,
+      pid,
+      recipient_id: this.heap.recipient_id || this.hub.get(Attr.id),
+      uid: this.uid,
+      socket_id,
+      transactionid,
+    };
+    const cmd = resolve(server_location, "offline", "media", "unzip.js");
+    const child = Spawn(cmd, [stringify(args)], SPAWN_OPT);
+    child.unref();
+
+    this.output.data({
+      nid: node.id,
+      transactionid,
+      files: info.files,
+      folders: info.folders,
+      size: info.totalBytes,
+    });
   }
 }
 
