@@ -181,8 +181,16 @@ class __offline_media_unzip extends Offline {
     new Cache();
     await Cache.load();
 
+    // `nid` rides on EVERY progress message, not just the first: the client
+    // finds the tile to draw on with getItemsByAttr("nid", …), and a message
+    // that cannot name its tile can only be dropped.
     this._payload = this.payload(
-      { phase: "prepare", progress: 0, transactionid: this.transactionid },
+      {
+        nid: this.nid,
+        phase: "prepare",
+        progress: 0,
+        transactionid: this.transactionid,
+      },
       {
         service: this.service,
         tag: this.service,

@@ -61,6 +61,19 @@ const MAX_ENTRIES = 20000;
  */
 const MAX_TOTAL_BYTES = 20 * 1024 * 1024 * 1024;
 
+/**
+ * The small/big line for what a CLICK on an archive does (Natrix, 2026-09-10):
+ * a SMALL one is extracted straight away, a BIG one asks first and then shows
+ * progress. "Small" therefore means "finishes fast enough that asking would be
+ * more interruption than the wait", which is a question of both how much data
+ * has to be written and how many rows have to be created — so it is two
+ * limits, and an archive must be under both.
+ *
+ * Tunable on purpose: these are a product judgement, not a technical one.
+ */
+const SMALL_MAX_ENTRIES = 100;
+const SMALL_MAX_BYTES = 25 * 1024 * 1024;
+
 /** `media`.`user_filename` is varchar(128); `file_path` is varchar(1000). */
 const MAX_FILENAME = 128;
 const MAX_FILE_PATH = 1000;
@@ -294,6 +307,8 @@ module.exports = {
   MAX_FILE_PATH,
   MAX_TOTAL_BYTES,
   REFUSED,
+  SMALL_MAX_BYTES,
+  SMALL_MAX_ENTRIES,
   extract,
   inspect,
   isUnsafeEntryPath,
