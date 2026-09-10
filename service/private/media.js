@@ -51,7 +51,8 @@ const { writeAudit } = require("./_audit");
 const { movePlanRows } = require("./_move-plan");
 const { createHub } = require("../lib/env");
 const {
-  ARCHIVE_EXTENSIONS, SMALL_MAX_BYTES, SMALL_MAX_ENTRIES, inspect,
+  ARCHIVE_EXTENSIONS, SMALL_MAX_BYTES, SMALL_MAX_ENTRIES,
+  UNEXTRACTABLE_EXTENSIONS, inspect,
 } = require("../lib/archive");
 /** filecap.category for every archive extension — what media.filetype carries. */
 const ARCHIVE_CATEGORY = "zip";
@@ -3393,7 +3394,20 @@ class __private_media extends Media {
     // files out: docx/xlsx/odt are zip containers and 7z would happily explode
     // one into its parts, but they are `document` category, not `zip`.
     const ext = String(node.extension || "").toLowerCase();
-    if (node.filetype !== ARCHIVE_CATEGORY || !ARCHIVE_EXTENSIONS.includes(ext)) {
+    if (node.filetype !== ARCHIVE_CATEGORY) {
+      this.exception.user("NOT_AN_ARCHIVE");
+      return null;
+    }
+    // A format we can read but not decompress — rar, whose decoder is absent
+    // on both deployed 7z builds. Distinguished from "not an archive" because
+    // it IS one, and the difference is what the user is told: "Drumee cannot
+    // extract this format" beats "this is not an archive" in front of a file
+    // that plainly is.
+    if (UNEXTRACTABLE_EXTENSIONS.includes(ext)) {
+      this.exception.user("ARCHIVE_FORMAT_UNSUPPORTED");
+      return null;
+    }
+    if (!ARCHIVE_EXTENSIONS.includes(ext)) {
       this.exception.user("NOT_AN_ARCHIVE");
       return null;
     }

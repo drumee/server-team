@@ -35,10 +35,7 @@ const { spawn } = require("child_process");
 const { isAbsolute } = require("path");
 
 /**
- * Extensions we accept. Every one is handled by the codecs compiled into
- * p7zip 16.02 on production (`7z i` lists zip/7z/Rar/Rar5/tar/gzip/bzip2/xz),
- * so none of these can arrive as a "format not supported" failure inside the
- * offline worker where the user would never see the reason.
+ * Extensions we can actually EXTRACT.
  *
  * This list is the ALLOW-list, and it is deliberately narrower than "whatever
  * 7z will open": the zip codec also claims docx/xlsx/odt/ods/epub/jar, which
@@ -47,8 +44,33 @@ const { isAbsolute } = require("path");
  * two checks agree, and neither alone is load-bearing.
  */
 const ARCHIVE_EXTENSIONS = [
-  "zip", "7z", "rar", "tar", "gz", "gzip", "tgz", "bz2", "tbz2", "xz", "txz",
+  "zip", "7z", "tar", "gz", "gzip", "tgz", "bz2", "tbz2", "xz", "txz",
 ];
+
+/**
+ * Archive formats 7z can READ but not DECOMPRESS here, so we decline them up
+ * front instead of failing halfway through an extraction.
+ *
+ * RAR is a registered FORMAT on both deployed builds — `7z i` lists Rar and
+ * Rar5, and `7z l` happily prints a rar's table of contents, because RAR
+ * headers are not compressed. The DECODER is a separate, non-free codec and it
+ * is absent on both: 7-Zip 25.01 on stage lists 35 codecs and not one is RAR,
+ * and the p7zip 16.02 container has no /usr/lib/p7zip/Codecs/ directory at all
+ * (that is where Rar29.so would live). Verified on both, 2026-09-10.
+ *
+ * The trap this creates is specific and nasty: a STORE-mode rar extracts fine
+ * because nothing needs decoding, so a hand-made fixture passes while every
+ * real rar — WinRAR compresses by default — fails at extraction time with
+ * "Unsupported Method", i.e. AFTER the user has already confirmed. Listing
+ * cannot tell us either, since the method is per entry and the headers parse
+ * regardless. Declining by extension is the only check that is both correct
+ * and early.
+ *
+ * Adding p7zip-rar / the unrar codec to the image would make these extractable
+ * and this list should shrink accordingly — it is a deployment fact, not a
+ * property of the format.
+ */
+const UNEXTRACTABLE_EXTENSIONS = ["rar", "r00"];
 
 /** A single archive may not import more nodes than this. */
 const MAX_ENTRIES = 20000;
@@ -98,6 +120,7 @@ const REFUSED = {
   TOO_MANY_ENTRIES: "ARCHIVE_TOO_MANY_ENTRIES",
   TOO_LARGE: "ARCHIVE_TOO_LARGE",
   UNSAFE_PATH: "ARCHIVE_UNSAFE_PATH",
+  FORMAT_UNSUPPORTED: "ARCHIVE_FORMAT_UNSUPPORTED",
 };
 
 /**
@@ -300,6 +323,7 @@ async function extract(archivePath, destDir) {
 
 module.exports = {
   ARCHIVE_EXTENSIONS,
+  UNEXTRACTABLE_EXTENSIONS,
   EXTRACT_TIMEOUT_MS,
   LIST_TIMEOUT_MS,
   MAX_ENTRIES,

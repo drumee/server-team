@@ -1238,6 +1238,7 @@
       },
       "errors": [
         {"code": "NOT_AN_ARCHIVE", "message": "The file is not an archive Drumee can extract", "http_status": 400},
+        {"code": "ARCHIVE_FORMAT_UNSUPPORTED", "message": "Drumee cannot extract this archive format", "http_status": 400},
         {"code": "NODE_NOT_FOUND", "message": "The archive does not exist", "http_status": 404},
         {"code": "ARCHIVE_UNREADABLE", "message": "The archive is corrupt or not a supported format", "http_status": 400},
         {"code": "ARCHIVE_ENCRYPTED", "message": "The archive is password protected", "http_status": 400},
@@ -1295,6 +1296,11 @@
         {
           "code": "NOT_AN_ARCHIVE",
           "message": "The file is not an archive Drumee can extract",
+          "http_status": 400
+        },
+        {
+          "code": "ARCHIVE_FORMAT_UNSUPPORTED",
+          "message": "Drumee cannot extract this archive format",
           "http_status": 400
         },
         {
