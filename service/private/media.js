@@ -50,7 +50,9 @@ const Media = require("../media");
 const { writeAudit } = require("./_audit");
 const { movePlanRows } = require("./_move-plan");
 const { createHub } = require("../lib/env");
-const { ARCHIVE_EXTENSIONS, inspect } = require("../lib/archive");
+const {
+  ARCHIVE_EXTENSIONS, SMALL_MAX_BYTES, SMALL_MAX_ENTRIES, inspect,
+} = require("../lib/archive");
 /** filecap.category for every archive extension — what media.filetype carries. */
 const ARCHIVE_CATEGORY = "zip";
 const { stringify } = JSON;
@@ -3372,12 +3374,17 @@ class __private_media extends Media {
    * must be refused wherever an upload would be, and declaring `dest` is what
    * makes that automatic rather than something to remember here.
    */
-  async unzip() {
-    const socket_id = this.input.need(Attr.socket_id);
+  /**
+   * The ACL-granted node, confirmed to be an archive that exists on disk.
+   * Shared by unzip() and archive_info() so the two can never disagree about
+   * what counts as extractable. Raises the user exception and returns null
+   * when it does not qualify.
+   */
+  _grantedArchive() {
     const node = this.granted_node();
     if (isEmpty(node) || !node.id) {
       this.exception.forbiden();
-      return;
+      return null;
     }
 
     // Two independent tests that have to agree. `category` is what the UI
@@ -3388,16 +3395,66 @@ class __private_media extends Media {
     const ext = String(node.extension || "").toLowerCase();
     if (node.filetype !== ARCHIVE_CATEGORY || !ARCHIVE_EXTENSIONS.includes(ext)) {
       this.exception.user("NOT_AN_ARCHIVE");
-      return;
+      return null;
     }
 
-    const archivePath = join(node.home_dir, node.id, `orig.${ext}`);
-    if (!existsSync(archivePath)) {
+    const path = join(node.home_dir, node.id, `orig.${ext}`);
+    if (!existsSync(path)) {
       this.exception.user("NODE_NOT_FOUND");
+      return null;
+    }
+    return { node, ext, path };
+  }
+
+  /**
+   * How big an archive is, without extracting it — the read half of unzip.
+   *
+   * Exists because a click on an archive has to choose between two behaviours
+   * (Natrix, 2026-09-10): a SMALL one is extracted straight away, a BIG one
+   * asks first and then shows progress. Reading the central directory is what
+   * makes that choice possible before committing to anything.
+   *
+   * `small` is the SERVER's verdict, not two numbers for the client to
+   * re-judge against its own copy of the thresholds — that is how the two ends
+   * drift apart. The counts come back too, but only so the confirmation can
+   * say what it is about to extract.
+   *
+   * src:read only — it reads a file the caller may already read and creates
+   * nothing, so it must stay callable while a workspace is over its limit
+   * (where the answer "this is an archive of N files" is still true and still
+   * worth showing).
+   */
+  async archive_info() {
+    const a = this._grantedArchive();
+    if (!a) return;
+
+    const info = await inspect(a.path);
+    if (!info.ok) {
+      this.warn(`archive_info refused ${a.node.id}: ${info.reason}`);
+      this.exception.user(info.reason);
       return;
     }
 
-    const info = await inspect(archivePath);
+    this.output.data({
+      nid: a.node.id,
+      filename: a.node.filename,
+      extension: a.ext,
+      files: info.files,
+      folders: info.folders,
+      size: info.totalBytes,
+      small:
+        info.files + info.folders <= SMALL_MAX_ENTRIES &&
+        info.totalBytes <= SMALL_MAX_BYTES,
+    });
+  }
+
+  async unzip() {
+    const socket_id = this.input.need(Attr.socket_id);
+    const a = this._grantedArchive();
+    if (!a) return;
+    const node = a.node;
+
+    const info = await inspect(a.path);
     if (!info.ok) {
       this.warn(`unzip refused ${node.id}: ${info.reason} ${info.detail || ""}`);
       this.exception.user(info.reason);
