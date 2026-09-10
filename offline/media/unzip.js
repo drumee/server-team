@@ -53,7 +53,9 @@ const {
   uniqueId,
 } = require("@drumee/server-essentials");
 
-const { extract, MAX_FILENAME, MAX_FILE_PATH } = require("../../service/lib/archive");
+const {
+  extract, MAX_ENTRIES, MAX_FILENAME, MAX_FILE_PATH,
+} = require("../../service/lib/archive");
 
 const FOLDER = "folder";
 /** Folders are booked at the same nominal size serverimport books them at. */
@@ -215,6 +217,7 @@ class __offline_media_unzip extends Offline {
       this.warn(`7z exited ${x.code}: ${x.stderr}`);
       return this.fail("ARCHIVE_UNREADABLE");
     }
+    if (!(await this.unwrapTar())) return this.fail("ARCHIVE_UNREADABLE");
 
     const root = this.importRoot(this.staging);
     if (!root) return this.fail("ARCHIVE_EMPTY");
@@ -253,6 +256,48 @@ class __offline_media_unzip extends Offline {
 
     await this.materialize();
     await this.commit();
+  }
+
+  /**
+   * .tar.gz and friends are TWO containers, and 7z only opens one per pass.
+   *
+   * `7z x report.tgz` yields `report.tar` — a single file, not the tree —
+   * because gzip/bzip2/xz compress a stream and tar is what holds the names.
+   * Without this, unzipping a .tgz produces a folder containing one .tar file,
+   * which is a technically-correct answer to a question nobody asked.
+   *
+   * Detected by SHAPE rather than by the archive's extension: what matters is
+   * that extraction produced exactly one file and that it is a tar, which is
+   * also true of a .gz whose payload happens to be a tar under any name.
+   *
+   * @returns {Promise<boolean>} false only when the inner tar is unreadable
+   */
+  async unwrapTar() {
+    let entries;
+    try {
+      entries = readdirSync(this.staging, { withFileTypes: true });
+    } catch (e) {
+      return true;
+    }
+    if (entries.length !== 1 || !entries[0].isFile()) return true;
+    if (!/\.tar$/i.test(entries[0].name)) return true;
+
+    const inner = join(this.staging, entries[0].name);
+    const out = join(this.staging, ".untar");
+    mkdirSync(out, { recursive: true });
+    const x = await extract(inner, out);
+    if (!x.ok) {
+      this.warn(`inner tar: 7z exited ${x.code}: ${x.stderr}`);
+      return false;
+    }
+    // Drop the intermediate and promote the real tree, so importRoot() and the
+    // walk see the same shape they would for a plain .zip.
+    rmSync(inner, { force: true });
+    for (const e of readdirSync(out)) {
+      renameSync(join(out, e), join(this.staging, e));
+    }
+    rmSync(out, { recursive: true, force: true });
+    return true;
   }
 
   /**
@@ -346,6 +391,19 @@ class __offline_media_unzip extends Offline {
     const seen = new Set();
 
     for (const entry of entries) {
+      // Hard backstop on the node count. media.unzip already refuses an
+      // archive whose LISTING is over MAX_ENTRIES, but a .tar.gz lists as a
+      // single entry — the one inner .tar — so the count inside it is not
+      // knowable before unwrapTar has run. Enforcing it here covers both, and
+      // truncating beats importing an unbounded tree: the files that did land
+      // are real and the folder is usable.
+      if (this.nodes.length >= MAX_ENTRIES) {
+        if (!this.truncated) {
+          this.truncated = 1;
+          this.warn(`Archive exceeds ${MAX_ENTRIES} entries; import truncated`);
+        }
+        return;
+      }
       const absolute = join(dir, entry.name);
       let st;
       try {
