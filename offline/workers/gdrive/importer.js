@@ -34,6 +34,7 @@ const { withDriveRetry, classifyDriveError } = require('./retry');
 const { googleDriveCredentials, googleDriveServiceAccount } = require('../../../service/lib/google_credentials');
 
 const PROGRESS_BATCH = 5;
+const BYTES_PUSH_MS = 1500;   // byte-progress write cadence while downloading
 const PAGE_SIZE = 1000;
 
 /**
@@ -129,6 +130,14 @@ class GoogleDriveImporter {
     // accepted: carrying per-file sizes in the Redis resume set to close it
     // would cost more than the figure is worth.
     this.totalBytes = 0;
+    // Byte-weighted progress for the popup. Drive reports `size` for binary
+    // files only (Workspace docs export at an unknown size and stay out of
+    // the byte math): sizes discovered so far, sizes of files that finished,
+    // and bytes received so far for each download in flight.
+    this.bytesTotal = 0;
+    this.bytesDone = 0;
+    this._inflight = new Map();   // Drive id -> { name, bytes }
+    this._lastBytesPush = 0;
     this._cancelled = false;
     // Token cache populated lazily; refreshed when expires_at - safety < now.
     this._tokenCache = null;          // { access_token, expires_at }
@@ -559,11 +568,17 @@ class GoogleDriveImporter {
         continue;
       }
       this.totalFiles += 1;
+      this.bytesTotal += Number(meta.size || 0);
+      // Tell the popup about this file NOW: with a single picked file the old
+      // flow first reported after the download, so it showed "0 of ?" the
+      // whole time.
+      await this._pushProgress(base, meta.name);
       try {
         await this._importItem(meta, { ...base, destFolder: rootFolder });
         this.processedFiles += 1;
         await this._pushProgress(base, meta.name);
       } catch (e) {
+        this._inflight.delete(meta.id);
         this._pushError({ file: meta.name, code: this._grantCode(e, 'IMPORT_FAILED'), reason: e.message });
         await this._pushProgress(base);
       }
@@ -678,6 +693,7 @@ class GoogleDriveImporter {
     const files = items.filter((i) => i.mimeType !== FOLDER);
     this.totalFolders += 1;
     this.totalFiles += files.length;
+    for (const f of files) this.bytesTotal += Number(f.size || 0);
     await this._pushProgress(opts);
 
     // Folders FIRST, SERIALLY: a child node needs its parent to exist before
@@ -716,6 +732,7 @@ class GoogleDriveImporter {
     // skip the download + DB work, just account for it.
     if (this._done.has(item.id)) {
       this.processedFiles += 1;
+      this.bytesDone += Number(item.size || 0);
       this._onFileComplete(opts);
       return;
     }
@@ -728,6 +745,7 @@ class GoogleDriveImporter {
       // A cancel-induced throw (download aborted mid-backoff) is not a real file
       // error — don't pollute errors[] with it.
       if (this._cancelled) return;
+      this._inflight.delete(item.id);
       this._pushError({ file: item.name, code: this._grantCode(e, 'IMPORT_FAILED'), reason: e.message });
       this._onFileComplete(opts);
     }
@@ -760,6 +778,28 @@ class GoogleDriveImporter {
     } catch (_) { /* in-memory set still de-dups this run */ }
   }
 
+  /** Bytes received so far across every download in flight. */
+  _inflightBytes() {
+    let sum = 0;
+    for (const v of this._inflight.values()) sum += v.bytes;
+    return sum;
+  }
+
+  /** Name of the earliest-started download still in flight, if any. */
+  _inflightName() {
+    for (const v of this._inflight.values()) return v.name;
+    return null;
+  }
+
+  /**
+   * Called per received chunk: at most one progress write every BYTES_PUSH_MS,
+   * so a big file moves the bar without hammering Redis.
+   */
+  _pushBytesProgress() {
+    if (Date.now() - this._lastBytesPush < BYTES_PUSH_MS) return;
+    this._pushProgress();   // self-catching, fire-and-forget
+  }
+
   /**
    * Append an error, but cap the RETAINED list at MAX_ERRORS so a run with
    * thousands of failing files can't bloat job.returnvalue (Redis). errorCount
@@ -780,8 +820,13 @@ class GoogleDriveImporter {
       total_files: this.totalFiles,
       total_folders: this.totalFolders,
       errors_count: this.errorCount,
+      bytes_total: this.bytesTotal,
+      bytes_done: this.bytesDone,
+      bytes_in_flight: this._inflightBytes(),
     };
-    if (currentFilename) payload.current_filename = currentFilename;
+    const name = currentFilename || this._inflightName();
+    if (name) payload.current_filename = name;
+    this._lastBytesPush = Date.now();
     try {
       await this.job.progress(payload);
     } catch (e) {
@@ -866,7 +911,10 @@ class GoogleDriveImporter {
       const probeName = probeExt ? `${probeBase}.${probeExt}` : probeBase;
       const existingId = await opts.hubDb.await_func('node_id_from_path', join(destPath, probeName));
       if (existingId != null) {
-        if (opts.conflictPolicy === 'skip') return;        // silent skip
+        if (opts.conflictPolicy === 'skip') {              // silent skip
+          this.bytesDone += Number(item.size || 0);
+          return;
+        }
         throw new Error('conflict policy not implemented yet'); // Phase 2 handles overwrite/rename
       }
     }
@@ -903,6 +951,9 @@ class GoogleDriveImporter {
           maxRedirects: 5,
           timeout: DRIVE_HTTP_TIMEOUT_MS,
         });
+        // Each retry attempt streams from byte 0 again, so restart the count.
+        const size = Number(item.size || 0);
+        if (size) this._inflight.set(item.id, { name: item.name, bytes: 0 });
         await new Promise((resolve, reject) => {
           const out = createWriteStream(partFile);
           let settled = false;
@@ -917,6 +968,13 @@ class GoogleDriveImporter {
           dl.data.on('error', done);
           out.on('error', done);
           out.on('finish', () => done(null));
+          if (size) {
+            dl.data.on('data', (chunk) => {
+              const cur = this._inflight.get(item.id);
+              if (cur) cur.bytes += chunk.length;
+              this._pushBytesProgress();
+            });
+          }
           dl.data.pipe(out);
         });
       }, { onAuth: () => { this._tokenCache = null; }, isCancelled: () => this._checkCancelled() });
@@ -992,6 +1050,9 @@ class GoogleDriveImporter {
       // which is the "Avg GB migrated/user" card overstating, silently.
       this.totalBytes += Number(item.size || stat.size || 0);
     });
+    // Durably written: move this file from "in flight" to "done" for the bar.
+    this._inflight.delete(item.id);
+    this.bytesDone += Number(item.size || 0);
     // Free the scratch copy immediately after the durable write so peak /tmp
     // stays at ~one file instead of the whole tree — a 10k-file import would
     // otherwise accumulate every downloaded byte until the end-of-job rm in
