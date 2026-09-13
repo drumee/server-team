@@ -53,4 +53,47 @@ async function notifyMemberJoined(svc, hub_id, uid) {
   }
 }
 
-module.exports = { notifyMemberJoined };
+/**
+ * Tell every online member of a hub that EXISTING memberships changed — a role
+ * was set (hub.set_privilege) or members were removed (hub.delete_contributor)
+ * — so open permission matrices refetch.
+ *
+ * Both services already push to the member being changed, and only to them:
+ * that drives the changed member's own windows. The matrices belong to
+ * everybody ELSE looking at the list, and before this nothing reached them —
+ * an admin kept seeing the old role, or the removed member, until they
+ * reopened the panel.
+ *
+ * One push per request, sent after the per-member writes, so a refetch reads
+ * committed rows. The acting admin receives it too and simply refetches what
+ * they already drew — no echo guard, for the reason given on
+ * notifyMemberJoined above.
+ *
+ * Never throws: every call site has already committed the change.
+ *
+ * @param {object} svc      service instance (needs .yp, .payload, .warn)
+ * @param {string} hub_id   hub whose membership changed
+ * @param {object} change
+ * @param {string} change.change  "privilege" | "removed"
+ * @param {string|string[]} change.users  the affected member ids
+ */
+async function notifyMembersChanged(svc, hub_id, { change, users } = {}) {
+  if (!svc || !hub_id) return;
+  try {
+    const dest = toArray(await svc.yp.await_proc("entity_sockets", hub_id));
+    if (isEmpty(dest)) return;
+    await RedisStore.sendData(
+      svc.payload(
+        { hub_id, change, users: toArray(users) },
+        { service: "hub.members_changed" }
+      ),
+      dest
+    );
+  } catch (e) {
+    if (svc.warn) {
+      svc.warn("[notifyMembersChanged] failed for hub", hub_id, e && e.message);
+    }
+  }
+}
+
+module.exports = { notifyMemberJoined, notifyMembersChanged };
