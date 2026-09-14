@@ -313,65 +313,7 @@ class __yp extends Entity {
     }
 
     await this._stampPasswordBacked(r, vars);
-    await this._redeemPendingInvitations(r, vars);
     this.output.data(r);
-  }
-
-  /**
-   * SELF-HEAL AN INVITATION THAT WAS NEVER GRANTED.
-   *
-   * `yp.pending_invitation` holds invitations that could not be granted when
-   * they were sent, and until now the only thing that ever redeemed one was
-   * ACCOUNT CREATION. An invitation addressed to somebody who already had an
-   * account therefore sat there forever: no membership, no `join_hub`, so no
-   * workspace under their home root and nothing for `desk.home` to list — the
-   * workspace was simply invisible to them, reload after reload.
-   *
-   * The source of those rows is fixed (hub.add_contributors / invite_with_roles
-   * no longer refuse to grant across domains), so this is the net underneath:
-   * anyone already carrying an orphaned row is repaired the next time they sign
-   * in, with no support ticket and nothing for them to click.
-   *
-   * ONE INDEXED READ on the common path. `pending_invitation` is keyed by
-   * (hub_id, email) and almost every login finds nothing, in which case the
-   * helper returns before touching anything else. The uid is passed in so it
-   * does not have to look the account up again.
-   *
-   * NEVER FAILS A LOGIN. The session is already established by the time this
-   * runs; a repair that cannot complete is warned and retried on the next
-   * sign-in.
-   */
-  async _redeemPendingInvitations(r, vars = {}) {
-    try {
-      if (!r || r.status !== "ok" || !r.user || !r.user.id) return;
-      const profile = isString(r.user.profile)
-        ? this.session.parseJSON(r.user.profile)
-        : (r.user.profile || {});
-      let email = r.user.email
-        || profile.email
-        || (vars.uid && vars.uid.isEmail && vars.uid.isEmail() ? vars.uid : null);
-      // `pending_invitation` is keyed by ADDRESS, so without one there is
-      // nothing to look up. get_user's shape varies by path (the 2FA leg builds
-      // `r` from it directly), so resolve it rather than give up.
-      if (!email) {
-        let row = await this.yp.await_proc("drumate_exists", r.user.id);
-        if (isArray(row)) row = row[0];
-        email = row && row.email;
-      }
-      if (!email) return;
-      const { resolvePendingInvitations } = require("./lib/resolve-pending-invitation");
-      const res = await resolvePendingInvitations(this, email, {
-        uid: r.user.id,
-        source: "login",
-      });
-      if (res.redeemed) {
-        this.debug(
-          "[login] redeemed", res.redeemed, "orphaned workspace invitation(s) for", email
-        );
-      }
-    } catch (e) {
-      this.warn("login: pending invitation redemption failed:", e && e.message);
-    }
   }
 
   /**
@@ -460,9 +402,6 @@ class __yp extends Entity {
     }
     await logConnection(this, uid);
     const user = await this.yp.await_proc('get_user', uid);
-    // Same repair as the password path — 2FA accounts complete their sign-in
-    // here and never pass through login()'s tail. See _redeemPendingInvitations.
-    await this._redeemPendingInvitations({ status: "ok", user });
     this.output.data(user);
   }
 
