@@ -1311,7 +1311,14 @@ class __private_contact extends Contact {
           res.status = 'ALREADY_IN_CONTACT';
           return this.output.data(res);
         }
-        if (contact.status == 'received') {
+        // A pending incoming invite arrives as 'received' when the sender had
+        // no row in our address book and as 'invitation' when they already did
+        // — a workspace invite auto-adds one. Both mean "they invited us and we
+        // have not answered yet", and contact_invite_accept/_refuse act on the
+        // pair. Letting 'invitation' through here fell into contact_invite,
+        // whose crossed-invite branch flips our own row straight to 'active':
+        // the two accounts end up connected without anyone pressing Accept.
+        if (contact.status == 'received' || contact.status == 'invitation') {
           res.status = 'INVITE_RECEIVED';
           return this.output.data(res);
         }

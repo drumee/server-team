@@ -67,6 +67,24 @@ test('carries the resolved notification and falls back on a blank one', () => {
   );
 });
 
+test('carries the subtitle to iOS natively and as the first body line on Android', () => {
+  const delivery = {
+    event_id: 'event-1', type: 'channel.post', key_id: 'message-1', hub_id: 'hub-1',
+    registration_id: 7, binding_version: 3, state_version: 4, expires_at: 123,
+  };
+  const payload = buildFcmMessage(delivery, 'token-value', {
+    title: 'Temp Test', subtitle: 'To Marketing', body: 'draft is up',
+  }).message;
+  assert.deepEqual(payload.notification, {title: 'Temp Test', body: 'draft is up'});
+  assert.deepEqual(payload.apns.payload.aps.alert, {title: 'Temp Test', subtitle: 'To Marketing', body: 'draft is up'});
+  assert.equal(payload.apns.payload.aps['content-available'], 1);
+  assert.equal(payload.android.notification.body, 'To Marketing\ndraft is up');
+
+  const plain = buildFcmMessage(delivery, 'token-value', {title: 'Temp Test', body: 'lunch?'}).message;
+  assert.deepEqual(plain.apns.payload.aps.alert, {title: 'Temp Test', body: 'lunch?'});
+  assert.equal(plain.android.notification.body, undefined);
+});
+
 test('classifies retryable and token-invalid responses', () => {
   assert.equal(transientStatus(429), true);
   assert.equal(transientStatus(503), true);

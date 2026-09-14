@@ -28,16 +28,16 @@ const {
   ID_NOT_FOUND,
 } = Constants;
 const { resolve } = require("path");
-const { notifyMemberJoined } = require("../lib/notify-member-joined");
+const { notifyMemberJoined, notifyMembersChanged } = require("../lib/notify-member-joined");
 const { butlerFrom } = require("../lib/mail-sender");
 const { mailFailure } = require("../lib/mail-result");
 const { resolveHubInviteName } = require("../lib/hub-invite-name");
+const { resolveHubDisplayName } = require("../lib/hub-display-name");
 const { MfsTools } = require("@drumee/server-core");
 const { remove_dir } = MfsTools;
 const { toArray } = utils;
 const { stringify } = JSON;
 const { writeAudit } = require("./_audit");
-const {admit: admitMobilePush} = require('../lib/mobile-push');
 
 // Workspace areas that count as EXTERNAL (shared outside the member circle).
 // Everything else in the yp.entity.area enum — private, public, personal,
@@ -720,13 +720,24 @@ class __private_hub extends Hub {
   async add_contributors() {
     let users = this.input.need(Attr.users);
     const username = this.user.get("fullname");
-    const hubname = this.hub.get(Attr.name);
     const privilege = this.input.use(Attr.privilege) || this.hub.get(Attr.settings).default_privilege;
     const hours = this.input.use(Attr.hours, 0)
     const days = this.input.use(Attr.days, 0);
     const expiry = hours * 1 + days * 24;
     const lang = this.user.language() || this.input.app_language();
     let mfs_home = await this.db.await_proc("mfs_home");
+    // This used to be this.hub.get(Attr.name) alone, which is yp.hub.hubname --
+    // the HEX ID. Everything downstream inherited it: the invitation email, the
+    // two audit lines, and (through _grantMembership) the workspace name stored
+    // on the invitee's notification, where a hex id renders as no name at all.
+    // Same resolver and same chain as invite(); mfs_home was already fetched
+    // here for the chat-upload grant, so this costs no extra query.
+    const hubname = resolveHubDisplayName(
+      mfs_home,
+      this.hub.get(Attr.hubname),
+      this.hub.get(Attr.name),
+      this.hub.get(Attr.id),
+    );
     let msg = Cache.message("_x_add_you_to_team", lang).format(
       username,
       hubname
@@ -1020,14 +1031,6 @@ class __private_hub extends Hub {
         err && err.message
       );
     }
-    await admitMobilePush({
-      type: 'hub.invite_received',
-      actor_id: this.uid,
-      hub_id: this.hub.get(Attr.id),
-      key_id: uid,
-      occurred_at: Date.now(),
-      recipient_uids: [uid],
-    });
     // Notify online members (admins with the Folder settings permission matrix
     // open) so the new member appears immediately without a manual reload.
     // Covers both callers of _grantMembership: invite() branch B (drumate
@@ -1378,11 +1381,15 @@ class __private_hub extends Hub {
     const hubId = this.hub.get(Attr.id);
     // mfs_home reads yp.hub.name directly (the actual display name);
     // this.hub.get(Attr.name/hubname) returns yp.hub.hubname (a technical id).
+    // The chain itself now lives in service/lib/hub-display-name.js, because
+    // the other two invite endpoints got it wrong by each carrying their own.
     const mfs_home = await this.db.await_proc("mfs_home");
-    const hubname = (mfs_home && mfs_home.name)
-      || this.hub.get(Attr.hubname)
-      || this.hub.get(Attr.name)
-      || hubId;
+    const hubname = resolveHubDisplayName(
+      mfs_home,
+      this.hub.get(Attr.hubname),
+      this.hub.get(Attr.name),
+      hubId,
+    );
     const area = this.hub.get(Attr.area);
     // The ONE axis the email body varies on: internal (private) vs external
     // (shared) workspace. Also decides whether the workspace preview is redacted.
@@ -1962,13 +1969,23 @@ class __private_hub extends Hub {
         continue;
       }
 
-      // Hub display name for notification message
-      const hubInfo = await this.yp.await_proc('get_hub', hub_id);
-      const hubname = (hubInfo && (hubInfo.hubname || hubInfo.name)) || hub_id;
-      const msg = Cache.message('_x_add_you_to_team', lang).format(username, hubname);
-
-      // mfs_home needed for chat_upload_id permission grant
+      // mfs_home is needed for the chat_upload_id permission grant below, and
+      // it is also the ONLY thing here that knows the workspace's display name:
+      // get_hub returns `IF(_exists, h.hubname, _org_name) AS name`, so both of
+      // its name columns are the hex id. Reading them is why this endpoint used
+      // to mail "<inviter> added you to team 218881d8218881dc". Fetched before
+      // the name now; the get_hub call stays because it is what creates a hub's
+      // yp.disk_usage row on demand, and it still supplies the last-resort
+      // fallbacks for a workspace whose yp.hub.name is genuinely NULL.
       const mfs_home = await this.yp.await_proc(`${hub_db}.mfs_home`);
+      const hubInfo = await this.yp.await_proc('get_hub', hub_id);
+      const hubname = resolveHubDisplayName(
+        mfs_home,
+        hubInfo && hubInfo.hubname,
+        hubInfo && hubInfo.name,
+        hub_id,
+      );
+      const msg = Cache.message('_x_add_you_to_team', lang).format(username, hubname);
 
       const members = []; // UIDs to add immediately
       const rows = []; // Results from add_member (for WebSocket notify)
@@ -2670,6 +2687,13 @@ class __private_hub extends Hub {
       // Avg team size has to fall when people leave, not only rise when they
       // join — a rollup refreshed on one side only climbs forever.
       await this._trackWorkspaceMembers(hub_id);
+      // media.remove and hub.member_removed above went to the removed members
+      // only. Every remaining member with the permission matrix open still
+      // showed them; tell the hub, last, so the refetch reads the final list.
+      await notifyMembersChanged(this, hub_id, {
+        change: "removed",
+        users: members,
+      });
     }
     users = await this._members_by_type("not_owner", 1);
     this.output.list(users);
@@ -2805,6 +2829,13 @@ class __private_hub extends Hub {
       let sockets = await this.yp.await_proc("user_sockets", uid);
       await RedisStore.sendData(this.payload(hub), sockets);
     }
+    // The pushes above reach only the members being changed, for their own
+    // windows. Everybody else with the permission matrix open is told here,
+    // once, after every write has landed.
+    await notifyMembersChanged(this, this.hub.get(Attr.id), {
+      change: "privilege",
+      users,
+    });
     this.output.data(users);
   }
 

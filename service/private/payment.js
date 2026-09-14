@@ -142,14 +142,25 @@ class __private_payment extends Entity {
     let stripe = null;
     try { stripe = this._stripe(); } catch (e) { stripe = null; }
     if (stripe) {
-      for (const p of plans) {
-        if (!p || !p.stripe_price_id) continue;
+      // IN PARALLEL. This was `await` inside a for-loop, so the catalog cost
+      // one Stripe round trip per priced row, end to end: 6 active usd rows
+      // measured 1919 ms against ~180 ms for every other payment call, and the
+      // Billing page cannot decide whether a promotion is real until it lands
+      // — so the banner, the strikes and the modal all waited on it. Fanning
+      // the lookups out takes it to roughly the cost of one call.
+      //
+      // Each task keeps its OWN try/catch, so this behaves exactly as before
+      // on a bad price id: that row simply has no amount and the FE falls back
+      // to its offline figure. Promise.all can never reject here, which is
+      // what stops one dead price id from emptying the whole catalog.
+      await Promise.all(plans.map(async (p) => {
+        if (!p || !p.stripe_price_id) return;
         try {
           const price = await stripe.prices.retrieve(p.stripe_price_id);
           p.amount = price.unit_amount;            // minor units (cents)
           p.currency = price.currency || p.currency;
         } catch (e) { /* leave amount unset on lookup failure */ }
-      }
+      }));
     }
     this.output.data({ plans });
   }

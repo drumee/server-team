@@ -1,9 +1,12 @@
 const Crypto = require('crypto');
 
+// What a phone is interrupted for (Aaron, 2026-09-08): a chat message, a
+// meeting, and a mention — in chat, or in a task by @-mention or assignment.
+// A workspace invitation is not on that list; it stays in the Activity feed
+// and the invitation mail.
 const ALLOWED_EVENTS = new Set([
   'chat.post',
   'channel.post',
-  'hub.invite_received',
   'task.assigned',
   'task.mention',
   'room.reminder',
