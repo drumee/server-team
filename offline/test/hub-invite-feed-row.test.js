@@ -530,7 +530,7 @@ async function negativeControls() {
     // Roll the counters back: a negative control's own result is not a test result.
     passed = before.passed;
     failed = before.failed;
-    failures.length = failures.length; // (failures pushed by the quiet suite are dropped below)
+    // Drop the messages the quiet suite pushed: a control's own red is expected.
     while (failures.length && failures[failures.length - 1].startsWith('[NC]')) failures.pop();
     if (broke) { caught++; console.log(`  ✓ ${label} — CAUGHT`); }
     else { console.log(`  ✗ ${label} — NOT CAUGHT`); failed++; failures.push(label + ' — NOT CAUGHT'); }
