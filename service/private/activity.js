@@ -1458,7 +1458,9 @@ class MfsActivity extends Entity {
    * Make a workspace invitation READ as one in the chronological feed.
    *
    * THE BUG (Lexis, 2026-09-14): "[Username] invited you to [workspace]" was
-   * rendered as "[Username] wants to connect" -- the CONTACT-request copy.
+   * rendered as "[Username] wants to connect" -- the CONTACT-request copy --
+   * and the recipients reported that clicking it led nowhere. One cause: the
+   * row's copy AND its click router both switch on the same resolved category.
    *
    * WHY. A workspace invite is a yp.contact_activity row (event
    * 'hub_invite_received', written by hub._grantMembership). Under Unread OFF --
@@ -1488,9 +1490,11 @@ class MfsActivity extends Entity {
    *              contact_activity id. Now they dismiss as contact events, which
    *              is the table the row actually lives in.
    *   hub_id     the invited workspace, from the row's own `data` JSON.
-   *              activity_get_feed_all sets hub_id NULL on every contact row,
-   *              and the invite row is the one place the client needs it (the
-   *              click opens that workspace). Same trick flattenTaskFields uses.
+   *              activity_get_feed_all sets hub_id NULL on every contact row.
+   *              This is the SECOND, independent reason the click was dead: the
+   *              desk's notification opener (wm openNotificationLocation) starts
+   *              with `if (!hub_id) return`, so even with the category fixed the
+   *              click would have bailed there. Same trick flattenTaskFields uses.
    *   author_id  the inviter, so the card shows THEIR face. Without it
    *              getAuthorId() falls through to undefined and the avatar
    *              defaults to the viewer's own picture.

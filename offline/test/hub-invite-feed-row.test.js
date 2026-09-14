@@ -8,7 +8,9 @@
 // is the panel's DEFAULT -- returns the invite as a bare yp.contact_activity row:
 // `category` NULL, `event_type` 'contact', `event` 'hub_invite_received'. The
 // client resolves a row's category as `category || event_type || type`, so the
-// row took the contact-request branch of the renderer.
+// row took the contact-request branch of the renderer -- and its click ROUTER
+// switches on the same value, which is why the recipients also reported that
+// clicking the notification led nowhere.
 //
 //   node offline/test/hub-invite-feed-row.test.js
 //
@@ -186,6 +188,8 @@ async function suite(stampSrc = STAMP_SRC, quiet = false) {
     C('A1 category is stamped', r.category, 'hub_invite');
     C('A2 the client no longer resolves it as a contact request',
       clientCategory(r), 'hub_invite');
+    // Load-bearing for the "clicking it led nowhere" half of the report: the
+    // desk's notification opener refuses a row that carries no hub_id.
     C('A3 workspace id is surfaced for the click target', r.hub_id, HUB);
     C('A4 the inviter owns the avatar', r.author_id, INVITER);
     C('A5 the sentence gets the workspace name', r.hub_name, 'Marketing');
