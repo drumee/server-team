@@ -1152,6 +1152,12 @@ class MfsActivity extends Entity {
     // targeted invitation already covers), so a failure anywhere leaves the feed
     // exactly as it renders today.
     await this._stampTaskFolderNames(result);
+    // Workspace invites: give the raw contact_activity row the category, the
+    // workspace id and the workspace NAME it needs to render as an invitation
+    // rather than as a contact request. See _stampHubInvites -- it is add-only,
+    // so the rollup rows merged above (which already carry all three) pass
+    // through untouched and the two toggle states agree.
+    await this._stampHubInvites(result);
     await this._stampChatMentions(result);
     result = await this._stampMeetingRollups(result);
 
@@ -1445,6 +1451,117 @@ class MfsActivity extends Entity {
     for (const [row, key] of targets) {
       const name = names.get(key);
       if (name) row.folder_name = name;
+    }
+  }
+
+  /**
+   * Make a workspace invitation READ as one in the chronological feed.
+   *
+   * THE BUG (Lexis, 2026-09-14): "[Username] invited you to [workspace]" was
+   * rendered as "[Username] wants to connect" -- the CONTACT-request copy.
+   *
+   * WHY. A workspace invite is a yp.contact_activity row (event
+   * 'hub_invite_received', written by hub._grantMembership). Under Unread OFF --
+   * the panel's DEFAULT -- the feed comes from activity_get_feed_all, whose
+   * contact branch returns every such row with `category` NULL and `event_type`
+   * 'contact'. The client resolves a row's category as
+   * `category || event_type || type`, so the invite resolved to 'contact' and
+   * took the contact branch of the row renderer. Under Unread ON the same event
+   * arrives from notification_hub_invites via mapHubInviteRow, which DOES set
+   * category 'hub_invite' -- so the two toggle states disagreed, and only the
+   * non-default one was right.
+   *
+   * task_assigned / task_mention / meeting_notice are contact_activity rows with
+   * exactly the same problem, and each dodges it with an `event ===` branch that
+   * runs BEFORE the category switch. A hub invite has no such branch, because
+   * the category it needs already exists -- it just never reached this path.
+   * Stamping it here makes both toggle states produce the identical row, instead
+   * of adding a fourth special case to the renderer.
+   *
+   * Three things are stamped, all of them ADD-ONLY (a row that already carries
+   * the field -- i.e. the rollup row -- is never touched, so this is idempotent
+   * and cannot disturb the Unread-ON path):
+   *
+   *   category   'hub_invite'. Also repairs the dismiss route: the client keys
+   *              item_type off `category`, so these rows used to fall back to
+   *              'mfs' and dismiss a CHANGELOG id that happened to equal the
+   *              contact_activity id. Now they dismiss as contact events, which
+   *              is the table the row actually lives in.
+   *   hub_id     the invited workspace, from the row's own `data` JSON.
+   *              activity_get_feed_all sets hub_id NULL on every contact row,
+   *              and the invite row is the one place the client needs it (the
+   *              click opens that workspace). Same trick flattenTaskFields uses.
+   *   author_id  the inviter, so the card shows THEIR face. Without it
+   *              getAuthorId() falls through to undefined and the avatar
+   *              defaults to the viewer's own picture.
+   *
+   * The workspace NAME goes through resolveHubInviteName, the resolver shared
+   * with notification_hub_invites and hub.invite_received_get, so a fourth copy
+   * of that chain cannot drift (that drift is what once left the name blank).
+   * Its first real term is the LIVE name, which is resolved here per distinct
+   * workspace: `data.hub_name` alone is not enough, because hub.add_contributors
+   * and hub.invite_with_roles both record yp.hub.hubname -- the hex id -- and the
+   * resolver correctly refuses to render that as a label.
+   *
+   * Best-effort throughout, exactly like _stampFolderNames: one lookup per
+   * DISTINCT workspace, a hard cap, every failure swallowed, and a missing
+   * routine degrades to the invite-time name rather than breaking the feed.
+   *
+   * Covered by offline/test/hub-invite-feed-row.test.js, which runs this method
+   * for real and holds the identity proof that matters here: stamping a category
+   * does NOT move bookmarkKey(row), so an invitation the user had saved stays
+   * saved.
+   */
+  async _stampHubInvites(rows) {
+    const MAX_LOOKUPS = 12;
+    if (!Array.isArray(rows) || !rows.length) return;
+
+    const targets = [];    // [row, meta]
+    const wanted = new Set();
+    for (const r of rows) {
+      if (!r || r.event !== 'hub_invite_received') continue;
+      let meta = r.data;
+      if (typeof meta === 'string') {
+        try { meta = JSON.parse(meta); } catch (e) { meta = null; }
+      }
+      meta = meta || {};
+      if (!r.category) r.category = 'hub_invite';
+      if (r.hub_id == null && meta.hub_id != null) r.hub_id = meta.hub_id;
+      if (r.author_id == null && r.uid != null) r.author_id = r.uid;
+      targets.push([r, meta]);
+      if (r.hub_name == null && meta.hub_id && wanted.size < MAX_LOOKUPS) {
+        wanted.add(meta.hub_id);
+      }
+    }
+    if (!targets.length) return;
+
+    const names = new Map();
+    for (const hubId of wanted) {
+      try {
+        // Read-only, one row, yp.hub.name -- the name members set and see.
+        // _optionalYpProc, not await_proc: on a deployment where the routine is
+        // not applied yet this must degrade to the invite-time name, without a
+        // warning on every feed load.
+        const row = (await this._optionalYpProc('push_workspace_name', hubId))[0];
+        const name = row && String(row.workspace_name || '').trim();
+        if (name) names.set(hubId, name);
+      } catch (e) {
+        this.debug('[ACTIVITY] workspace name lookup failed', hubId, e && e.message);
+      }
+    }
+
+    for (const [r, meta] of targets) {
+      if (r.hub_name != null) continue;
+      // `hub_live_name` is the resolver's own term for the live name. It rides a
+      // shallow copy rather than being stamped on the row: the client never
+      // reads it, and the feed row's shape is a published contract
+      // (acl/activity.json).
+      const live = meta.hub_id ? names.get(meta.hub_id) : null;
+      const name = resolveHubInviteName(
+        live ? Object.assign({}, r, { hub_live_name: live }) : r,
+        meta,
+      );
+      if (name) r.hub_name = name;
     }
   }
 
