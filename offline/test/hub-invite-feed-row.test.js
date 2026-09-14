@@ -444,10 +444,43 @@ async function suite(stampSrc = STAMP_SRC, quiet = false) {
   }
 
   // ---------------------------------------------------------------------------
-  // 10. Anti-drift invariants, asserted against the SOURCE.
+  // 10. The tab must not move. bucketOf() reads `category` before `event_type`,
+  //     so stamping one could have relocated every workspace invitation to a
+  //     different Notification Center tab. Run against the REAL mapper, sliced
+  //     out of the same module (the same block notification-bucket.test.js uses).
+  // ---------------------------------------------------------------------------
+  {
+    const bStart = src.indexOf('\nconst BUCKET = {');
+    const bEnd = src.indexOf('\nfunction validBucket(value) {');
+    if (bStart < 0 || bEnd < 0 || bEnd < bStart) {
+      console.error('FATAL: could not locate the bucket block — fix this slicer');
+      process.exit(1);
+    }
+    const block = src.slice(bStart, bEnd);
+    if (!block.includes('function bucketOf(row)')) {
+      console.error('FATAL: sliced bucket block has no bucketOf — slicer is wrong');
+      process.exit(1);
+    }
+    // Newline, not `;` — the block ends on a line comment, which would swallow it.
+    const bucketOf = (new Function(`${block}\nreturn bucketOf;`))();
+
+    const raw = feedRow();
+    const preFix = bucketOf(raw);
+    const h = harness({ names: { [HUB]: 'Marketing' }, stampSrc });
+    await h._stampHubInvites.call(h, [raw]);
+    C('N1 the invitation stays in the same tab', bucketOf(raw), preFix);
+    C('N2 which is Other, the tab that owns member invites', preFix, 'other');
+    // 'other' is also bucketOf's default, so N1/N2 could both pass against a
+    // mapper that answered 'other' to everything. Prove it discriminates.
+    C('N3 (the mapper is not a constant)',
+      bucketOf({ event: 'media.new', event_type: 'mfs' }), 'files');
+  }
+
+  // ---------------------------------------------------------------------------
+  // 11. Anti-drift invariants, asserted against the SOURCE.
   //
-  // These three cannot be reached by feeding rows in -- no producer emits a row
-  // that would exercise them -- but each is a contract a later edit could break
+  // These cannot be reached by feeding rows in -- no producer emits a row that
+  // would exercise them -- but each is a contract a later edit could break
   // silently, so they are checked statically rather than not at all.
   // ---------------------------------------------------------------------------
   {
