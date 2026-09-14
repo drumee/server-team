@@ -201,20 +201,6 @@ class MainPage extends RuntimeEnv {
       for (let m of ["runtime", "core", "sprite", "locale", "main"]) {
         bundles[m] = data.app.manifest[`${m}.js`]
       }
-      // The app's stylesheet, when the UI build emits one.
-      //
-      // The UI used to ship every rule inside the JS (webpack style-loader) and
-      // inject ~92 <style> tags at runtime, so this page linked no app CSS at
-      // all. Chrome consults one RuleSet per stylesheet for every element it
-      // restyles, which made a single style recalculation cost 12-30us per
-      // element instead of well under 1us. The UI now extracts one merged
-      // `styles.<hash>.css` and lists it in the same manifest these bundles
-      // come from.
-      //
-      // OPTIONAL ON PURPOSE, so this server is safe to deploy on its own: a UI
-      // build that predates the change has no `styles.css` key, nothing is
-      // linked, and the runtime injection keeps working exactly as before.
-      data.styles = data.app.manifest["styles.css"] || null;
     } else {
       for (let m of ["core", "sprite", "locale", "entry"]) {
         bundles[m] = data.app[m]

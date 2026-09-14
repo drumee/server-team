@@ -28,7 +28,7 @@ const {
   ID_NOT_FOUND,
 } = Constants;
 const { resolve } = require("path");
-const { notifyMemberJoined } = require("../lib/notify-member-joined");
+const { notifyMemberJoined, notifyMembersChanged } = require("../lib/notify-member-joined");
 const { butlerFrom } = require("../lib/mail-sender");
 const { mailFailure } = require("../lib/mail-result");
 const { resolveHubInviteName } = require("../lib/hub-invite-name");
@@ -2661,6 +2661,13 @@ class __private_hub extends Hub {
       // Avg team size has to fall when people leave, not only rise when they
       // join — a rollup refreshed on one side only climbs forever.
       await this._trackWorkspaceMembers(hub_id);
+      // media.remove and hub.member_removed above went to the removed members
+      // only. Every remaining member with the permission matrix open still
+      // showed them; tell the hub, last, so the refetch reads the final list.
+      await notifyMembersChanged(this, hub_id, {
+        change: "removed",
+        users: members,
+      });
     }
     users = await this._members_by_type("not_owner", 1);
     this.output.list(users);
@@ -2796,6 +2803,13 @@ class __private_hub extends Hub {
       let sockets = await this.yp.await_proc("user_sockets", uid);
       await RedisStore.sendData(this.payload(hub), sockets);
     }
+    // The pushes above reach only the members being changed, for their own
+    // windows. Everybody else with the permission matrix open is told here,
+    // once, after every write has landed.
+    await notifyMembersChanged(this, this.hub.get(Attr.id), {
+      change: "privilege",
+      users,
+    });
     this.output.data(users);
   }
 
