@@ -16,10 +16,11 @@
  */
 
 const {
-  Attr, Messenger, Cache, sysEnv, uniqueId
+  Attr, Messenger, Cache, sysEnv, uniqueId, RedisStore
 } = require("@drumee/server-essentials");
 const { resolve } = require('path');
 const { isEmpty } = require("lodash");
+const { notifyMemberJoined } = require("./lib/notify-member-joined");
 const { Mfs } = require("@drumee/server-core");
 
 class __signup extends Mfs {
@@ -146,15 +147,92 @@ class __signup extends Mfs {
 
   /**
    * Resolve pending hub invitations for a newly created user.
-   *
-   * The body of this used to live here, duplicated byte-for-byte in butler.js,
-   * and reachable from account creation ONLY. Both copies now defer to
-   * `service/lib/resolve-pending-invitation`, which the login path and the
-   * repair script share — see that module for why that matters.
+   * Mirrors butler._resolve_pending_invitation.
    */
   async _resolve_pending_invitation(email) {
-    const { resolvePendingInvitations } = require("./lib/resolve-pending-invitation");
-    return resolvePendingInvitations(this, email, { source: "signup" });
+    const { toArray } = require("@drumee/server-essentials").utils;
+
+    const newUser = await this.yp.await_proc("drumate_exists", email);
+    if (isEmpty(newUser) || !newUser.id) return;
+
+    const pending = await this.yp.await_proc("pending_invitation_get_by_email", email);
+    const rows = toArray(pending);
+    if (isEmpty(rows)) return;
+
+    for (const row of rows) {
+      const { hub_id, permission, expiry_time } = row;
+      try {
+        const db_name = await this.yp.await_func("get_db_name", hub_id);
+        if (!db_name) continue;
+        await this.yp.await_proc(`${db_name}.add_member`, newUser.id, permission, expiry_time);
+        await this.yp.await_proc(
+          `${db_name}.permission_grant`,
+          '*', newUser.id, expiry_time, permission, 'system', 'Resolved from pending_invitation on signup'
+        );
+        // Audit: invite redeemed on signup — never let a failure break the join.
+        try {
+          const { writeAudit } = require("./private/_audit");
+          await writeAudit(this, {
+            db: db_name,
+            uid: newUser.id,
+            action: 'invite_accepted',
+            category: 'member',
+            notify_to: 'admin',
+            entity_id: hub_id,
+            log: `Invite accepted — ${email} joined the workspace on signup`,
+          });
+        } catch (e) { /* audit only */ }
+
+        // Notify the (now online) user so the desk sidebar can pick up the
+        // new workspace, mirroring hub.invite()'s notification for drumates.
+        try {
+          const hub = await this.yp.await_proc(`${db_name}.mfs_access_node`, newUser.id, hub_id);
+          if (hub) {
+            hub.ownpath = '/';
+            hub.hub_id = hub.actual_hub_id;
+            hub.db_name = hub.actual_db;
+            const sockets = await this.yp.await_proc('user_sockets', newUser.id);
+            await RedisStore.sendData(this.payload(hub, { service: "hub.invite_received" }), sockets);
+            await RedisStore.sendData(this.payload(hub, { service: "hub.add_contributors" }), sockets);
+          }
+        } catch (err) {
+          this.warn(`[signup._resolve_pending_invitation] WS notify failed for hub ${hub_id}:`, err && err.message);
+        }
+
+        // Tell online members a member joined so an open permission matrix
+        // refreshes (mirrors butler.js _resolve_pending_invitation).
+        await notifyMemberJoined(this, hub_id, newUser.id);
+      } catch (err) {
+        this.warn(`[signup._resolve_pending_invitation] Failed for hub ${hub_id}:`, err && err.message);
+      }
+    }
+
+
+    // Viral loop: every pending invitation for this address is redeemed by this
+    // one sign-up, so the acceptance is recorded once for all of them rather
+    // than per hub — invite_track_accept stamps every row still open for the
+    // address. Placed BEFORE pending_invitation_delete_by_email below, which
+    // erases the only other evidence the invitations ever existed.
+    //
+    // Never allowed to throw: an account that was created and joined its
+    // workspaces, then reported a failure because a metric could not be
+    // written, is strictly worse than an uncounted acceptance.
+    try {
+      await this.yp.await_proc("invite_track_accept", email, newUser.id);
+    } catch (err) {
+      this.warn("[signup._resolve_pending_invitation] invite tracking failed for", email, err && err.message);
+    }
+
+    // The rollup counts live permission rows, so it has to be refreshed after
+    // the grants above — the crawl and these writers must agree.
+    for (const row of rows) {
+      try {
+        await this.yp.await_proc("workspace_members_set", row.hub_id);
+      } catch (err) {
+        this.warn("[signup._resolve_pending_invitation] workspace member tracking failed for", row.hub_id, err && err.message);
+      }
+    }
+    await this.yp.await_proc("pending_invitation_delete_by_email", email);
   }
 }
 

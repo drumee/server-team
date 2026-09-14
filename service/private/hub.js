@@ -738,6 +738,7 @@ class __private_hub extends Hub {
       this.output.data([]);
       return;
     }
+    let { domain_id } = this.user.toJSON();
     let db_name = await this.yp.await_func("get_db_name", this.uid);
     if (!db_name) {
       this.warn("[hub] add_contributors: no contact db for hub", this.uid);
@@ -747,42 +748,29 @@ class __private_hub extends Hub {
     let proc = `${db_name}.my_contact_exists`;
     for (let entity of users) {
       try {
-        const contact = await this.yp.await_proc(proc, 'entity', entity, '', '');
-
-        // WHO GETS ADDED ON THE SPOT: anybody who already holds a Drumee
-        // account. Full stop.
-        //
-        // 🚨 THIS USED TO BE GATED ON THE INVITER. Membership was granted only
-        // when the address was an ACTIVE CONTACT of the caller, or when the
-        // account lived in the caller's own `domain_id`; everything else was
-        // written to `yp.pending_invitation` instead. Both tests describe the
-        // INVITER's address book and the INVITER's organisation — neither says
-        // anything about whether the invitee can hold a membership, and
-        // `hub.invite` (the popup, the folder access panel, the restricted
-        // permission panel) has never applied either of them.
-        //
-        // The domain half was the damaging one, because a pending row is only
-        // ever redeemed at ACCOUNT CREATION (signup / butler). Send it to an
-        // address that already has an account and nothing redeems it, ever: no
-        // add_member, so no `join_hub`, so no workspace under the invitee's
-        // home root, so `desk.home` never lists it and the workspace is
-        // invisible on their desk across reloads. Free accounts all sit in
-        // domain 1 until `org_provision` moves them, so ANY invitation from a
-        // provisioned org to a free user landed there — reported as "I was
-        // invited to a workspace and I cannot see it".
-        //
-        // Authorisation is the hub's permission table, which add_member and
-        // permission_grant below write. Domain equality is not, and was not,
-        // an access rule anywhere else in the stack.
-        let uid = null;
-        if (!isEmpty(contact) && contact.status == "active") uid = contact.uid;
-        // AND FALL THROUGH WHEN THE CONTACT CARRIES NO UID. An address-book row
-        // can be `active` with an empty `uid` (it is filled in when the contact
-        // is matched to an account), and the old code pushed that empty value
-        // into `members` — where add_member quietly bailed and the person was
-        // never added. Asking `drumate_exists` is the answer to the same
-        // question, one query later.
-        if (!uid) {
+        let contact = await this.yp.await_proc(proc, 'entity', entity, '', '');
+        if (!isEmpty(contact)) {
+          if (contact.status == "active") {
+            members.push(contact.uid);
+          } else {
+            await this.yp.await_proc(
+              "yp_add_pending_invitation",
+              this.hub.get(Attr.id),
+              expiry,
+              privilege,
+              entity
+            );
+            await writeAudit(this, {
+              db: this.hub.get(Attr.db_name),
+              uid: this.uid,
+              action: 'invite_sent',
+              category: 'member',
+              notify_to: 'admin',
+              entity_id: this.hub.get(Attr.id),
+              log: `Invite sent to ${entity} for workspace '${hubname}'`,
+            });
+          }
+        } else {
           let drumate = null;
           try {
             drumate = await this.yp.await_proc("drumate_exists", entity);
@@ -790,55 +778,53 @@ class __private_hub extends Hub {
           } catch (e) {
             this.warn("[hub] add_contributors: drumate_exists for entity", entity, e);
           }
-          if (drumate && drumate.id) uid = drumate.id;
-        }
-
-        if (uid) {
-          members.push(uid);
-          continue;
-        }
-
-        // NO ACCOUNT YET. Register the invitation so account creation grants it
-        // (signup's create_account -> _resolve_pending_invitation), and send
-        // the invitation email.
-        await this.yp.await_proc(
-          "yp_add_pending_invitation",
-          this.hub.get(Attr.id),
-          expiry,
-          privilege,
-          entity
-        );
-        await writeAudit(this, {
-          db: this.hub.get(Attr.db_name),
-          uid: this.uid,
-          action: 'invite_sent',
-          category: 'member',
-          notify_to: 'admin',
-          entity_id: this.hub.get(Attr.id),
-          log: `Invite sent to ${entity} for workspace '${hubname}'`,
-        });
-        const isEmail = typeof entity === "string" && entity.indexOf("@") !== -1;
-        if (isEmail) {
-          try {
-            const ContactPrivate = require("./contact");
-            const contactSvc = new ContactPrivate({
-              session: this.session,
-              permission: this.permission || { scope: "hub" }
+          const sameDomain = drumate && drumate.domain_id != null && domain_id === drumate.domain_id;
+          if (sameDomain) {
+            members.push(drumate.id);
+          } else {
+            // Not a contact: register as pending invitation and send contact invitation.
+            // Two cases: (1) Email already has Drumee account → contact.invite sends in-app mail.
+            // (2) Email not in system → contact.invite sends signup/invite email with token.
+            await this.yp.await_proc(
+              "yp_add_pending_invitation",
+              this.hub.get(Attr.id),
+              expiry,
+              privilege,
+              entity
+            );
+            await writeAudit(this, {
+              db: this.hub.get(Attr.db_name),
+              uid: this.uid,
+              action: 'invite_sent',
+              category: 'member',
+              notify_to: 'admin',
+              entity_id: this.hub.get(Attr.id),
+              log: `Invite sent to ${entity} for workspace '${hubname}'`,
             });
-            contactSvc.db = {
-              await_proc: (proc, ...args) => this.yp.await_proc(`${db_name}.${proc}`, ...args),
-              end: () => Promise.resolve()
-            };
-            const origEmail = this.input.use(Attr.email) ?? this.input.get(Attr.email);
-            const origMessage = this.input.use(Attr.message);
-            this.input.set(Attr.email, entity);
-            this.input.set(Attr.message, message);
-            this.input.set("_contact_db_name", db_name);
-            await contactSvc.invite();
-            if (origEmail !== undefined) this.input.set(Attr.email, origEmail);
-            if (origMessage !== undefined) this.input.set(Attr.message, origMessage);
-          } catch (err) {
-            this.warn("[hub] add_contributors: send invitation failed for entity", entity, err);
+            const isEmail = typeof entity === "string" && entity.indexOf("@") !== -1;
+            if (isEmail) {
+              try {
+                const ContactPrivate = require("./contact");
+                const contactSvc = new ContactPrivate({
+                  session: this.session,
+                  permission: this.permission || { scope: "hub" }
+                });
+                contactSvc.db = {
+                  await_proc: (proc, ...args) => this.yp.await_proc(`${db_name}.${proc}`, ...args),
+                  end: () => Promise.resolve()
+                };
+                const origEmail = this.input.use(Attr.email) ?? this.input.get(Attr.email);
+                const origMessage = this.input.use(Attr.message);
+                this.input.set(Attr.email, entity);
+                this.input.set(Attr.message, message);
+                this.input.set("_contact_db_name", db_name);
+                await contactSvc.invite();
+                if (origEmail !== undefined) this.input.set(Attr.email, origEmail);
+                if (origMessage !== undefined) this.input.set(Attr.message, origMessage);
+              } catch (err) {
+                this.warn("[hub] add_contributors: send invitation failed for entity", entity, err);
+              }
+            }
           }
         }
       } catch (err) {
@@ -1939,6 +1925,7 @@ class __private_hub extends Hub {
 
     const username = this.user.get('fullname');
     const lang = this.user.language() || this.input.app_language();
+    const { domain_id } = this.user.toJSON();
     const expiry = 0; // No expiry option in UI
 
     // Inviter's contact DB — used for my_contact_exists lookups
@@ -1986,21 +1973,38 @@ class __private_hub extends Hub {
       // Resolve each user entity
       for (const entity of users) {
         try {
-          // 1. Resolve the entity to an ACCOUNT. Anybody who already holds one
-          //    is granted membership on the spot — see the long note in
-          //    add_contributors: the "active contact of the inviter, or same
-          //    domain_id" test that used to stand here describes the INVITER,
-          //    and a pending row addressed to an existing account is redeemed
-          //    by nothing, so the workspace never appeared on their desk.
+          // 1. Check inviter's contact list
           const contact = await this.yp.await_proc(contact_proc, 'entity', entity, '', '');
 
-          let uid = null;
-          let uidEmail = null;
-          if (!isEmpty(contact) && contact.status === 'active' && contact.uid) {
-            uid = contact.uid;
-            uidEmail = contact.email || asEmail(entity);
+          if (!isEmpty(contact)) {
+            if (contact.status === 'active') {
+              // Known active contact → add immediately
+              members.push(contact.uid);
+              memberEmail.set(contact.uid, contact.email || asEmail(entity));
+            } else {
+              // Pending contact → store for deferred grant
+              await this.yp.await_proc(
+                'yp_add_pending_invitation',
+                hub_id, expiry, privilege, entity
+              );
+              await writeAudit(this, {
+                db: hub_db,
+                uid: this.uid,
+                action: 'invite_sent',
+                category: 'member',
+                notify_to: 'admin',
+                entity_id: hub_id,
+                log: `Invite sent to ${entity} for workspace '${hubname}'`,
+              });
+              await this._trackInviteSent({
+                hub_id,
+                email: asEmail(entity),
+                had_account: false,
+                source: "invite_with_roles",
+              });
+            }
           } else {
-            // Including an `active` contact with no uid — see add_contributors.
+            // Not in contact list — check if user exists in Drumee
             let drumate = null;
             try {
               drumate = await this.yp.await_proc('drumate_exists', entity);
@@ -2008,67 +2012,67 @@ class __private_hub extends Hub {
             } catch (e) {
               this.warn('[hub] invite_with_roles: drumate_exists failed for', entity, e);
             }
-            if (drumate && drumate.id) {
-              uid = drumate.id;
-              uidEmail = drumate.email || asEmail(entity);
-            }
-          }
 
-          if (uid) {
-            members.push(uid);
-            memberEmail.set(uid, uidEmail);
-            continue;
-          }
+            const sameDomain =
+              drumate &&
+              drumate.domain_id != null &&
+              domain_id === drumate.domain_id;
 
-          // 2. No account yet → pending + invite email. Account creation
-          //    redeems the row (signup -> _resolve_pending_invitation).
-          await this.yp.await_proc(
-            'yp_add_pending_invitation',
-            hub_id, expiry, privilege, entity
-          );
-          await writeAudit(this, {
-            db: hub_db,
-            uid: this.uid,
-            action: 'invite_sent',
-            category: 'member',
-            notify_to: 'admin',
-            entity_id: hub_id,
-            log: `Invite sent to ${entity} for workspace '${hubname}'`,
-          });
-          await this._trackInviteSent({
-            hub_id,
-            email: asEmail(entity),
-            had_account: false,
-            source: "invite_with_roles",
-          });
-
-          // Only send email if entity looks like an email address
-          const isEmail = typeof entity === 'string' && entity.indexOf('@') !== -1;
-          if (isEmail) {
-            try {
-              const ContactPrivate = require('./contact');
-              const contactSvc = new ContactPrivate({
-                session: this.session,
-                permission: this.permission || { scope: 'hub' },
-              });
-              contactSvc.db = {
-                await_proc: (proc, ...args) =>
-                  this.yp.await_proc(`${contact_db}.${proc}`, ...args),
-                end: () => Promise.resolve(),
-              };
-              const origEmail = this.input.use(Attr.email);
-              const origMessage = this.input.use(Attr.message);
-              this.input.set(Attr.email, entity);
-              this.input.set(Attr.message, msg);
-              this.input.set('_contact_db_name', contact_db);
-              await contactSvc.invite();
-              if (origEmail !== undefined) this.input.set(Attr.email, origEmail);
-              if (origMessage !== undefined) this.input.set(Attr.message, origMessage);
-            } catch (err) {
-              this.warn(
-                '[hub] invite_with_roles: send invitation failed for',
-                entity, err
+            if (sameDomain) {
+              // Exists on same domain → add immediately
+              members.push(drumate.id);
+              memberEmail.set(drumate.id, drumate.email || asEmail(entity));
+            } else {
+              // Unknown user or different domain → pending + invite email
+              await this.yp.await_proc(
+                'yp_add_pending_invitation',
+                hub_id, expiry, privilege, entity
               );
+              await writeAudit(this, {
+                db: hub_db,
+                uid: this.uid,
+                action: 'invite_sent',
+                category: 'member',
+                notify_to: 'admin',
+                entity_id: hub_id,
+                log: `Invite sent to ${entity} for workspace '${hubname}'`,
+              });
+              await this._trackInviteSent({
+                hub_id,
+                email: asEmail(entity),
+                had_account: false,
+                source: "invite_with_roles",
+              });
+
+              // Only send email if entity looks like an email address
+              const isEmail = typeof entity === 'string' && entity.indexOf('@') !== -1;
+              if (isEmail) {
+                try {
+                  const ContactPrivate = require('./contact');
+                  const contactSvc = new ContactPrivate({
+                    session: this.session,
+                    permission: this.permission || { scope: 'hub' },
+                  });
+                  contactSvc.db = {
+                    await_proc: (proc, ...args) =>
+                      this.yp.await_proc(`${contact_db}.${proc}`, ...args),
+                    end: () => Promise.resolve(),
+                  };
+                  const origEmail = this.input.use(Attr.email);
+                  const origMessage = this.input.use(Attr.message);
+                  this.input.set(Attr.email, entity);
+                  this.input.set(Attr.message, msg);
+                  this.input.set('_contact_db_name', contact_db);
+                  await contactSvc.invite();
+                  if (origEmail !== undefined) this.input.set(Attr.email, origEmail);
+                  if (origMessage !== undefined) this.input.set(Attr.message, origMessage);
+                } catch (err) {
+                  this.warn(
+                    '[hub] invite_with_roles: send invitation failed for',
+                    entity, err
+                  );
+                }
+              }
             }
           }
         } catch (err) {
@@ -2140,17 +2144,7 @@ class __private_hub extends Hub {
         hub.hub_id = hub.actual_hub_id;
         hub.db_name = hub.actual_db;
         const sockets = await this.yp.await_proc('user_sockets', recipient.id);
-        // NAMED, like invite()'s and add_contributors' own pushes. An unnamed
-        // payload arrives at the desk with `options.service` undefined, and
-        // every consumer keys off exactly that: the dispatcher's default branch
-        // re-emits it as `ws:event`, the topbar switcher drops it on
-        // `if (!service) return`, and the sidebar's handler falls through to
-        // super. So a member added here was granted correctly and then had to
-        // reload to find out — the same invisible-workspace symptom, one layer
-        // up from the grant.
-        await RedisStore.sendData(
-          this.payload(hub, { service: "hub.invite_received" }), sockets
-        );
+        await RedisStore.sendData(this.payload(hub), sockets);
       }
 
       // One broadcast per hub is enough — the matrix refetches the whole
