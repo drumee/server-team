@@ -138,6 +138,56 @@ const upload = (over = {}) => ({
     eq(rows[0].folder_name, 'destWins', 'dest keeps precedence when it has data');
   }
 
+  {
+    // REGRESSION (Lexis, 2026-09-14): a media.copy row must read its parent
+    // from `src`, the OPPOSITE of every other media event.
+    //
+    // A copy is filed against the SOURCE hub, so `hub_id` here is the workspace
+    // the file was copied OUT of -- while `dest.parent_id` is a folder in the
+    // copier's own space. Preferring dest paired 'HUB1' with 'PDEST', a pair
+    // that exists nowhere, so the lookup matched nothing and the row lost its
+    // chip. Worse, had the ids ever collided it would have named a folder the
+    // reader cannot see.
+    const h = new Holder({
+      'HUB1:PSRC': { filename: 'No more lies' },
+      'HUB1:PDEST': { filename: 'WRONG - copier private folder' },
+    });
+    const rows = [{
+      event: 'media.copy',
+      hub_id: 'HUB1',
+      src: JSON.stringify({ filename: 'MCCP_B1.pdf', parent_id: 'PSRC', hub_id: 'HUB1' }),
+      dest: JSON.stringify({ filename: 'MCCP_B1.pdf', parent_id: 'PDEST', hub_id: 'PERSONAL' }),
+    }];
+    await h._stampFolderNames(rows);
+    eq(rows[0].folder_name, 'No more lies', 'copy names the folder it was copied FROM');
+    eq(h.calls[0].id, 'PSRC', 'looked up the SOURCE parent, never dest');
+  }
+  {
+    // A copy with no usable src still falls back to dest rather than giving up:
+    // a handful of prod rows carry an empty `src` object.
+    const h = new Holder({ 'HUB1:PDEST': { filename: 'fallback' } });
+    const rows = [{
+      event: 'media.copy',
+      hub_id: 'HUB1',
+      src: '{}',
+      dest: JSON.stringify({ parent_id: 'PDEST' }),
+    }];
+    await h._stampFolderNames(rows);
+    eq(rows[0].folder_name, 'fallback', 'empty src falls back to dest');
+  }
+  {
+    // And the flip side: a NON-copy media event must keep dest precedence,
+    // which is what a move depends on.
+    const h = new Holder({ 'HUB1:PD': { filename: 'destWins' } });
+    const rows = [upload({
+      event: 'media.relocate',
+      dest: JSON.stringify({ parent_id: 'PD' }),
+      src: JSON.stringify({ parent_id: 'PS' }),
+    })];
+    await h._stampFolderNames(rows);
+    eq(rows[0].folder_name, 'destWins', 'non-copy events are unchanged');
+  }
+
   console.log('\n3. lookups are deduped, not per row');
   {
     const h = new Holder({ 'HUB1:P1': { filename: 'checkin' } });
