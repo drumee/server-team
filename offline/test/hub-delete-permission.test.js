@@ -37,38 +37,55 @@
  *      (router/rest/index.js `mightMutate`). Owner and admin both clear that
  *      bar; anything at or below `read` would not.
  *
- * The bitmask values come from the INSTALLED @drumee/server-essentials, not
- * from a copy, so a change to the shared table is a failure here rather than a
- * silent drift.
+ * DEPENDENCY-FREE BY DESIGN. The CI job that runs this deliberately does not
+ * `npm install` (see .github/workflows/test.yml), so the private
+ * @drumee/server-essentials package is usually absent on the runner. The bit
+ * values are therefore declared locally and every assertion works from them;
+ * when the package IS present we additionally check the local copy still
+ * matches the shipped table, so drift is caught rather than assumed away. Same
+ * arrangement as secure-share-session.test.js.
  */
 const test = require("node:test");
 const assert = require("node:assert");
 const { readFileSync } = require("node:fs");
 const { join } = require("node:path");
 
-const { permissionValue } = require("@drumee/server-essentials");
-
+const REPO_ROOT = join(__dirname, "..", "..");
 const ACL = (name) =>
-  JSON.parse(readFileSync(join(__dirname, "..", "..", "acl", `${name}.json`), "utf8"))
-    .services;
+  JSON.parse(readFileSync(join(REPO_ROOT, "acl", `${name}.json`), "utf8")).services;
+
+// server-essentials lib/lex/permission.js — the single BITS a service asks for.
+const BIT = { read: 0b0000010, write: 0b0001000, admin: 0b0010000, owner: 0b0100000 };
 
 // The stored privilege WORDS a member can hold — hub.set_privilege writes these
-// and user_permission() hands them back. Kept literal on purpose: they are the
-// thing under test, so deriving them from the same table would prove nothing.
+// and user_permission() hands them back.
 const ROLE = { view: 0b0000011, chat: 0b0000111, edit: 0b0001111, admin: 0b0011111, owner: 0b0111111 };
 
 // Exactly what lib/acl.js check_source does with each row.
 const granted = (privilege, asked) => !!(privilege & asked);
 
+let permissionValue = null;
+try {
+  ({ permissionValue } = require("@drumee/server-essentials"));
+} catch (e) {
+  console.log(`  ~ shipped-table cross-check SKIPPED (server-essentials not installed: ${e.code || e.message})`);
+}
+
+test("the local bit values still match the shipped table", { skip: !permissionValue }, () => {
+  for (const [name, value] of Object.entries(BIT)) {
+    assert.equal(permissionValue(name), value, `permission bit \`${name}\` drifted`);
+  }
+});
+
 test("hub.delete_hub asks for the admin bit", () => {
   const spec = ACL("hub").delete_hub;
   assert.equal(spec.permission.src, "admin");
   assert.equal(spec.scope, "hub");
-  assert.equal(permissionValue(spec.permission.src), 0b0010000);
 });
 
 test("Admin and Owner may delete; Edit, Chat and View may not", () => {
-  const asked = permissionValue(ACL("hub").delete_hub.permission.src);
+  const asked = BIT[ACL("hub").delete_hub.permission.src];
+  assert.ok(asked, "delete_hub asks for a bit this test does not know");
   for (const [role, want] of Object.entries({
     view: false, chat: false, edit: false, admin: true, owner: true,
   })) {
@@ -84,9 +101,8 @@ test("delete_hub still sits above `read`, so the read-only clamps still catch it
   // secure-share recipient carries a read-only session ceiling and an
   // over-limit domain is clamped to reads; both rely on this comparison, NOT on
   // a service name, so widening owner -> admin must not cross that line.
-  const READ = permissionValue("read");
-  const src = permissionValue(ACL("hub").delete_hub.permission.src);
-  assert.ok(src > READ, "delete_hub would escape the read-only clamps");
+  const src = BIT[ACL("hub").delete_hub.permission.src];
+  assert.ok(src > BIT.read, "delete_hub would escape the read-only clamps");
 });
 
 test("the other workspace-destroying services are deliberately NOT aligned", () => {
@@ -102,9 +118,7 @@ test("a personal workspace can never come through delete_hub", () => {
   // service/private/hub.js refuses anything whose entity type is not `hub`, so
   // a personal workspace (a folder in the caller's own home, whose hub_id is
   // the caller's drumate) meets WRONG_ENTITY_TYPE rather than this permission.
-  const src = readFileSync(
-    join(__dirname, "..", "..", "service", "private", "hub.js"), "utf8",
-  );
+  const src = readFileSync(join(REPO_ROOT, "service", "private", "hub.js"), "utf8");
   const body = src.slice(src.indexOf("async delete_hub()"));
   const guard = body.indexOf("WRONG_ENTITY_TYPE");
   const destroy = body.indexOf("entity_delete");
