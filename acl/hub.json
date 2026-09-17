@@ -580,9 +580,10 @@
       }
     },
     "delete_hub": {
+      "doc": "Destroy a workspace: drops its database and deletes its files on disk. IRREVERSIBLE - there is no trash, no backup and no undo, and the directory removal runs detached. Asks ADMIN, not owner, since 2026-09-17 (Lexis, via Duy). The owner bar it used to carry was never a real boundary: hub.change_owner and hub.set_privilege are themselves admin-gated and neither clamps what it writes, so any workspace admin could already take ownership in a single call and then delete. Requiring owner here only added a step, while leaving the client offering a Delete row that answered 403 - the row is gated on the admin bit, see ui-team window/folder/skeleton/settings-action-panel.js. Still refuses a non-hub entity type, so a personal workspace cannot come through here.",
       "scope": "hub",
       "permission": {
-        "src": "owner"
+        "src": "admin"
       }
     },
     "get_action_log": {
