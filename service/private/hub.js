@@ -33,7 +33,9 @@ const { butlerFrom } = require("../lib/mail-sender");
 const { mailFailure } = require("../lib/mail-result");
 const { resolveHubInviteName } = require("../lib/hub-invite-name");
 const { resolveHubDisplayName } = require("../lib/hub-display-name");
-const { CAN_CHAT, privilegeAllows } = require("../lib/member-capability");
+const {
+  CAN_CHAT, CHAT_UPLOAD_GRANT, privilegeAllows
+} = require("../lib/member-capability");
 const { MfsTools } = require("@drumee/server-core");
 const { remove_dir } = MfsTools;
 const { toArray } = utils;
@@ -1009,7 +1011,7 @@ class __private_hub extends Hub {
     // it would hand them an upload path they are not entitled to.
     if (privilegeAllows(privilege, CAN_CHAT)) {
       await this.db.await_proc(
-        "permission_grant", mfs_home.chat_upload_id, uid, 0, Privilege.WRITE,
+        "permission_grant", mfs_home.chat_upload_id, uid, 0, CHAT_UPLOAD_GRANT,
         "no_traversal", "chat upload permission"
       );
     }
@@ -2156,7 +2158,7 @@ class __private_hub extends Hub {
             mfs_home.chat_upload_id,
             uid,
             0,    // no expiry on chat upload
-            Privilege.WRITE,
+            CHAT_UPLOAD_GRANT,
             'no_traversal',
             'chat upload permission'
           );
@@ -2832,7 +2834,7 @@ class __private_hub extends Hub {
           mfs_home.chat_upload_id,
           uid,
           0,
-          Privilege.WRITE,
+          CHAT_UPLOAD_GRANT,
           "no_traversal",
           "chat upload permission"
         );
