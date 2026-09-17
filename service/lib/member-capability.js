@@ -42,6 +42,30 @@ const CAN_WRITE = 0b0001000;
 const CAN_ADMIN = 0b0010000;
 
 /**
+ * What a member is granted on the hidden chat staging folder
+ * ('/__chat__/__upload__'), where an attachment is held before it becomes a
+ * message. read + download + write, plus the low bit every stored role mask
+ * carries. The grant is written with assign_via 'no_traversal', so it applies
+ * to that one folder and user_permission will not let it reach anything
+ * inside it.
+ *
+ * 🚨 Pinned here for the same reason every other value in this file is, and
+ * this one has already moved twice. `Privilege.WRITE` resolves to 15 under
+ * server-essentials 1.3.1 and to 7 under 1.3.6, which republished the
+ * pre-1.3.0 layout; a grant written from it under 1.3.6 would carry no write
+ * bit at all -- the exact 403 this value exists to fix.
+ *
+ * What holds 1.3.1 in place today is package-lock.json, not package.json:
+ * the range there is ^1.3.1, and 1.3.6 has been on the registry since
+ * 2026-06-15 without ever being installed. So the danger is not an ordinary
+ * `npm install`, which honours the lock -- it is anything that re-resolves
+ * the range: a regenerated or deleted lock, or a bump that puts the two out
+ * of step. Reading the value from the package would make chat attachments a
+ * casualty of that, silently, and nobody would connect the two.
+ */
+const CHAT_UPLOAD_GRANT = 0b0001111;
+
+/**
  * Does this stored privilege carry every bit of `bit`?
  *
  * Deliberately `(p & bit) === bit` rather than `!== 0`: for a multi-bit mask
@@ -145,6 +169,7 @@ async function memberCan(service, bit) {
 
 module.exports = {
   CAN_READ,
+  CHAT_UPLOAD_GRANT,
   CAN_DOWNLOAD,
   CAN_CHAT,
   CAN_WRITE,
