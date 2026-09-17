@@ -369,6 +369,10 @@ const BUCKET_BY_CATEGORY = {
   contact_invite: BUCKET.other,
   contact_refused: BUCKET.other,
   hub_invite: BUCKET.other,
+  // The other half of a workspace's membership lifecycle: hub_invite says you
+  // were let in, this says the workspace itself is gone. Listed rather than
+  // left to the default so the tab it lands in is a decision, not an accident.
+  workspace_deleted: BUCKET.other,
   ticket: BUCKET.other,
   access_request: BUCKET.other,
 };
@@ -440,6 +444,56 @@ function bucketOf(row) {
 function stampBuckets(rows) {
   for (const r of rows) {
     if (r && r.bucket == null) r.bucket = bucketOf(r);
+  }
+  return rows;
+}
+
+// ---------------------------------------------------------------------------
+// "<Somebody> deleted your workspace '<name>'" — hub.delete_hub's notice to the
+// OWNER, written to yp.contact_activity by _notifyOwnerOfDeletion.
+//
+// WITHOUT THIS IT RENDERS AS "wants to connect". activity_get_feed_all's contact
+// branch returns every contact_activity row with `category` NULL and
+// `event_type` 'contact', and the client resolves a row's category as
+// `category || event_type || type` — so an unstamped row takes the renderer's
+// contact branch and claims the deleter wanted to befriend the owner. That is
+// the identical defect Lexis reported for workspace invitations on 2026-09-14,
+// and it is cured the identical way: stamp the category here, rather than add
+// another special case to the renderer.
+//
+// 🚨 `hub_id` IS DELIBERATELY NOT STAMPED, which is the one place this row
+// differs from _stampHubInvites. The workspace no longer exists — that is the
+// whole message — so there is nowhere to navigate. Publishing an id would send
+// the desk's opener (wm openNotificationLocation) after a hub it cannot load;
+// withholding it makes the row inert by construction, and the client marks it
+// unclickable so an inert row never reads as a broken one.
+//
+// `author_id` IS stamped, for the same reason the invite needs it: without it
+// getAuthorId() falls through and the card shows the VIEWER's own face on a
+// message about something somebody else did.
+//
+// THE NAME HAS TO BE FLATTENED OUT OF `data`, exactly as flattenTaskFields does
+// for the task events. activity_get_feed_all hands `data` through as the raw
+// JSON STRING it is stored as, and the renderer reads plain top-level fields —
+// so without this the card renders "<somebody> deleted your workspace" with no
+// workspace in it, which is the one fact the message exists to carry.
+//
+// Add-only and synchronous: no lookup can help a workspace that is gone, and
+// everything the row renders was snapshotted into `data` at write time.
+// ---------------------------------------------------------------------------
+function stampWorkspaceDeleted(rows) {
+  if (!Array.isArray(rows)) return rows;
+  for (const r of rows) {
+    if (!r || r.event !== 'workspace_deleted') continue;
+    let meta = r.data;
+    if (typeof meta === 'string') {
+      try { meta = JSON.parse(meta); } catch (e) { meta = null; }
+    }
+    meta = meta || {};
+    if (!r.category) r.category = 'workspace_deleted';
+    if (r.author_id == null && r.uid != null) r.author_id = r.uid;
+    if (r.hub_name == null && meta.hub_name != null) r.hub_name = meta.hub_name;
+    if (r.deleted_by == null && meta.deleted_by != null) r.deleted_by = meta.deleted_by;
   }
   return rows;
 }
@@ -1158,6 +1212,10 @@ class MfsActivity extends Entity {
     // so the rollup rows merged above (which already carry all three) pass
     // through untouched and the two toggle states agree.
     await this._stampHubInvites(result);
+    // Same class of problem, same cure: a raw contact_activity row arrives with
+    // category NULL and event_type 'contact', which the renderer reads as a
+    // contact request. See _stampWorkspaceDeleted.
+    stampWorkspaceDeleted(result);
     await this._stampChatMentions(result);
     result = await this._stampMeetingRollups(result);
 

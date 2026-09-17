@@ -47,3 +47,8 @@ jobs:
       # the over-limit clamp keep catching it.
       - name: Run workspace-delete permission regression test
         run: node --test offline/test/hub-delete-permission.test.js
+      # The owner's notice is written on a path that DESTROYS a workspace, and
+      # the row has to carry its own name because nothing can resolve one
+      # afterwards. Both are easy to break silently, so they get a CI step.
+      - name: Run workspace-deleted notification regression test
+        run: node --test offline/test/workspace-deleted-notification.test.js

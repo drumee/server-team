@@ -2185,7 +2185,96 @@ class __private_hub extends Hub {
   }
 
   /**
-   * 
+   * The workspace's DISPLAY name — `yp.hub.name`, the one members set and see.
+   *
+   * Not `get_hub`'s `name`, which is `h.hubname` and holds the hex id, and not
+   * `hubname` anywhere else either: rendering that at a user is worse than
+   * rendering nothing (the same rule service/lib/hub-invite-name.js states).
+   *
+   * Best-effort by design. `push_workspace_name` may not be applied on a given
+   * deployment, and a name we cannot read must never be the reason a workspace
+   * fails to delete — the caller falls back rather than throwing.
+   *
+   * @param {String} hub_id
+   * @returns {Promise<String>} the trimmed name, or "" when it cannot be read
+   */
+  async _workspaceDisplayName(hub_id) {
+    if (!hub_id) return "";
+    try {
+      const rows = await this.yp.await_proc("push_workspace_name", hub_id);
+      const row = Array.isArray(rows) ? rows[0] : rows;
+      return `${(row && row.workspace_name) || ""}`.trim();
+    } catch (e) {
+      this.warn(
+        "delete_hub: could not resolve the workspace display name",
+        (e && e.message) || e,
+      );
+      return "";
+    }
+  }
+
+  /**
+   * Tell the OWNER that somebody else destroyed their workspace.
+   *
+   * `yp.contact_activity`, via the generic `contact_log_activity`, because it
+   * is the only notification channel that fits all three constraints:
+   *
+   *   it must OUTLIVE the workspace   contact_activity is a `yp` table, so it
+   *                                   survives entity_delete dropping the hub
+   *                                   database. A changelog row would too, but
+   *                                   mfs_changelog is a hub-wide feed, not a
+   *                                   message to one person.
+   *   it must reach ONE person        `target_uid` is the whole point.
+   *   it must need no schema change   contact_log_activity's ELSE branch is a
+   *                                   plain insert, so a new `event` value
+   *                                   flows through it untouched.
+   *
+   * THE NAME IS SNAPSHOTTED INTO `data` because there will be nothing left to
+   * resolve it from: `yp.hub` loses its row moments later.
+   *
+   * NO `hub_id` IS PUBLISHED FOR THE CLIENT TO NAVIGATE TO, and that is
+   * deliberate — see the renderer. It is carried in `data` for support and for
+   * dedup, not as a destination.
+   *
+   * Self-deletion writes nothing: activity_get_feed_all already filters
+   * `c.uid != _user_id`, so a row would be invisible anyway, and writing one
+   * would leave a phantom in the table for every owner who tidies up.
+   *
+   * Best-effort, like every other notification write on this path. A failed
+   * notification must never fail the delete — the workspace is going either
+   * way, and a throw here would surface as an error on an operation that
+   * actually succeeded.
+   *
+   * @param {Object} data    this.hub.toJSON(), for owner_id
+   * @param {String} hub_id
+   * @param {String} hub_name already resolved by the caller
+   */
+  async _notifyOwnerOfDeletion(data, hub_id, hub_name) {
+    const owner_id = (data && data.owner_id) || null;
+    if (!owner_id) {
+      this.warn("delete_hub: no owner_id, owner not notified", { hub_id });
+      return;
+    }
+    if (`${owner_id}` === `${this.uid}`) return;
+    try {
+      await this.yp.await_proc(
+        "contact_log_activity", this.uid, owner_id, "workspace_deleted",
+        {
+          hub_id,
+          hub_name,
+          deleted_by: this._actor_name(),
+        },
+      );
+    } catch (e) {
+      this.warn(
+        "delete_hub: could not notify the owner",
+        { hub_id, owner_id }, (e && e.message) || e,
+      );
+    }
+  }
+
+  /**
+   *
    */
   async delete_hub() {
     const hub_id = this.input.need(Attr.hub_id);
@@ -2198,8 +2287,21 @@ class __private_hub extends Hub {
     let old_node = this.granted_node(); //await this.yp.await_proc(`${db_name}.mfs_access_node`, this.uid, hub_id);
     let outout = { ...old_node, uid: this.uid, nid: hub_id, id: hub_id, hub_id }
 
+    // THE DISPLAY NAME, RESOLVED ONCE, AND ONLY WHILE THE ROW STILL EXISTS.
+    //
+    // `data.name` is NOT it. get_hub selects `IF(_exists, h.hubname, _org_name)
+    // AS name`, and `hubname` holds the HEX ID — so the audit line below has
+    // been recording "Workspace '5f2c…' deleted" rather than the name anyone
+    // would recognise. yp.hub.name is the name members set and see, and
+    // push_workspace_name is the reader the invite notifications already share.
+    //
+    // It has to be read HERE: entity_delete does `DELETE FROM hub`, after which
+    // nothing can resolve it — the same reason hub-invite rows carry a name
+    // snapshot (see service/lib/hub-invite-name.js, whose last resort exists
+    // for exactly this case).
+    const hub_name = (await this._workspaceDisplayName(hub_id))
+      || data.filename || hub_id;
     // Write to deleter's drumate — hub DB is about to be dropped.
-    const hub_name = data.name || data.filename || hub_id;
     await writeAudit(this, {
       db: this.user.get(Attr.db_name),
       uid: this.uid,
@@ -2209,6 +2311,14 @@ class __private_hub extends Hub {
       entity_id: hub_id,
       log: `Workspace '${hub_name}' deleted`,
     });
+
+    // The owner is losing a workspace somebody else decided to destroy, and
+    // they may be offline when it happens: the broadcast below reaches live
+    // sockets only, and the audit row lands in the DELETER's drumate. Without
+    // this the workspace simply vanishes for them, with nothing to read
+    // afterwards and no record of who did it. Ordered before the broadcast so
+    // an owner who IS online has the row waiting when their desk reacts.
+    await this._notifyOwnerOfDeletion(data, hub_id, hub_name);
 
     let sockets = await this.yp.await_proc("entity_sockets", hub_id);
     await RedisStore.sendData(this.payload(outout), sockets);
