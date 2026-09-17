@@ -33,6 +33,7 @@ const { butlerFrom } = require("../lib/mail-sender");
 const { mailFailure } = require("../lib/mail-result");
 const { resolveHubInviteName } = require("../lib/hub-invite-name");
 const { resolveHubDisplayName } = require("../lib/hub-display-name");
+const { CAN_CHAT, privilegeAllows } = require("../lib/member-capability");
 const { MfsTools } = require("@drumee/server-core");
 const { remove_dir } = MfsTools;
 const { toArray } = utils;
@@ -1001,10 +1002,17 @@ class __private_hub extends Hub {
     await this.db.await_proc(
       "permission_grant", "*", uid, expiry, privilege, "system", message
     );
-    await this.db.await_proc(
-      "permission_grant", mfs_home.chat_upload_id, uid, 0, 4,
-      "no_traversal", "chat upload permission"
-    );
+    // Chat attachments stage in a hidden folder before they become a message.
+    // A member who may chat has to write there even though the role carries no
+    // write bit for the workspace at large -- 'no_traversal' keeps that raised
+    // access on this one folder. A view-only member may not chat, so granting
+    // it would hand them an upload path they are not entitled to.
+    if (privilegeAllows(privilege, CAN_CHAT)) {
+      await this.db.await_proc(
+        "permission_grant", mfs_home.chat_upload_id, uid, 0, Privilege.WRITE,
+        "no_traversal", "chat upload permission"
+      );
+    }
     await writeAudit(this, {
       db: this.hub.get(Attr.db_name),
       uid: this.uid,
@@ -2139,14 +2147,16 @@ class __private_hub extends Hub {
           '*', uid, expiry, privilege, 'system', msg
         );
 
-        // Grant chat upload permission if chat folder exists
-        if (mfs_home && mfs_home.chat_upload_id) {
+        // Write access to the chat staging folder only, and only for a role
+        // that may chat -- see _grantMembership for why it is scoped this way.
+        if (mfs_home && mfs_home.chat_upload_id &&
+            privilegeAllows(privilege, CAN_CHAT)) {
           await this.yp.await_proc(
             `${hub_db}.permission_grant`,
             mfs_home.chat_upload_id,
             uid,
             0,    // no expiry on chat upload
-            4,    // read+write for uploads
+            Privilege.WRITE,
             'no_traversal',
             'chat upload permission'
           );
@@ -2812,15 +2822,25 @@ class __private_hub extends Hub {
     for (let uid of users) {
       await this.db.await_proc("permission_set", uid, privilege);
 
-      await this.db.await_proc(
-        "permission_grant",
-        mfs_home.chat_upload_id,
-        uid,
-        0,
-        4,
-        "no_traversal",
-        "chat upload permission"
-      );
+      // A role change has to move the chat staging grant in BOTH directions.
+      // Granting on the way up is what lets a chat member attach a file;
+      // revoking on the way down is what stops a member demoted to view-only
+      // from keeping an upload path the new role does not carry.
+      if (privilegeAllows(privilege, CAN_CHAT)) {
+        await this.db.await_proc(
+          "permission_grant",
+          mfs_home.chat_upload_id,
+          uid,
+          0,
+          Privilege.WRITE,
+          "no_traversal",
+          "chat upload permission"
+        );
+      } else {
+        await this.db.await_proc(
+          "permission_revoke", mfs_home.chat_upload_id, uid
+        );
+      }
 
       hub = {};
       hub.privilege = privilege;
