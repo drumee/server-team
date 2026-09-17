@@ -47,3 +47,9 @@ jobs:
       # the over-limit clamp keep catching it.
       - name: Run workspace-delete permission regression test
         run: node --test offline/test/hub-delete-permission.test.js
+      # The other permission bar with a CI step of its own: it pins that a
+      # view-only member gets no write on the chat staging folder, and that the
+      # granted value keeps the write bit whichever server-essentials is
+      # installed.
+      - name: Run chat staging grant regression test
+        run: node --test offline/test/chat-upload-grant.test.js
