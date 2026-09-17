@@ -52,10 +52,16 @@ const CAN_ADMIN = 0b0010000;
  * 🚨 Pinned here for the same reason every other value in this file is, and
  * this one has already moved twice. `Privilege.WRITE` resolves to 15 under
  * server-essentials 1.3.1 and to 7 under 1.3.6, which republished the
- * pre-1.3.0 layout. package.json asks for ^1.3.1, so a bare `npm install`
- * picks up 1.3.6 and a grant written from `Privilege.WRITE` would carry no
- * write bit at all -- the exact 403 this value exists to fix, reintroduced
- * by a dependency bump nobody connected to chat.
+ * pre-1.3.0 layout; a grant written from it under 1.3.6 would carry no write
+ * bit at all -- the exact 403 this value exists to fix.
+ *
+ * What holds 1.3.1 in place today is package-lock.json, not package.json:
+ * the range there is ^1.3.1, and 1.3.6 has been on the registry since
+ * 2026-06-15 without ever being installed. So the danger is not an ordinary
+ * `npm install`, which honours the lock -- it is anything that re-resolves
+ * the range: a regenerated or deleted lock, or a bump that puts the two out
+ * of step. Reading the value from the package would make chat attachments a
+ * casualty of that, silently, and nobody would connect the two.
  */
 const CHAT_UPLOAD_GRANT = 0b0001111;
 
