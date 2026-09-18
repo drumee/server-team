@@ -63,6 +63,15 @@ const ROOT = join(__dirname, "..", "..");
 const COLLAB = readFileSync(join(ROOT, "router", "collab", "index.js"), "utf8");
 const INDEX = readFileSync(join(ROOT, "index.js"), "utf8");
 
+/**
+ * The router explains at length what it deliberately does NOT call, so a
+ * check for those names has to read the code and not the prose.
+ */
+function codeOf(source) {
+  return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+}
+const COLLAB_CODE = codeOf(COLLAB);
+
 /** The permission bits the router is written against */
 const READ = 2;
 const WRITE = 8;
@@ -233,6 +242,61 @@ test("a live connection is re-checked, because a socket authenticates once", () 
     /setInterval\(\s*this\.revalidate\.bind\(this\)/,
     "revalidate must actually be scheduled"
   );
+});
+
+/**
+ * Persistence is the part that can destroy something. The note itself belongs
+ * to media.save — which snapshots a version, corrects filesize and disk_usage
+ * and writes the changelog row — and a second writer in another process would
+ * drift from all four. This server writes ONE opaque file of its own, beside
+ * the note, and the test pins that boundary rather than trusting a comment.
+ */
+test("the collab server never writes the user's note", () => {
+  for (const forbidden of ["media.save", "replace_content", "mfs_set_attr", "before_store"]) {
+    assert.ok(
+      !COLLAB_CODE.includes(forbidden),
+      `the collab router must not call ${forbidden} — saving the note is the REST service's job`
+    );
+  }
+  const writes = COLLAB_CODE.match(/writeFileSync\(/g) || [];
+  assert.strictEqual(writes.length, 1, "there must be exactly one write path");
+});
+
+test("the state file is written atomically and beside the node", () => {
+  assert.match(COLLAB, /const STATE_FILE = "collab\.ydoc";/);
+  /** a temporary name, then a rename over the old state — never a truncating write */
+  assert.match(COLLAB, /\.tmp`/, "the write must go to a temporary file first");
+  assert.match(COLLAB, /renameSync\(tmp, path\)/, "the temporary file must be renamed into place");
+  const writeIdx = COLLAB.indexOf("writeFileSync(tmp");
+  const renameIdx = COLLAB.indexOf("renameSync(tmp, path)");
+  assert.ok(writeIdx > 0 && renameIdx > writeIdx, "write must precede rename");
+  /** the directory comes from the DATABASE, not from the client's room name */
+  assert.match(
+    COLLAB,
+    /dir: mfs_root \? resolve\(mfs_root, nid\) : null/,
+    "the storage directory must be derived from mfs_access_node"
+  );
+});
+
+test("an unreadable state file must not be deleted or block the room", () => {
+  assert.ok(
+    !/unlinkSync\(path\)/.test(COLLAB_CODE),
+    "the state file must never be deleted on a failed read — that turns one bad read into lost work"
+  );
+  assert.match(
+    COLLAB,
+    /could not load state for/,
+    "a failed load must be warned about and survived, not thrown"
+  );
+});
+
+test("only a read-write connection can be elected saver", () => {
+  assert.match(
+    COLLAB,
+    /connections\.find\(\(c\) => !c\.readOnly\)/,
+    "the saver must be chosen from connections that may actually write"
+  );
+  assert.match(COLLAB, /const ROLE_MESSAGE = "drumee\.collab\.role";/);
 });
 
 /**

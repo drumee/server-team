@@ -42,14 +42,35 @@
  * attempt. Hand the provider a token callback, never a fixed string, or the
  * reconnect authenticates with a spent key and fails for good.
  *
- * NOT IMPLEMENTED HERE: persistence. Without onLoadDocument/onStoreDocument a
- * room lives in memory only and nothing is ever written to the .dnote file.
- * That is deliberate at this stage — a half-written persistence path is how
- * you destroy a file that has no version history.
+ * PERSISTENCE — read the next paragraph before changing any of it.
+ *
+ * This server NEVER writes the user's .dnote file. Saving a note is
+ * media.save's job and nothing else's: that path snapshots a version, updates
+ * filesize and yp.disk_usage, and writes the changelog row the activity feed
+ * renders. A second implementation of the most destructive operation in the
+ * product, living in a different process, would drift from it — and these
+ * files have no version history to recover from once it does.
+ *
+ * What is persisted here is the Yjs state, and only that, as an OPAQUE blob in
+ * the node's own storage directory (`<mfs_root>/<nid>/collab.ydoc`). The
+ * server therefore parses no user content and writes no user file; it keeps a
+ * room alive across a restart and across the last client leaving.
+ *
+ * Which leaves one question a collaborative editor has to answer explicitly:
+ * WHO calls media.save, when every connected client holds the whole document?
+ * All of them would race on one file. So the server elects exactly one
+ * read-write connection as the SAVER and tells each connection its role over a
+ * stateless message; a read-only connection is never the saver, and when the
+ * saver leaves the next one is promoted. The client half of that contract is
+ * not written yet — the editor is untouched — so today this elects and
+ * announces, and nothing acts on it.
  */
 
 const { Server: Hocuspocus } = require("@hocuspocus/server");
 const { WebSocketServer } = require("ws");
+const Y = require("yjs");
+const { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } = require("fs");
+const { resolve } = require("path");
 const { Logger, Cache, uniqueId } = require("@drumee/server-essentials");
 
 /** Permission bits asked for (server-essentials lib/lex/permission.js) */
@@ -73,6 +94,12 @@ const REVALIDATE_TIMER = 60000;
 /** Close code sent to a client whose access changed under it */
 const ACCESS_CHANGED = 4403;
 
+/** The Yjs state of a room, beside the note it belongs to */
+const STATE_FILE = "collab.ydoc";
+
+/** Stateless message naming the one connection that may call media.save */
+const ROLE_MESSAGE = "drumee.collab.role";
+
 class __collab_router extends Logger {
   /**
    *
@@ -82,12 +109,18 @@ class __collab_router extends Logger {
     this.yp = opt.yp;
     this.endpointAddress = opt.endpointAddress;
     this.live = new Map();
+    this.rooms = new Map();
     this.wss = new WebSocketServer({ noServer: true });
     this.hocuspocus = Hocuspocus.configure({
       name: this.endpointAddress,
       /** A socket that never authenticates is dropped, not held open */
       timeout: 15000,
       onAuthenticate: this.onAuthenticate.bind(this),
+      onLoadDocument: this.onLoadDocument.bind(this),
+      onStoreDocument: this.onStoreDocument.bind(this),
+      connected: this.onConnected.bind(this),
+      onDisconnect: this.onDisconnected.bind(this),
+      afterUnloadDocument: this.onUnloadDocument.bind(this),
     });
     this.revalidateTimer = setInterval(
       this.revalidate.bind(this),
@@ -159,7 +192,8 @@ class __collab_router extends Logger {
   }
 
   /**
-   * user_permission(uid, nid), resolved in the hub's own database.
+   * mfs_access_node resolved in the hub's own database. Its `privilege` is
+   * user_permission(uid, nid); `mfs_root` is where the node's files live.
    *
    * hub_id and nid are matched against ROOM before they get here and uid comes
    * back from the database, so none of them can carry anything but
@@ -168,10 +202,10 @@ class __collab_router extends Logger {
    * @param {*} hub_id
    * @param {*} nid
    * @param {*} uid
-   * @returns {Promise<number>}
+   * @returns {Promise<{privilege: number, mfs_root: string|null}>}
    */
-  async privilegeOf(hub_id, nid, uid) {
-    if (!/^[A-Za-z0-9]{1,16}$/.test(uid)) return 0;
+  async accessNode(hub_id, nid, uid) {
+    if (!/^[A-Za-z0-9]{1,16}$/.test(uid)) return { privilege: 0, mfs_root: null };
     try {
       const rows = await this.yp.await_proc(
         "forward_proc",
@@ -179,12 +213,28 @@ class __collab_router extends Logger {
         "mfs_access_node",
         `'${uid}','${nid}'`
       );
-      const row = Array.isArray(rows) ? rows[0] : rows;
-      return parseInt((row || {}).privilege, 10) || 0;
+      const row = (Array.isArray(rows) ? rows[0] : rows) || {};
+      return {
+        privilege: parseInt(row.privilege, 10) || 0,
+        mfs_root: row.mfs_root || null,
+      };
     } catch (e) {
       this.warn("[collab] access check failed", e && e.message);
-      return 0;
+      return { privilege: 0, mfs_root: null };
     }
+  }
+
+  /**
+   * user_permission alone, for the revalidation pass.
+   *
+   * @param {*} hub_id
+   * @param {*} nid
+   * @param {*} uid
+   * @returns {Promise<number>}
+   */
+  async privilegeOf(hub_id, nid, uid) {
+    const { privilege } = await this.accessNode(hub_id, nid, uid);
+    return privilege;
   }
 
   /**
@@ -216,11 +266,23 @@ class __collab_router extends Logger {
     }
     entry.bound = 1;
 
-    const privilege = await this.privilegeOf(hub_id, nid, uid);
+    const { privilege, mfs_root } = await this.accessNode(hub_id, nid, uid);
     if (!(privilege & READ)) {
       this.debug(`[collab] refused ${uid} on ${nid}: privilege ${privilege}`);
       this.refuse(entry, "FORBIDDEN");
       throw new Error("FORBIDDEN");
+    }
+    /**
+     * Where this room's Yjs state is kept. Taken from the database rather than
+     * built from the room name, so a room can only ever reach the directory
+     * the node it names actually owns.
+     */
+    if (!this.rooms.has(documentName)) {
+      this.rooms.set(documentName, {
+        hub_id,
+        nid,
+        dir: mfs_root ? resolve(mfs_root, nid) : null,
+      });
     }
 
     connection.readOnly = !(privilege & WRITE);
@@ -235,6 +297,133 @@ class __collab_router extends Logger {
       `[collab] ${uid} joined ${hub_id}/${nid} privilege=${privilege} readOnly=${connection.readOnly}`
     );
     return { uid, hub_id, nid, privilege };
+  }
+
+  /**
+   * The path this room's Yjs state is kept at, or null when the node did not
+   * tell us where it lives.
+   *
+   * @param {*} documentName
+   * @returns {string|null}
+   */
+  statePath(documentName) {
+    const room = this.rooms.get(documentName);
+    if (!room || !room.dir) return null;
+    return resolve(room.dir, STATE_FILE);
+  }
+
+  /**
+   * Bring a room back from the last state we wrote. An absent file is the
+   * normal case for a note nobody has collaborated on yet: the room starts
+   * empty and the elected saver seeds it from the .dnote it already loaded.
+   *
+   * A state file we cannot read is NOT fatal and is NOT deleted — the room
+   * simply starts empty. Deleting it, or refusing the room over it, would turn
+   * one bad read into lost work.
+   *
+   * @param {*} payload
+   */
+  async onLoadDocument(payload) {
+    const { documentName, document } = payload;
+    const path = this.statePath(documentName);
+    if (!path || !existsSync(path)) return;
+    try {
+      const state = readFileSync(path);
+      if (!state || !state.length) return;
+      Y.applyUpdate(document, new Uint8Array(state));
+      this.debug(`[collab] loaded ${state.length} bytes of state for ${documentName}`);
+    } catch (e) {
+      this.warn(`[collab] could not load state for ${documentName}`, e && e.message);
+    }
+  }
+
+  /**
+   * Keep the Yjs state beside the note. Written to a temporary file in the
+   * same directory and renamed over the old one, so a crash mid-write leaves
+   * the previous state intact rather than a truncated file.
+   *
+   * This writes ONLY our own state file. The note itself is media.save's to
+   * write — see the note at the top of this file.
+   *
+   * @param {*} payload
+   */
+  async onStoreDocument(payload) {
+    const { documentName, document } = payload;
+    const path = this.statePath(documentName);
+    if (!path) return;
+    const tmp = `${path}.${uniqueId(8)}.tmp`;
+    try {
+      const room = this.rooms.get(documentName);
+      if (!existsSync(room.dir)) mkdirSync(room.dir, { recursive: true });
+      writeFileSync(tmp, Buffer.from(Y.encodeStateAsUpdate(document)));
+      renameSync(tmp, path);
+    } catch (e) {
+      this.warn(`[collab] could not store state for ${documentName}`, e && e.message);
+      try {
+        if (existsSync(tmp)) unlinkSync(tmp);
+      } catch (err) {
+        /** nothing further to try */
+      }
+    }
+  }
+
+  /**
+   * Name exactly one connection as the saver, and tell every connection on the
+   * document where it stands. Read-only connections are never eligible, and
+   * the first eligible one wins so that the choice does not move while it is
+   * still there.
+   *
+   * @param {*} documentName
+   */
+  elect(documentName) {
+    const doc = this.hocuspocus.documents.get(documentName);
+    if (!doc) return;
+    const connections = doc.getConnections();
+    const saver = connections.find((c) => !c.readOnly);
+    const cid = saver && saver.context ? saver.context.cid : null;
+    for (const connection of connections) {
+      const mine = connection.context && connection.context.cid;
+      try {
+        connection.sendStateless(
+          JSON.stringify({
+            type: ROLE_MESSAGE,
+            saver: Boolean(cid) && mine === cid,
+            readOnly: Boolean(connection.readOnly),
+          })
+        );
+      } catch (e) {
+        this.warn("[collab] could not announce role", e && e.message);
+      }
+    }
+    if (cid) this.debug(`[collab] ${documentName} saver is ${cid}`);
+  }
+
+  /**
+   * @param {*} payload
+   */
+  async onConnected(payload) {
+    this.elect(payload.documentName);
+  }
+
+  /**
+   * The room is gone from memory; its state has already been written by
+   * onStoreDocument. Drop what we remembered about it so a long-running
+   * process does not accumulate one entry per note ever opened.
+   *
+   * @param {*} payload
+   */
+  async onUnloadDocument(payload) {
+    this.rooms.delete(payload.documentName);
+  }
+
+  /**
+   * Re-elect once the leaving connection is off the document, so the saver is
+   * never a connection that has already gone.
+   *
+   * @param {*} payload
+   */
+  async onDisconnected(payload) {
+    setImmediate(() => this.elect(payload.documentName));
   }
 
   /**
