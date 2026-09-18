@@ -236,22 +236,52 @@ test("a live connection is re-checked, because a socket authenticates once", () 
 });
 
 /**
- * When the private package happens to be installed, prove the local copy of
- * the table still matches the shipped one.
+ * The bits are DERIVED from the role words rather than read from the package,
+ * and that is the point: server-essentials has moved these values twice
+ * (1.3.0 shifted download 2 -> 4 and write 4 -> 8; 1.3.6 republished the older
+ * layout), so the package is not a stable source of truth — see the same
+ * warning, and the same decision to pin, in service/lib/member-capability.js.
+ *
+ * The role WORDS, on the other hand, are written by the database. Whatever the
+ * bit named "write" is, it can only be the bit that edit holds and chat does
+ * not — which pins it without naming a number.
  */
-test("the bit values still match server-essentials", (t) => {
+test("the write bit is the one that separates chat from edit", () => {
+  assert.strictEqual(EDIT & ~CHAT, WRITE);
+  assert.strictEqual(CHAT & ~VIEW, 4, "the bit between view and chat is download");
+  assert.strictEqual(ADMIN & ~EDIT, 16);
+  assert.strictEqual(OWNER & ~ADMIN, 32);
+  /** every role word carries the read bit */
+  for (const privilege of [VIEW, CHAT, EDIT, ADMIN, OWNER]) {
+    assert.strictEqual(privilege & READ, READ);
+  }
+});
+
+/**
+ * Report, without failing, when the installed package disagrees. A dependency
+ * that renumbers its constants is not a defect in this repository, and must
+ * not red the gate — but nobody should have to rediscover the move.
+ */
+test("server-essentials agreement (reported, not enforced)", (t) => {
   let permission;
   try {
     permission = require("@drumee/server-essentials/lib/lex/permission");
   } catch (e) {
-    t.skip("@drumee/server-essentials not installed");
+    t.diagnostic("@drumee/server-essentials not installed");
     return;
   }
-  assert.strictEqual(permission.read, READ);
-  assert.strictEqual(permission.view, READ);
-  assert.strictEqual(permission.write, WRITE);
-  assert.strictEqual(permission.modify, WRITE);
-  assert.strictEqual(permission.upload, WRITE);
-  /** chat carries download, never write — that is the whole read-only case */
-  assert.ok(!(permission.chat & WRITE));
+  const drift = [
+    ["read", permission.read, READ],
+    ["write", permission.write, WRITE],
+  ].filter(([, got, want]) => got !== want);
+  if (drift.length) {
+    t.diagnostic(
+      "INSTALLED PACKAGE DISAGREES — the router pins its own values on " +
+        "purpose; check which layout the DATABASE writes before changing " +
+        "anything: " +
+        drift.map(([n, got, want]) => `${n}=${got} (pinned ${want})`).join(", ")
+    );
+    return;
+  }
+  t.diagnostic("installed package agrees with the pinned values");
 });
