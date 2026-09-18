@@ -63,6 +63,142 @@
   .warmup-progress {
     padding-bottom: 12px;
   }
+
+  /* =========================================================================
+     RESPONSIVE
+     Measured before writing any of this, with loader.css + this template in a
+     headless Chromium at 320/375/390/740x360/768/834/1024/1440. Every number
+     quoted below is from that run.
+     ========================================================================= */
+
+  /* The splash is the viewport, not a 100vw x 100vh box inside a margined body.
+     At boot <body> still carries the UA's default 8px margin — loader.css ships
+     no reset and the app's stylesheet has not arrived yet, which is the entire
+     reason this screen is on display. So loader.css:380's `width:100vw;
+     height:100vh` overflowed by 8px across and 16px down at EVERY viewport
+     measured: a 375px phone scrolled 383x683. On a handset that is a splash
+     screen you can pan sideways, with the card's right edge cut off.
+
+     position:fixed resolves against the initial containing block, so the body
+     margin cannot reach it and no ancestor can resize it — one property instead
+     of a calc() that would have to name the 8px margin and track it.
+
+     100dvh AFTER 100vh, both declared: 100vh on a phone is the LARGEST viewport
+     (URL bar retracted), so centring against it puts the lockup low, partly
+     behind the toolbar, for as long as the toolbar is showing — which on a boot
+     screen is the whole time. dvh tracks the bar. The 100vh line stays as the
+     fallback for engines that drop the dvh declaration. */
+  .warmup-main {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100vh;
+    height: 100dvh;
+  }
+
+  /* The card must be a ceiling, not a floor. loader.css:405 sets width:455px on
+     a content-box with 32px padding — a 519px border box — and caps it with
+     max-width:100vw, which caps the CONTENT box, so the border box stayed 64px
+     wider than the screen. Measured on a 375px phone: the card was 439px at
+     x:-24, hanging 24px off BOTH edges, with zero effective padding. The
+     progress track (::after above) is `left:0; right:0` on that card, so it ran
+     the full width of the screen and had its 100px rounded ends clipped off at
+     each side.
+
+     border-box makes the declared width include the padding, so max-width:100%
+     clamps the whole box. 100% rather than another 100vw: on desktop 100vw
+     includes the scrollbar gutter, 100% does not.
+
+     The width is restated as calc(455px + 64px) because switching to border-box
+     would otherwise have RESHAPED the desktop card: loader.css's 455px would
+     start including the padding, leaving 391px of content and a 391px progress
+     bar where the design has always had 455px. Written as a sum rather than as
+     519px so it stays legible as "loader.css:405's width, plus the padding a
+     side it was always drawn outside of". Nothing above phone width is resized
+     by this change. */
+  .warmup-01 {
+    box-sizing: border-box;
+    width: calc(455px + 64px);
+    max-width: 100%;
+  }
+
+  /* --- Phone, portrait ---------------------------------------------------- */
+  @media (max-width: 599px) {
+    /* loader.css:385 rounds .warmup-main by 32px, but that element is the whole
+       screen — on a handset the radius does not round a card, it punches four
+       notches of the body's #f6f6f6 into the corners of the display. */
+    .warmup-main {
+      border-radius: 0;
+    }
+
+    /* 32px a side spends 64px of a 320px screen on air. 20px keeps a visible
+       gutter while leaving the progress bar a run long enough to read as a
+       progress bar. */
+    .warmup-01 {
+      padding: 24px 20px;
+      gap: 12px;
+    }
+
+    /* 72vw was sized for the desktop card, where it never binds (it is 240px
+       from 334px up). On a phone it DOES bind, and 72vw of a 320px screen is
+       230px of lockup — the mark ends up louder than the app it is booting.
+       60vw holds it to ~192px there and still hits the designed 240px by 400px
+       wide. */
+    .warmup-symbol svg.warmup-logo {
+      width: min(240px, 60vw);
+    }
+
+    /* 20px/30px is the desktop caption. At phone width it sits directly over a
+       bar that is now ~335px instead of 455px; 17px keeps "Warming Up..." on
+       one line at 320px with the shorter measure. */
+    .warmup-progress-text {
+      font-size: 17px;
+      line-height: 24px;
+    }
+  }
+
+  /* --- Tablet ------------------------------------------------------------- */
+  /* The 519px card is already right on a 768-1024px screen, so this block does
+     not resize it — the lockup deliberately keeps its designed 240px footprint
+     here rather than being inflated to fill a bigger display. What a tablet
+     needs is the same full-bleed correction as a phone (it is a device screen,
+     not a window, so the same four corner notches apply) and a guaranteed
+     gutter so the card never grows flush to the edges on the narrow end of the
+     range. */
+  @media (min-width: 600px) and (max-width: 1024px) {
+    .warmup-main {
+      border-radius: 0;
+    }
+
+    .warmup-01 {
+      max-width: calc(100% - 64px);
+    }
+  }
+
+  /* --- Short viewports: phone and tablet in landscape --------------------- */
+  /* Keyed on height, not on a device: a 740x360 phone held sideways and a
+     tablet with the keyboard up both land here. The screen is centred content
+     in a box roughly 300px tall once the browser chrome is out, and the
+     portrait stack (240px lockup + 16px gap + 42px progress row + 64px padding)
+     is most of that. Compacting the lockup and the padding keeps the caption
+     and the bar clear of the chrome instead of being clipped by
+     .warmup-main's overflow:hidden. */
+  @media (max-height: 480px) {
+    .warmup-01 {
+      padding: 16px 20px;
+      gap: 8px;
+    }
+
+    .warmup-symbol svg.warmup-logo {
+      width: min(180px, 34vw);
+    }
+
+    .warmup-progress-text {
+      font-size: 16px;
+      line-height: 22px;
+    }
+  }
 </style>
 <div class="warmup-main">
   <div class="warmup-01">
