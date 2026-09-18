@@ -1359,8 +1359,17 @@ class MfsActivity extends Entity {
       // silently left every changelog row without a chip.
       const dest = asObject(r.dest) || {};
       const source = asObject(r.src) || {};
-      const parentId = r.parent_id || dest.parent_id || dest.pid
-        || source.parent_id || source.pid;
+      // media.copy has to read the other way round. The row is filed against
+      // the SOURCE hub, so `hubId` below resolves to the source workspace --
+      // but `dest.parent_id` is a folder in the COPIER's own space. Pairing the
+      // two looked up a destination node id inside the source hub, matched
+      // nothing, and left every copy row without a chip. The folder these
+      // readers care about is the one the file was copied FROM.
+      const fromSource = r.event === 'media.copy';
+      const parentId = r.parent_id
+        || (fromSource
+          ? (source.parent_id || source.pid || dest.parent_id || dest.pid)
+          : (dest.parent_id || dest.pid || source.parent_id || source.pid));
       const hubId = r.hub_id || dest.hub_id || source.hub_id;
       if (!parentId || !hubId || `${parentId}` === '0') continue;
       const key = `${hubId}:${parentId}`;
