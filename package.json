@@ -15,6 +15,7 @@
     "@drumee/server-core": "^1.1.84",
     "@drumee/server-essentials": "^1.3.1",
     "@drumee/ui-core": "^1.1.43",
+    "@hocuspocus/server": "^2.15.3",
     "@hyzyla/pdfium": "^2.1.9",
     "accept-language": "^3.0.18",
     "after": "^0.8.2",
@@ -92,7 +93,8 @@
     "websocket": "^1.0.31",
     "winston": "^3.3.3",
     "winston-daily-rotate-file": "^4.5.0",
-    "ws": "^8.18.0"
+    "ws": "^8.18.0",
+    "yjs": "^13.6.32"
   },
   "devDependencies": {
     "@drumee/server-dev-tools": "^1.1.37"

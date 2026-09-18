@@ -104,6 +104,51 @@ let handler = function (request, response) {
 const http = HttpServer.createServer(handler);
 
 // ========================================
+// WEBSOCKET UPGRADE DISPATCH
+// ========================================
+/**
+ * Two websocket libraries now live on this one server: `websocket` carries the
+ * push protocol, `ws` carries realtime collaboration (Hocuspocus). They cannot
+ * both answer the server's `upgrade` event — node calls EVERY listener, so the
+ * second one to run writes its own handshake, or its rejection, onto a socket
+ * the first one already upgraded, and the client drops the connection on an
+ * invalid frame.
+ *
+ * So the push server is mounted and then unmounted, and this is the only
+ * `upgrade` listener on the server. It routes by path. The push leg calls the
+ * very function `mount()` had installed (handleUpgrade, which ignores `head`),
+ * so the push protocol sees no change whatsoever.
+ *
+ * nginx already proxies /(ws|websocket)/ to this app on every endpoint, so the
+ * collaboration path needs no infrastructure change.
+ */
+const COLLAB_PATH = new RegExp(/(^|\/)ws\/collab(\/|$)/);
+let pushSocketServer = null;
+let collabRouter = null;
+
+http.on("upgrade", function (request, socket, head) {
+  let pathname;
+  try {
+    pathname = new URL(request.url, "http://localhost").pathname;
+  } catch (e) {
+    socket.destroy();
+    return;
+  }
+  const server = COLLAB_PATH.test(pathname) ? collabRouter : pushSocketServer;
+  /** Not ready yet: drop it exactly as an unlistened upgrade would be */
+  if (!server) {
+    socket.destroy();
+    return;
+  }
+  try {
+    server.handleUpgrade(request, socket, head);
+  } catch (e) {
+    console.warn("FAILED TO UPGRADE WS : ", e);
+    socket.destroy();
+  }
+});
+
+// ========================================
 // WEBSOCKET SERVER
 // ========================================
 
@@ -117,6 +162,15 @@ Router.once(ROUTER_READY, async function () {
     httpServer: http,
     autoAcceptConnections: false,
   });
+  /** Hand the upgrade event over to the dispatcher installed above */
+  wsServer.unmount();
+  pushSocketServer = wsServer;
+
+  const { Collab } = require("./router/collab")({
+    yp: env.yp,
+    endpointAddress: env.endpointAddress,
+  });
+  collabRouter = Collab;
 
   wsServer.on("request", function (request) {
     try {
