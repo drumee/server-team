@@ -286,6 +286,14 @@ function mapHubInviteRow(r) {
     // Shared with hub.invite_received_get so the two surfaces cannot drift
     // apart again — that drift is what left this one rendering a blank name.
     hub_name: resolveHubInviteName(r, meta),
+    // The invitation's own secret, which is what lets the row offer Accept and
+    // Decline. Written only by hub.invite (_notifyInvitee); the row
+    // _grantMembership writes when an admin adds somebody directly is a receipt
+    // for a membership that already exists, carries no token, and correctly
+    // renders without buttons. Surfaced under the same name as in
+    // hub.invite_received_get so the bell and the invitations list cannot
+    // disagree about whether a row can be answered.
+    invite_token: meta.token || null,
   };
 }
 
@@ -1541,6 +1549,14 @@ class MfsActivity extends Entity {
       if (!r.category) r.category = 'hub_invite';
       if (r.hub_id == null && meta.hub_id != null) r.hub_id = meta.hub_id;
       if (r.author_id == null && r.uid != null) r.author_id = r.uid;
+      // THE THIRD SURFACE THE SAME ROW REACHES, and it has to agree with the
+      // other two. mapHubInviteRow (the Unread-ON rollup) and
+      // hub.invite_received_get both carry the token out as `invite_token`;
+      // this is the raw contact_activity row the DEFAULT feed serves, and an
+      // invitation that arrived through it would otherwise render without its
+      // Accept and Decline buttons — the same one-event-two-paths split that
+      // left file notifications with a dead click in September.
+      if (r.invite_token == null && meta.token != null) r.invite_token = meta.token;
       targets.push([r, meta]);
       if (r.hub_name == null && meta.hub_id && wanted.size < MAX_LOOKUPS) {
         wanted.add(meta.hub_id);
