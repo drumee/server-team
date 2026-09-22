@@ -56,6 +56,11 @@ const EXTERNAL_AREAS = ["share", "dmz"];
 // account; only the body copy varies (internal vs external workspace).
 // Replaces the former hub-invite-added / hub-invite-link / hub-invite-signup trio.
 const WORKSPACE_INVITE_TPL = "workspace-invite-member";
+// Invite emails go out this many at a time. One SMTP round-trip to the relay
+// costs ~4.5 s (a fresh connection per message), so sending them one after
+// another held a 30-address invite for over two minutes; five in flight keeps
+// the relay's per-IP connection cap comfortable while dividing that by five.
+const INVITE_MAIL_BATCH = 5;
 
 /**
  * True when a workspace area is shared outside the member circle.
@@ -1433,9 +1438,14 @@ class __private_hub extends Hub {
     // list, and a caller may repeat an address; remember each person once.
     const remembered = new Set();
     const toRemember = [];
-    const results = [];
+    // Indexed by position so the reply lists invitees in the order they were
+    // typed, even though the email step below runs in batches.
+    const results = new Array(invitees.length);
+    // Everyone whose membership/pending work succeeded, waiting for the mail
+    // step. The DB work is milliseconds per address; the mail is not.
+    const mailQueue = [];
 
-    for (const email of invitees) {
+    for (const [idx, email] of invitees.entries()) {
       // WHAT ACTUALLY LANDED before the email step, so a mail failure can say
       // so rather than reading as "nothing happened" — see _inviteFailureReason
       // and the catch at the bottom of this loop. Reset per invitee: one bad
@@ -1533,34 +1543,11 @@ class __private_hub extends Hub {
           pending = true;
         }
 
-        // --- One email for everyone, varying only by workspace scope ---
-        await this._sendInviteEmail(
-          WORKSPACE_INVITE_TPL,
-          email,
-          workspace_external
-            ? `${username} shared ${hubname} with you`
-            : `${username} added you to ${hubname}`,
-          {
-            inviter_name: username,
-            workspace_name: hubname,
-            link: ctaLink,
-            workspace_external,
-            preview_items,
-            recent_messages,
-          },
-        );
-        results.push({ email, status: "ok", granted, pending });
-        // Queue for address-book bookkeeping — only invitees whose branch
-        // actually succeeded (a failure throws above and must leave no contact).
-        // Deliberately deferred until every invite is done, see below.
-        const key = String(email).trim().toLowerCase();
-        if (!remembered.has(key)) {
-          remembered.add(key);
-          toRemember.push({ email, drumate });
-        }
+        // The email itself is sent after this loop, in batches — see below.
+        mailQueue.push({ idx, email, granted, pending, drumate });
       } catch (err) {
         this.warn("[hub] invite failed for", email, err && err.message);
-        results.push({
+        results[idx] = {
           email,
           status: "failed",
           // The caller needs these to know whether "failed" means "nothing
@@ -1568,7 +1555,68 @@ class __private_hub extends Hub {
           granted,
           pending,
           reason: this._inviteFailureReason(email, hubname, granted, pending, err),
-        });
+        };
+      }
+    }
+
+    // --- One email for everyone, varying only by workspace scope ---
+    // Batched, not one awaited send per invitee: each send is a full SMTP
+    // handshake with the relay (~4.5 s measured on production), and paying it
+    // serially made the request time grow linearly with the guest list — a
+    // 30-address invite held the popup for over two minutes. The per-address
+    // verdict is kept: Messenger reports which recipients the MTA rejected.
+    const subject = workspace_external
+      ? `${username} shared ${hubname} with you`
+      : `${username} added you to ${hubname}`;
+    const mailData = {
+      inviter_name: username,
+      workspace_name: hubname,
+      link: ctaLink,
+      workspace_external,
+      preview_items,
+      recent_messages,
+    };
+    for (let i = 0; i < mailQueue.length; i += INVITE_MAIL_BATCH) {
+      const batch = mailQueue.slice(i, i + INVITE_MAIL_BATCH);
+      let rejected = new Set();
+      let batchErr = null;
+      try {
+        rejected = await this._sendInviteEmails(
+          WORKSPACE_INVITE_TPL,
+          batch.map((b) => b.email),
+          subject,
+          mailData,
+        );
+      } catch (err) {
+        // Nothing in this batch was dispatched (no MTA, unknown reply shape).
+        batchErr = err;
+      }
+      for (const { idx, email, granted, pending, drumate } of batch) {
+        const key = String(email).trim().toLowerCase();
+        const err = batchErr
+          ? new Error(`Email delivery to ${email} failed: ${batchErr.message}`)
+          : rejected.has(key)
+            ? new Error(`Email delivery to ${email} failed: the MTA rejected ${email}`)
+            : null;
+        if (err) {
+          this.warn("[hub] invite failed for", email, err.message);
+          results[idx] = {
+            email,
+            status: "failed",
+            granted,
+            pending,
+            reason: this._inviteFailureReason(email, hubname, granted, pending, err),
+          };
+          continue;
+        }
+        results[idx] = { email, status: "ok", granted, pending };
+        // Queue for address-book bookkeeping — only invitees whose branch
+        // actually succeeded (a failure must leave no contact).
+        // Deliberately deferred until every invite is done, see below.
+        if (!remembered.has(key)) {
+          remembered.add(key);
+          toRemember.push({ email, drumate });
+        }
       }
     }
 
@@ -1585,7 +1633,7 @@ class __private_hub extends Hub {
       await this._rememberInvitee(email, drumate, contactBook);
     }
 
-    this.output.data({ results });
+    this.output.data({ results: results.filter(Boolean) });
   }
 
   /**
@@ -1859,31 +1907,51 @@ class __private_hub extends Hub {
   }
 
   /**
-   * Gửi 1 email mời theo template app-local service/private/templates/butler/<tpl>.html
+   * Send the SAME invite email (service/private/templates/butler/<tpl>.html)
+   * to a batch of addresses at once.
+   *
+   * Messenger.send accepts an array of recipients, posts them concurrently on
+   * one transport and answers `{ recipient, error }`, where `error` lists the
+   * addresses whose sendMail rejected (null when every one was delivered).
+   *
+   * AWAITED, and the reply judged by SHAPE rather than by a truthy `.error`
+   * — see service/lib/mail-result for why that distinction is the whole bug.
+   * dispatch() returns undefined before the mail reaches an MTA, and send()
+   * returns the rendered HTML when no transport is configured; both read as
+   * success under an `.error` test, which is how an invite came to report
+   * status:"ok" while nothing ever left the box.
+   *
+   * @param {string}   tpl        template name under templates/butler
+   * @param {string[]} recipients addresses for this batch
+   * @param {string}   subject
+   * @param {Object}   data       template data, the same for every recipient
+   * @returns {Promise<Set<string>>} addresses (lowercased) the MTA rejected
+   * @throws {Error} when nothing in the batch was dispatched at all
    */
-  async _sendInviteEmail(tpl, recipient, subject, data) {
+  async _sendInviteEmails(tpl, recipients, subject, data) {
     const tplPath = resolve(__dirname, "templates", "butler", `${tpl}.html`);
-    const msg = new Messenger({ subject, recipient, handler: this.exception.email });
+    const msg = new Messenger({
+      subject,
+      recipient: recipients,
+      handler: this.exception.email,
+    });
     const html = msg.renderFrom(tplPath, data);
     // Display-name From ("Drumee" <contact@drumee.org>) so the inbox shows
     // "Drumee", matching the contact-add emails.
     const from = butlerFrom();
-    // AWAITED, and the result judged by SHAPE rather than by a truthy `.error`
-    // — see service/lib/mail-result for why that distinction is the whole bug.
-    // dispatch() returns undefined before the mail reaches an MTA, and send()
-    // returns the rendered HTML when no transport is configured; both read as
-    // success under an `.error` test, which is how an invite came to report
-    // status:"ok" while nothing ever left the box.
-    //
-    // Awaiting costs one SMTP round-trip per invitee. That is the latency the
-    // non-blocking dispatch() was introduced to avoid, and it is the price of
-    // being able to tell the caller anything true at all. It also holds one
-    // conversation open at a time, which the relay's per-IP connection cap
-    // wants regardless.
-    const reason = mailFailure(await msg.send({ html, from }));
-    if (reason) {
-      throw new Error(`Email delivery to ${recipient} failed: ${reason}`);
+    const result = await msg.send({ html, from });
+    const perRecipient = !!(result && Array.isArray(result.error));
+    const reason = mailFailure(result);
+    if (reason && !perRecipient) {
+      throw new Error(reason);
     }
+    const rejected = new Set();
+    if (perRecipient) {
+      for (const r of result.error) {
+        rejected.add(String(r).trim().toLowerCase());
+      }
+    }
+    return rejected;
   }
 
   /**
