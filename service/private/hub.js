@@ -56,11 +56,15 @@ const EXTERNAL_AREAS = ["share", "dmz"];
 // account; only the body copy varies (internal vs external workspace).
 // Replaces the former hub-invite-added / hub-invite-link / hub-invite-signup trio.
 const WORKSPACE_INVITE_TPL = "workspace-invite-member";
-// Invite emails go out this many at a time. One SMTP round-trip to the relay
-// costs ~4.5 s (a fresh connection per message), so sending them one after
-// another held a 30-address invite for over two minutes; five in flight keeps
-// the relay's per-IP connection cap comfortable while dividing that by five.
-const INVITE_MAIL_BATCH = 5;
+// Invite emails go out this many at a time. Each message opens its own SMTP
+// session to the relay, and the session costs ~4 s before a byte of mail is
+// sent (connect + STARTTLS 1.8 s, AUTH 2.3 s - measured 2026-09-22), against
+// ~1 s for the message itself. Sessions opened together pay that once, in
+// parallel: 5 at a time measured 5.8 s per batch, the same as one message,
+// so a 30-address invite still took 35 s. 25 keeps two concurrent hub.invite
+// calls (the popup fires one per selected workspace) under Postfix's default
+// 50 connections per client IP.
+const INVITE_MAIL_BATCH = 25;
 
 /**
  * True when a workspace area is shared outside the member circle.
