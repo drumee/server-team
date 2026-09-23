@@ -28,7 +28,7 @@ const {
   ID_NOT_FOUND,
 } = Constants;
 const { resolve } = require("path");
-const { notifyMemberJoined, notifyMembersChanged } = require("../lib/notify-member-joined");
+const { notifyMemberJoined, notifyMembersChanged, notifyInvitationsChanged } = require("../lib/notify-member-joined");
 const { butlerFrom } = require("../lib/mail-sender");
 const { mailFailure } = require("../lib/mail-result");
 const { resolveHubInviteName } = require("../lib/hub-invite-name");
@@ -2083,6 +2083,8 @@ class __private_hub extends Hub {
         this.warn("[hub] invitation cleanup: tracking", err && err.message);
       }
     }
+    // LAST, so the panels it wakes read the rows written above. Never throws.
+    await notifyInvitationsChanged(this, hub_id);
   }
 
   /**
