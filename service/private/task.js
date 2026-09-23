@@ -100,13 +100,21 @@ class __private_task extends Entity {
 
   /**
    * Broadcast a task event to every socket connected to the current hub
-   * (sender excluded). Silently no-ops if hub_id is missing.
+   * (the originating socket excluded; every socket of the caller when no
+   * socket_id was sent). Silently no-ops if hub_id is missing.
    */
   async _broadcast(service, data) {
     const hub_id = this.hub && this.hub.get(Attr.id);
     if (!hub_id) return;
     let dest = await this.yp.await_proc('entity_sockets', hub_id);
-    dest = toArray(dest).filter((e) => e.uid != this.uid);
+    // Skip the socket that made this call — it already has the answer — but
+    // keep the caller's OTHER sessions, so a second tab sees its own user's
+    // change live. A client that sends no socket_id keeps the old behaviour
+    // (every socket of the caller skipped), as in chat.react.
+    const socket_id = this.input.get(Attr.socket_id);
+    dest = toArray(dest).filter((e) =>
+      socket_id ? e.socket_id != socket_id : e.uid != this.uid,
+    );
     if (isEmpty(dest)) return;
     await RedisStore.sendData(this.payload(data, { service }), dest);
   }
