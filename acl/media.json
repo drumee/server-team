@@ -120,6 +120,362 @@
         }
       ]
     },
+    "upload_init": {
+      "doc": "Chunked upload step 1 - open a resumable session for a large file; quota and folder permission are checked here before any content is sent",
+      "scope": "hub",
+      "permission": {
+        "src": "write",
+        "preproc": {
+          "checker": "pre_upload"
+        }
+      },
+      "params": {
+        "nid": {
+          "type": "string",
+          "required": true,
+          "doc": "Destination folder ID (0 = hub home)"
+        },
+        "filename": {
+          "type": "string",
+          "required": true,
+          "maxLength": 126,
+          "doc": "Original filename"
+        },
+        "filesize": {
+          "type": "number",
+          "required": true,
+          "doc": "Total file size in bytes"
+        },
+        "replace": {
+          "type": "number",
+          "required": false,
+          "enum": [
+            0,
+            1
+          ],
+          "default": 0,
+          "doc": "Replace existing file (1) or create new (0)"
+        },
+        "ownpath": {
+          "type": "string",
+          "required": false,
+          "doc": "Absolute path within hub (parent folders are created if missing)"
+        }
+      },
+      "returns": {
+        "upload_id": {
+          "type": "string",
+          "doc": "Session id to send with every following call"
+        },
+        "chunk_size": {
+          "type": "number",
+          "doc": "Bytes per chunk (16 MB)"
+        },
+        "total": {
+          "type": "number",
+          "doc": "Number of chunks the client must send"
+        },
+        "received": {
+          "type": "array",
+          "doc": "Always empty for a new session"
+        }
+      },
+      "errors": [
+        {
+          "code": "INVALID_FILESIZE",
+          "message": "filesize is missing or not a positive integer",
+          "http_status": 400
+        },
+        {
+          "code": "INSUFFICIENT_STORAGE",
+          "message": "Not enough storage quota",
+          "http_status": 507
+        },
+        {
+          "code": "PERMISSION_DENIED",
+          "message": "No write permission on destination folder",
+          "http_status": 403
+        },
+        {
+          "code": "OWNPATH_INCONSISTENT",
+          "message": "ownpath must use home_id as base",
+          "http_status": 400
+        }
+      ]
+    },
+    "upload_chunk": {
+      "doc": "Chunked upload step 2 - store one chunk of an open session at its offset; the body is streamed like media.upload (request carries upload=1) and chunks may arrive in any order or in parallel",
+      "scope": "hub",
+      "permission": {
+        "src": "write",
+        "preproc": {
+          "checker": "pre_upload"
+        }
+      },
+      "params": {
+        "nid": {
+          "type": "string",
+          "required": true,
+          "doc": "Destination folder ID (0 = hub home)"
+        },
+        "upload_id": {
+          "type": "string",
+          "required": true,
+          "doc": "Session id returned by upload_init"
+        },
+        "index": {
+          "type": "number",
+          "required": true,
+          "doc": "Zero-based chunk index"
+        },
+        "file": {
+          "type": "file",
+          "required": true,
+          "doc": "Chunk content (application/octet-stream), exactly chunk_size bytes except for the last chunk"
+        }
+      },
+      "returns": {
+        "upload_id": {
+          "type": "string",
+          "doc": "Session id"
+        },
+        "index": {
+          "type": "number",
+          "doc": "Index just stored"
+        },
+        "received": {
+          "type": "array",
+          "doc": "Indices of the chunks already stored on the server"
+        }
+      },
+      "errors": [
+        {
+          "code": "UPLOAD_SESSION_NOT_FOUND",
+          "message": "No open session with this upload_id (expired after 48h or aborted)",
+          "http_status": 404
+        },
+        {
+          "code": "PERMISSION_DENIED",
+          "message": "Session belongs to another user or hub",
+          "http_status": 403
+        },
+        {
+          "code": "BAD_CHUNK_INDEX",
+          "message": "index is outside 0..total-1",
+          "http_status": 400
+        },
+        {
+          "code": "BAD_CHUNK_SIZE",
+          "message": "Chunk body length does not match the expected length for this index",
+          "http_status": 400
+        }
+      ]
+    },
+    "upload_status": {
+      "doc": "Chunked upload - which chunks of a session have already landed; the client calls it after a reload to resume with only the missing chunks",
+      "scope": "hub",
+      "permission": {
+        "src": "write",
+        "preproc": {
+          "checker": "pre_upload"
+        }
+      },
+      "params": {
+        "nid": {
+          "type": "string",
+          "required": true,
+          "doc": "Destination folder ID (0 = hub home)"
+        },
+        "upload_id": {
+          "type": "string",
+          "required": true,
+          "doc": "Session id returned by upload_init"
+        }
+      },
+      "returns": {
+        "upload_id": {
+          "type": "string",
+          "doc": "Session id"
+        },
+        "filename": {
+          "type": "string",
+          "doc": "Filename given at upload_init"
+        },
+        "filesize": {
+          "type": "number",
+          "doc": "Total size given at upload_init"
+        },
+        "chunk_size": {
+          "type": "number",
+          "doc": "Bytes per chunk"
+        },
+        "total": {
+          "type": "number",
+          "doc": "Number of chunks"
+        },
+        "received": {
+          "type": "array",
+          "doc": "Indices of the chunks already stored on the server"
+        }
+      },
+      "errors": [
+        {
+          "code": "UPLOAD_SESSION_NOT_FOUND",
+          "message": "No open session with this upload_id (expired after 48h or aborted)",
+          "http_status": 404
+        },
+        {
+          "code": "PERMISSION_DENIED",
+          "message": "Session belongs to another user or hub",
+          "http_status": 403
+        }
+      ]
+    },
+    "upload_complete": {
+      "doc": "Chunked upload step 3 - commit the assembled file into the MFS through the same store path as media.upload (quota, changelog, live update, indexing); when chunks are still missing the reply carries error INCOMPLETE and their indices instead",
+      "scope": "hub",
+      "permission": {
+        "src": "write",
+        "preproc": {
+          "checker": "pre_upload"
+        }
+      },
+      "params": {
+        "nid": {
+          "type": "string",
+          "required": true,
+          "doc": "Destination folder ID (0 = hub home)"
+        },
+        "upload_id": {
+          "type": "string",
+          "required": true,
+          "doc": "Session id returned by upload_init"
+        },
+        "filename": {
+          "type": "string",
+          "required": true,
+          "maxLength": 126,
+          "doc": "Original filename"
+        },
+        "filesize": {
+          "type": "number",
+          "required": true,
+          "doc": "Total file size in bytes (quota check)"
+        },
+        "replace": {
+          "type": "number",
+          "required": false,
+          "enum": [
+            0,
+            1
+          ],
+          "default": 0,
+          "doc": "Replace existing file (1) or create new (0)"
+        },
+        "ownpath": {
+          "type": "string",
+          "required": false,
+          "doc": "Absolute path within hub"
+        }
+      },
+      "returns": {
+        "id": {
+          "type": "string",
+          "doc": "New file node ID"
+        },
+        "nid": {
+          "type": "string",
+          "doc": "New file node ID (alias)"
+        },
+        "filename": {
+          "type": "string",
+          "doc": "Stored filename"
+        },
+        "filesize": {
+          "type": "number",
+          "doc": "File size in bytes"
+        },
+        "error": {
+          "type": "string",
+          "doc": "INCOMPLETE when chunks are missing (then no file is created)"
+        },
+        "missing": {
+          "type": "array",
+          "doc": "Indices still to send, only with error INCOMPLETE"
+        }
+      },
+      "errors": [
+        {
+          "code": "UPLOAD_SESSION_NOT_FOUND",
+          "message": "No open session with this upload_id (expired after 48h or aborted)",
+          "http_status": 404
+        },
+        {
+          "code": "PERMISSION_DENIED",
+          "message": "Session belongs to another user or hub",
+          "http_status": 403
+        },
+        {
+          "code": "UPLOAD_CORRUPTED",
+          "message": "Assembled file size does not match filesize; the session was dropped, start over",
+          "http_status": 500
+        },
+        {
+          "code": "INSUFFICIENT_STORAGE",
+          "message": "Not enough storage quota",
+          "http_status": 507
+        },
+        {
+          "code": "FAILED_CREATE_FILE",
+          "message": "File creation failed",
+          "http_status": 500
+        }
+      ]
+    },
+    "upload_abort": {
+      "doc": "Chunked upload - cancel a session and delete its partial file",
+      "scope": "hub",
+      "permission": {
+        "src": "write",
+        "preproc": {
+          "checker": "pre_upload"
+        }
+      },
+      "params": {
+        "nid": {
+          "type": "string",
+          "required": true,
+          "doc": "Destination folder ID (0 = hub home)"
+        },
+        "upload_id": {
+          "type": "string",
+          "required": true,
+          "doc": "Session id returned by upload_init"
+        }
+      },
+      "returns": {
+        "upload_id": {
+          "type": "string",
+          "doc": "Session id"
+        },
+        "aborted": {
+          "type": "number",
+          "doc": "Always 1"
+        }
+      },
+      "errors": [
+        {
+          "code": "UPLOAD_SESSION_NOT_FOUND",
+          "message": "No open session with this upload_id (expired after 48h or aborted)",
+          "http_status": 404
+        },
+        {
+          "code": "PERMISSION_DENIED",
+          "message": "Session belongs to another user or hub",
+          "http_status": 403
+        }
+      ]
+    },
     "download": {
       "doc": "Download file from MFS",
       "scope": "hub",
