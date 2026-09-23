@@ -1695,6 +1695,26 @@ class __private_hub extends Hub {
     await this.yp.await_proc(
       "token_hub_invite_add", email, "", secret, method, this.uid, metadata, expiryTs
     );
+    // ONE LIVE INVITATION PER PERSON PER WORKSPACE. The REPLACE above only
+    // covers a re-send by the SAME admin — its unique key carries inviter_id —
+    // so a second admin inviting the same address leaves the first row beside
+    // the new one, refusals included. token_hub_invite_decline parks a refusal
+    // with expiry 0 so it never ages out, and hub_invitations reports the
+    // newest row that still qualifies: once the NEW invitation lapses, the old
+    // undying refusal is the only one left and the panel says "Declined" for an
+    // invitation the person never answered. Superseding here is also what was
+    // asked for — re-inviting somebody who declined turns their row back to
+    // Pending instead of stacking a second one.
+    //
+    // Best-effort: the invitation itself is already minted and must not fail
+    // because a tidy-up did. The worst case is the stale row this removes.
+    try {
+      await this.yp.await_proc(
+        "token_hub_invite_supersede", email, method, secret
+      );
+    } catch (err) {
+      this.warn("[hub] invite: superseding older tokens failed", err && err.message);
+    }
     return secret;
   }
 
