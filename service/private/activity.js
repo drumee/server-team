@@ -5,6 +5,7 @@ const { Entity } = require('@drumee/server-core');
 const { RedisStore, Attr, toArray } = require('@drumee/server-essentials');
 const { createHash } = require('node:crypto');
 const { resolveHubInviteName } = require('../lib/hub-invite-name');
+const { hubInviteStatus } = require('../lib/hub-invite-status');
 const CONTACT_ACTIVITY_CATEGORIES = new Set([
   'contact_refused',
   'hub_invite',
@@ -286,6 +287,14 @@ function mapHubInviteRow(r) {
     // Shared with hub.invite_received_get so the two surfaces cannot drift
     // apart again — that drift is what left this one rendering a blank name.
     hub_name: resolveHubInviteName(r, meta),
+    // The invitation's own secret, which is what lets the row offer Accept and
+    // Decline. Written only by hub.invite (_notifyInvitee); the row
+    // _grantMembership writes when an admin adds somebody directly is a receipt
+    // for a membership that already exists, carries no token, and correctly
+    // renders without buttons. Surfaced under the same name as in
+    // hub.invite_received_get so the bell and the invitations list cannot
+    // disagree about whether a row can be answered.
+    invite_token: meta.token || null,
   };
 }
 
@@ -1158,6 +1167,7 @@ class MfsActivity extends Entity {
     // so the rollup rows merged above (which already carry all three) pass
     // through untouched and the two toggle states agree.
     await this._stampHubInvites(result);
+    await this._stampInviteStatus(result);
     await this._stampChatMentions(result);
     result = await this._stampMeetingRollups(result);
 
@@ -1541,6 +1551,14 @@ class MfsActivity extends Entity {
       if (!r.category) r.category = 'hub_invite';
       if (r.hub_id == null && meta.hub_id != null) r.hub_id = meta.hub_id;
       if (r.author_id == null && r.uid != null) r.author_id = r.uid;
+      // THE THIRD SURFACE THE SAME ROW REACHES, and it has to agree with the
+      // other two. mapHubInviteRow (the Unread-ON rollup) and
+      // hub.invite_received_get both carry the token out as `invite_token`;
+      // this is the raw contact_activity row the DEFAULT feed serves, and an
+      // invitation that arrived through it would otherwise render without its
+      // Accept and Decline buttons — the same one-event-two-paths split that
+      // left file notifications with a dead click in September.
+      if (r.invite_token == null && meta.token != null) r.invite_token = meta.token;
       targets.push([r, meta]);
       if (r.hub_name == null && meta.hub_id && wanted.size < MAX_LOOKUPS) {
         wanted.add(meta.hub_id);
@@ -1575,6 +1593,62 @@ class MfsActivity extends Entity {
         meta,
       );
       if (name) r.hub_name = name;
+    }
+  }
+
+  /**
+   * Tell the client whether each workspace invitation on the page can still be
+   * answered, as `invite_status` (see service/lib/hub-invite-status.js).
+   *
+   * Without it the row's Accept/Decline outlive the answer: the notification is
+   * only dismissed, never removed, and it keeps its token — so a declined
+   * invitation came back from the refresh with both buttons live. The client
+   * now draws the buttons only for `pending` and a status label otherwise.
+   *
+   * Runs AFTER _stampHubInvites, which is what gives the raw Unread-OFF row its
+   * `category` and `invite_token`; the Unread-ON rollup rows already carry both.
+   *
+   * ADD-ONLY and best-effort, like the other stampers. A row whose lookup was
+   * skipped (over the cap) or failed is left WITHOUT the field, and the client
+   * treats a missing status exactly as before this existed — buttons whenever
+   * there is a token — so a failure here can only fall back to the old
+   * behaviour, never hide an answerable invitation. A lookup that SUCCEEDS but
+   * finds no token is different: that is a real answer (`invalid`).
+   *
+   * One read per distinct token through token_get_next — the same read-only
+   * proc accept_invite uses — so the verdict matches what pressing the button
+   * would get.
+   */
+  async _stampInviteStatus(rows) {
+    const MAX_LOOKUPS = 20;
+    if (!Array.isArray(rows) || !rows.length) return;
+
+    const byToken = new Map(); // secret -> [rows]
+    for (const r of rows) {
+      if (!r || r.category !== 'hub_invite' || !r.invite_token) continue;
+      if (r.invite_status != null) continue;
+      const list = byToken.get(r.invite_token);
+      if (list) list.push(r);
+      else if (byToken.size < MAX_LOOKUPS) byToken.set(r.invite_token, [r]);
+    }
+    if (!byToken.size) return;
+
+    const now = Math.floor(Date.now() / 1000);
+    for (const [secret, list] of byToken) {
+      let tokenRow;
+      try {
+        const res = await this.yp.await_proc('token_get_next', secret);
+        // await_proc answers undefined when the call itself failed: that is
+        // "unknown", not "no such token", so leave these rows alone.
+        if (res === undefined) continue;
+        tokenRow = toArray(res)[0] || null;
+      } catch (e) {
+        this.debug('[ACTIVITY] invite status lookup failed', e && e.message);
+        continue;
+      }
+      for (const r of list) {
+        r.invite_status = hubInviteStatus(tokenRow, r.hub_id, now);
+      }
     }
   }
 
