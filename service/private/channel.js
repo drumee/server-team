@@ -19,7 +19,8 @@ const {
   Attr, RedisStore, toArray, Constants, sysEnv, Script
 } = require("@drumee/server-essentials");
 const { Entity, MfsTools } = require("@drumee/server-core");
-const { remove_node, move_node, copy_node } = MfsTools;
+const { remove_node, move_node } = MfsTools;
+const { copyNodeStorage } = require("./_node-storage");
 const { stampAuthorIdentity } = require("../lib/message-author");
 const { movePlanRows } = require("./_move-plan");
 const { memberCan, CAN_CHAT } = require("../lib/member-capability");
@@ -355,7 +356,7 @@ class __private_channel extends Entity {
             tempattachment.push(entry);
           }
           if (copy_only) {
-            await copy_node(src, dest, 1);
+            await copyNodeStorage(src, dest);
           } else {
             await move_node(src, dest);
           }
@@ -374,7 +375,7 @@ class __private_channel extends Entity {
             }
             tempattachment.push(entry);
           }
-          await copy_node(src, dest, 1);
+          await copyNodeStorage(src, dest);
       }
     }
 
