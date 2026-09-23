@@ -5,6 +5,7 @@ const { Entity } = require('@drumee/server-core');
 const { RedisStore, Attr, toArray } = require('@drumee/server-essentials');
 const { createHash } = require('node:crypto');
 const { resolveHubInviteName } = require('../lib/hub-invite-name');
+const { hubInviteStatus } = require('../lib/hub-invite-status');
 const CONTACT_ACTIVITY_CATEGORIES = new Set([
   'contact_refused',
   'hub_invite',
@@ -1166,6 +1167,7 @@ class MfsActivity extends Entity {
     // so the rollup rows merged above (which already carry all three) pass
     // through untouched and the two toggle states agree.
     await this._stampHubInvites(result);
+    await this._stampInviteStatus(result);
     await this._stampChatMentions(result);
     result = await this._stampMeetingRollups(result);
 
@@ -1591,6 +1593,62 @@ class MfsActivity extends Entity {
         meta,
       );
       if (name) r.hub_name = name;
+    }
+  }
+
+  /**
+   * Tell the client whether each workspace invitation on the page can still be
+   * answered, as `invite_status` (see service/lib/hub-invite-status.js).
+   *
+   * Without it the row's Accept/Decline outlive the answer: the notification is
+   * only dismissed, never removed, and it keeps its token — so a declined
+   * invitation came back from the refresh with both buttons live. The client
+   * now draws the buttons only for `pending` and a status label otherwise.
+   *
+   * Runs AFTER _stampHubInvites, which is what gives the raw Unread-OFF row its
+   * `category` and `invite_token`; the Unread-ON rollup rows already carry both.
+   *
+   * ADD-ONLY and best-effort, like the other stampers. A row whose lookup was
+   * skipped (over the cap) or failed is left WITHOUT the field, and the client
+   * treats a missing status exactly as before this existed — buttons whenever
+   * there is a token — so a failure here can only fall back to the old
+   * behaviour, never hide an answerable invitation. A lookup that SUCCEEDS but
+   * finds no token is different: that is a real answer (`invalid`).
+   *
+   * One read per distinct token through token_get_next — the same read-only
+   * proc accept_invite uses — so the verdict matches what pressing the button
+   * would get.
+   */
+  async _stampInviteStatus(rows) {
+    const MAX_LOOKUPS = 20;
+    if (!Array.isArray(rows) || !rows.length) return;
+
+    const byToken = new Map(); // secret -> [rows]
+    for (const r of rows) {
+      if (!r || r.category !== 'hub_invite' || !r.invite_token) continue;
+      if (r.invite_status != null) continue;
+      const list = byToken.get(r.invite_token);
+      if (list) list.push(r);
+      else if (byToken.size < MAX_LOOKUPS) byToken.set(r.invite_token, [r]);
+    }
+    if (!byToken.size) return;
+
+    const now = Math.floor(Date.now() / 1000);
+    for (const [secret, list] of byToken) {
+      let tokenRow;
+      try {
+        const res = await this.yp.await_proc('token_get_next', secret);
+        // await_proc answers undefined when the call itself failed: that is
+        // "unknown", not "no such token", so leave these rows alone.
+        if (res === undefined) continue;
+        tokenRow = toArray(res)[0] || null;
+      } catch (e) {
+        this.debug('[ACTIVITY] invite status lookup failed', e && e.message);
+        continue;
+      }
+      for (const r of list) {
+        r.invite_status = hubInviteStatus(tokenRow, r.hub_id, now);
+      }
     }
   }
 
