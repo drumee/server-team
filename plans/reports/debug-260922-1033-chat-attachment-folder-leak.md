@@ -231,3 +231,40 @@ not exist` (stage schema gap, pre-existing, not touched).
 
 Still open: the `main` endpoint Aaron tests on runs the old code until `test` is deployed
 there; cards already broken (`2ff40dba`, `38ee451b`, `f8fe9787` in hub cac552d4) stay empty.
+
+## Issue 5 — many files in one message: long wait, only 5 cards (2026-09-24, lexishoang.drumee.in)
+
+Evidence (stage `main-service`, uid 70ba905970ba905d, share hub a8083fe4a8083feb, folder
+a8957928a8957932, 09:52–10:06 UTC):
+
+| UTC      | post GRANTED → TERMINATED | files stored in `channel.attachment` | on disk |
+|----------|---------------------------|--------------------------------------|---------|
+| 09:52:47 | 62 ms                     | 1                                    | ok      |
+| 09:55:14 | 405 ms                    | 10                                   | 10/10 have bytes |
+| 10:01:15 | **5 849 ms**              | **36**                               | 36/36 have bytes (one mp4 = 844 MB) |
+| 10:01:41 | 17 ms                     | text: "ủa sao upload 1 đống mà còn ít" | — |
+
+So the server kept every attachment; nothing was dropped at post time.
+
+Root cause of "only 5": `server-team/service/private/chat.js attachment()` pages the stored
+list five at a time — `attach = data.attachment.slice((page - 1) * 5, page * 5)` — and the
+bubble's card list (`ui-team widget/chat-item/index.js`, `Skeletons.List.Smart` with
+`api: getAttachments`, `flow: none`, no height) never scrolls, so the base list's
+`_onScroll` paging never asks for page 2. Log confirms one `chat.attachment` call per message
+(page 1, 2–10 ms) and no page 2. Every message with more than 5 attachments shows 5.
+
+Root cause of "long wait": the bubble is drawn optimistically and fires `chat.attachment`
+at once (10:01:15.988, message not stored yet → empty → skeleton), then again only after
+`channel.post` returns (10:01:22.166). The post itself took 5.85 s for 36 files (0.4 s for
+10): per-file work inside one request — `_classify_staged_attachment` SELECT per nid,
+`mfs_copy_all` over 36 nodes, 36 detached copy spawns, `_purge_staged_copies` (36 ×
+`mfs_attachment_remove` + `rm -rf`), `channel_post_attachment` loop. Roughly 160 ms per file.
+Note for the fix shipped in `c484f8d` (awaited `fs.cp` instead of the detached script): on a
+message like this one the 844 MB copy now runs inside the request as well, so heavy posts get
+slower still. The staging node is purged right after the copy, so a rename
+(`move_node`, O(1) on the same volume) instead of copy + purge would remove both the race
+and the copy cost; `mfs_move_all` emits copy+delete rows for cross-DB moves (personal hub →
+sbox hub), so that path needs a rename fallback for those rows.
+
+Fix direction (not applied): (1) `chat.attachment` returns the whole list (or the bubble
+requests pages until `_e.eod`); (2) replace copy + purge of staging nodes with a move.
