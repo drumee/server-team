@@ -268,3 +268,31 @@ sbox hub), so that path needs a rename fallback for those rows.
 
 Fix direction (not applied): (1) `chat.attachment` returns the whole list (or the bubble
 requests pages until `_e.eod`); (2) replace copy + purge of staging nodes with a move.
+
+Fix applied (2026-09-24, order A1 → B1 → C1 from
+`plans/reports/brainstorm-260924-2225-chat-multi-attachment-perf.md`):
+
+- A1 `7d76460` — `chat.js attachment()` returns the whole stored list; `page` is only echoed on
+  the rows (the ui-core list always sends `page=1`, so opt-in paging was not an option).
+- B1 `7d76460` + `25e2080` — `channel.js`: verified staging nodes are MOVED into the sbox
+  (`mfs_move_all` + rename) through `_attach_to_sbox`; anything the classifier did not vouch
+  for keeps the awaited copy; `_purge_staged_copies` no longer runs after a post; the
+  classifier looks the nids up in one query. Same-hub moves (team/share hub) carry no `'move'`
+  row, the node keeps its id, so the sources are the entries.
+- C1 ui-team (`test`) — composer hands the staged node rows to the optimistic bubble
+  (`attachment_preview`, `media-wrapper.getAttachmentNodes()` stripped of picker/strip widget
+  fields); the bubble feeds them to its card list, retires the placeholder at once, and skips
+  the refetch when the echo's entries match; a cross-hub move refetches with `start(0)` so
+  the cards never blank.
+
+Stage results (aaron): 12 files incl. 15 MB → post 1.25 s, 12 cards, 12/12 folders with
+bytes, 0 staging rows left; 36 files → 1.2 s (was 5.85 s), 36 cards; team hub 8 files → 8
+cards, 8/8 bytes. Browser (temptest1): team hub send → card at 164–176 ms, placeholder gone,
+0 `chat.attachment` calls; personal folder send → card at 178 ms, 1 `chat.attachment`, no
+blank while the stored rows replace the preview. Seeded files trashed; probe messages remain
+in temptest1's chats.
+
+Side notes: the picker's copy shows an "Uploading 1 file" progress row that can linger with a
+"Cancel" control when the same file is picked twice; the ui `upload` of files through the
+hidden `input[type=file]` did not trigger the messenger's handler in automation, so the
+device-upload path was covered by the API replay only.
