@@ -408,10 +408,19 @@ class __private_channel extends Entity {
         }
       }
     }
+    // A move inside one hub (team or share hub: its sbox is the hub itself)
+    // only re-parents the rows — mfs_move_all reports it as 'show'/'same'
+    // with no 'move' row, the node keeps its id and its storage folder — so
+    // the attachment entries are the sources themselves.
+    if (staged && `${this.hub.get(Attr.id)}` === `${sbox.hub_id}`) {
+      for (let media of attachment) {
+        tempattachment.push({ nid: `${media}`, hub_id: sbox.hub_id });
+      }
+    }
     // In copy_only mode the originals still exist alongside the sbox copies;
     // pushing both here would render each attachment twice in the chat. A
-    // staged source no longer exists after the move, so it has nothing to
-    // reference either.
+    // staged source moved to another hub no longer exists, so it has nothing
+    // to reference either.
     if (!copy_only && !staged && this.hub.get(Attr.id) != this.uid) {
       for (let media of attachment) {
         tempattachment.push({ nid: media, hub_id: this.hub.get(Attr.id) });
