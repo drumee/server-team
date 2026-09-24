@@ -312,9 +312,18 @@ class __private_channel extends Entity {
     message_id,
     copy_only = false,
     folderNids = null,
+    staged = false,
   ) {
     let src = [];
     message_id = [message_id];
+    // `staged`: every source is a node the caller verified to sit in the hub's
+    // chat staging folder (_classify_staged_attachment). Such a node exists
+    // only to become this message's attachment, so it is MOVED into the sbox
+    // — mfs_move_all re-parents (same DB) or re-creates and deletes (cross
+    // DB) the row, and move_node renames the storage folder, O(1) whatever
+    // the file size — instead of being copied and then purged from staging.
+    // That copy-then-purge pair is what raced and left empty sbox folders,
+    // and what made a post cost the full copy time of every attachment.
     // Sources promoted into the folder: tag their sbox copy with the folder file
     // nid so reply-in-thread and the folder's "View Chat Threads" resolve to ONE
     // thread (keyed by the folder file F, not the per-message sbox copy C).
@@ -358,6 +367,13 @@ class __private_channel extends Entity {
           if (copy_only) {
             await copyNodeStorage(src, dest);
           } else {
+            // A hub that has never held a file has no __storage__ yet, and
+            // mv() needs the parent of the destination to exist.
+            if (node.des_mfs_root) {
+              try {
+                mkdirSync(node.des_mfs_root, { recursive: true });
+              } catch (_) {}
+            }
             await move_node(src, dest);
           }
           break;
@@ -393,13 +409,83 @@ class __private_channel extends Entity {
       }
     }
     // In copy_only mode the originals still exist alongside the sbox copies;
-    // pushing both here would render each attachment twice in the chat.
-    if (!copy_only && this.hub.get(Attr.id) != this.uid) {
+    // pushing both here would render each attachment twice in the chat. A
+    // staged source no longer exists after the move, so it has nothing to
+    // reference either.
+    if (!copy_only && !staged && this.hub.get(Attr.id) != this.uid) {
       for (let media of attachment) {
         tempattachment.push({ nid: media, hub_id: this.hub.get(Attr.id) });
       }
     }
     return tempattachment;
+  }
+
+  /**
+   * Put a post's attachments into the message's sbox folder.
+   *
+   * Verified staging nodes (`stagedNids`) are moved there — cheap and final.
+   * Anything else (a file promoted into the scoped folder, or a node the
+   * classifier did not vouch for) is copied so the original stays where it
+   * is. Returns the attachment entries in the order the client sent them.
+   */
+  async _attach_to_sbox(
+    sbox,
+    desdir,
+    attachment,
+    message_id,
+    copy_only,
+    promoted,
+    stagedNids,
+  ) {
+    const stagedSet = new Set(toArray(stagedNids).map(String));
+    const toMove = [];
+    const toCopy = [];
+    for (const nid of toArray(attachment)) {
+      (stagedSet.has(`${nid}`) ? toMove : toCopy).push(nid);
+    }
+    const entries = {};
+    if (!isEmpty(toCopy)) {
+      const rows = await this.move_attachemnt(
+        sbox,
+        desdir,
+        toCopy,
+        message_id,
+        copy_only,
+        promoted,
+      );
+      // move_attachemnt reports destination ids only; a copied node keeps its
+      // source order in the plan, so pair them positionally.
+      toCopy.forEach((nid, i) => {
+        if (rows[i]) entries[`${nid}`] = rows[i];
+      });
+      // Legacy branch of move_attachemnt may append source references after
+      // the destinations; keep them, they carry no source nid to pair with.
+      for (const row of rows.slice(toCopy.length)) {
+        entries[`${row.hub_id}:${row.nid}`] = row;
+      }
+    }
+    if (!isEmpty(toMove)) {
+      const rows = await this.move_attachemnt(
+        sbox,
+        desdir,
+        toMove,
+        message_id,
+        false,
+        null,
+        true,
+      );
+      toMove.forEach((nid, i) => {
+        if (rows[i]) entries[`${nid}`] = rows[i];
+      });
+    }
+    const ordered = [];
+    for (const nid of toArray(attachment)) {
+      if (entries[`${nid}`]) ordered.push(entries[`${nid}`]);
+    }
+    for (const key of Object.keys(entries)) {
+      if (key.includes(":")) ordered.push(entries[key]);
+    }
+    return ordered;
   }
 
   /**
@@ -416,12 +502,22 @@ class __private_channel extends Entity {
     const staging_id = mfs_home && mfs_home.chat_upload_id;
     if (!staging_id) return res;
     const wanted = new Set(toArray(folder_attachment).map(String));
-    for (let nid of toArray(attachment)) {
-      let rows = await this.db.await_query(
-        "SELECT id, parent_id, owner_id, origin_id, category FROM media WHERE id=?",
-        `${nid}`,
-      );
-      let node = toArray(rows)[0];
+    const nids = toArray(attachment).map(String).filter(Boolean);
+    if (isEmpty(nids)) return res;
+    // One round trip for the whole list: a 36-file post used to spend 36
+    // queries here.
+    const rows = await this.db.await_query(
+      `SELECT id, parent_id, owner_id, origin_id, category FROM media WHERE id IN (${nids
+        .map(() => "?")
+        .join(",")})`,
+      ...nids,
+    );
+    const byId = {};
+    for (const row of toArray(rows)) {
+      if (row && row.id) byId[`${row.id}`] = row;
+    }
+    for (let nid of nids) {
+      let node = byId[nid];
       // Anchor on the actual staging parent — not a file_path substring,
       // which a user-created folder literally named __chat__ could spoof.
       if (!node || `${node.parent_id}` !== `${staging_id}`) continue;
@@ -1568,13 +1664,14 @@ class __private_channel extends Entity {
         "mfs_make_dir",
         `'${sbox.chat_id}','${stringify([message_id])}',1`,
       );
-      attachment = await this.move_attachemnt(
+      attachment = await this._attach_to_sbox(
         sbox,
         desdir,
         attachment,
         message_id,
         copy_only,
         promoted,
+        staged.workspace,
       );
     }
     input.author_id = this.uid;
@@ -1617,9 +1714,8 @@ class __private_channel extends Entity {
       data.is_attachment = 1;
     }
     // Only after the message and its attachment records are committed:
-    // remove the now-redundant staging copies and surface the promoted
-    // files in everyone's open folder window.
-    await this._purge_staged_copies(staged.workspace);
+    // surface the promoted files in everyone's open folder window. Staged
+    // copies were moved into the sbox, so there is nothing left to purge.
     await this._notify_folder_new_nodes(promoted, nid);
 
     if (!isEmpty(thread_id)) {
@@ -2039,12 +2135,14 @@ class __private_channel extends Entity {
         "mfs_make_dir",
         `'${sbox.chat_id}','${stringify([message_id])}',1`,
       );
-      attachment = await this.move_attachemnt(
+      attachment = await this._attach_to_sbox(
         sbox,
         desdir,
         attachment,
         message_id,
         copy_only,
+        promoted,
+        staged.workspace,
       );
     }
 
@@ -2099,7 +2197,8 @@ class __private_channel extends Entity {
       );
       data.is_attachment = 1;
     }
-    await this._purge_staged_copies(staged.workspace);
+    // Staged copies were moved into the sbox; only the promoted files need
+    // announcing to open folder windows.
     await this._notify_folder_new_nodes(promoted, folder_nid);
 
     // Refresh thread summary + root card metadata (reply_count, last_message, mtime).
