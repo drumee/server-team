@@ -22,6 +22,7 @@ const { Entity, MfsTools } = require("@drumee/server-core");
 const { remove_node, move_node } = MfsTools;
 const { copyNodeStorage } = require("./_node-storage");
 const { stampAuthorIdentity } = require("../lib/message-author");
+const { pruneToCurrentReaders } = require("../lib/seen-readers");
 const { movePlanRows } = require("./_move-plan");
 const { memberCan, CAN_CHAT } = require("../lib/member-capability");
 const {admit: admitMobilePush} = require('../lib/mobile-push');
@@ -212,6 +213,8 @@ class __private_channel extends Entity {
         this.uid,
       );
     }
+    // Former members stay in _seen_ forever; show only current readers.
+    await pruneToCurrentReaders(this, messages);
     let dest = await this.yp.await_proc("entity_sockets", hub_id);
     dest = toArray(dest).filter((e) => {
       return e.uid != this.uid;
@@ -1896,6 +1899,7 @@ class __private_channel extends Entity {
         );
       }
     }
+    await pruneToCurrentReaders(this, data);
     this.output.list(data);
   }
 
