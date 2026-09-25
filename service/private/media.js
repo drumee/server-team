@@ -57,7 +57,7 @@ const {
 /** filecap.category for every archive extension — what media.filetype carries. */
 const ARCHIVE_CATEGORY = "zip";
 const { stringify } = JSON;
-const { isEmpty, isString, values } = require("lodash");
+const { isEmpty, isString, isArray, isObject, values } = require("lodash");
 const { join, resolve, basename, extname, dirname } = require("path");
 const { existsSync, readFileSync, writeFileSync, readdirSync, statSync, copyFileSync, mkdirSync, renameSync, cpSync, rmSync } = require("fs");
 const { writeFileSync: writeJson } = require("jsonfile");
@@ -2508,10 +2508,75 @@ class __private_media extends Media {
    *
    * @returns
    */
+  /**
+   * Every node a trash request names, checked one by one.
+   *
+   * The ACL layer treats `nid` as a REFERENCE: with an array it grants the
+   * first entry only, so source_nodes() hands back one node however many the
+   * client sent and a multi-select "Move to trash" removed exactly one file
+   * (the desk used to hide this by sending one request per tile, which then
+   * collided in the DB). This reads the list the client actually sent, in any
+   * of the shapes the service has ever accepted, and looks every node up on
+   * its hub as this user: a node that is gone already is skipped, one the user
+   * may not delete refuses the whole batch, a locked one too. Cached on the
+   * heap because pre_trash and trash both need it.
+   *
+   * @returns {Promise<Array<{nid: string, hub_id: string}>|null>} null after
+   *   answering the client with the refusal
+   */
+  async _trashTargets() {
+    if (isArray(this.heap.nodes)) return this.heap.nodes;
+    const currentHub = this.hub.get(Attr.id);
+    let raw = this.input.get(Attr.nid);
+    if (isString(raw)) {
+      try { raw = JSON.parse(raw); } catch (e) { /* a plain node id */ }
+    }
+    const wanted = [];
+    const add = (nid, hub_id) => {
+      if (nid == null || nid === "") return;
+      wanted.push({ nid: String(nid), hub_id: String(hub_id || currentHub) });
+    };
+    const addEntry = (o) => {
+      if (isString(o)) return add(o, currentHub);
+      if (!isObject(o)) return;
+      if (isArray(o.nid)) return o.nid.forEach((id) => add(id, o.hub_id));
+      add(o.nid || o.id, o.hub_id);
+    };
+    if (isArray(raw)) raw.forEach(addEntry); else addEntry(raw);
+    if (!wanted.length) {
+      this.heap.nodes = this.source_nodes();
+      return this.heap.nodes;
+    }
+
+    const seen = new Set();
+    const targets = [];
+    for (const t of wanted) {
+      const key = `${t.hub_id}:${t.nid}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const hub_db = await this.yp.await_func("get_db_name", t.hub_id);
+      if (!hub_db) continue;
+      const node = await this.yp.await_proc(`${hub_db}.mfs_access_node`, this.uid, t.nid);
+      if (!node || !node.id) continue; // already gone: nothing to refuse
+      if (!(Number(node.privilege) & Permission.DELETE)) {
+        this.warn(`trash refused: no delete right on ${t.hub_id}/${t.nid}`);
+        this.exception.user("PERMISSION_DENIED");
+        return null;
+      }
+      if (node.status === "locked") {
+        this.exception.user(LOCKED);
+        return null;
+      }
+      targets.push(t);
+    }
+    this.heap.nodes = targets;
+    return targets;
+  }
+
   async pre_trash() {
     const src = this.source_granted(Attr.all);
 
-    this.heap.nodes = this.heap.nodes || this.source_nodes(); //JSON.parse(this.src.args);
+    if (!(await this._trashTargets())) return;
     this.heap.srcgrantlst = [];
     let granted = [];
     let tnode;
@@ -2556,7 +2621,7 @@ class __private_media extends Media {
    * @returns
    */
   async trash() {
-    this.heap.nodes = this.heap.nodes || this.source_nodes(); //JSON.parse(this.src.args);
+    if (!(await this._trashTargets())) return;
     this.heap.srcgrantlst = [];
     let granted = [];
     let node;
