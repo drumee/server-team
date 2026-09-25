@@ -23,6 +23,7 @@ const shell = require("shelljs");
 const { readdirSync, statSync, existsSync } = require("fs");
 const { parse, join } = require("path");
 const Jsonfile = require("jsonfile");
+const { childPaths, nodeFolder } = require("../../service/lib/mfs-path");
 const {
   Attr, getFileinfo, RedisStore, Mariadb, Offline, Cache, toArray, sysEnv, uniqueId
 } = require('@drumee/server-essentials');
@@ -119,11 +120,10 @@ class __offline_media_import extends Offline {
 
       node.mimetype = info.mimetype;
       node.lvl = lvl + 1;
-      node.parent_path = join(parent_path, "");
-      node.file_path = join(
+      Object.assign(node, childPaths(
         parent_path,
-        node.user_filename + "." + node.extension
-      );
+        node.extension ? `${node.user_filename}.${node.extension}` : node.user_filename
+      ));
       node.source = join(absolute, "");
 
       node.destination = join(home_dir, node.id);
@@ -134,19 +134,18 @@ class __offline_media_import extends Offline {
       );
 
       if (statSync(absolute).isDirectory()) {
-        node.filesize = 1024;
+        node.filesize = 0;
         node.extension = "";
         node.category = "folder";
         node.mimetype = "";
         node.lvl = lvl + 1;
-        node.parent_path = join(parent_path, "");
-        node.file_path = join(parent_path, node.user_filename);
+        Object.assign(node, childPaths(parent_path, node.user_filename));
         this.nodes.push(node);
         await this.getFilesRecursively(
           absolute,
           node.id,
           node.lvl,
-          join(node.parent_path, node.user_filename),
+          node.file_path,
           home_dir
         );
       } else {
@@ -209,14 +208,11 @@ class __offline_media_import extends Offline {
       node.category = info.category;
       node.mimetype = info.mimetype;
       node.lvl = 0;
-      dest_attr.parent_path = dest_attr.parent_path || "";
-      dest_attr.filename = dest_attr.filename || "";
-      node.parent_path = join(dest_attr.parent_path, dest_attr.filename);
-      node.file_path = join(
-        dest_attr.parent_path,
-        dest_attr.filename,
-        node.user_filename + "." + node.ext
-      );
+      const destFolder = nodeFolder(dest_attr);
+      Object.assign(node, childPaths(
+        destFolder,
+        node.extension ? `${node.user_filename}.${node.extension}` : node.user_filename
+      ));
       node.source = join(absolute, "");
       node.destination = join(dest_attr.home_dir, node.id);
       node.destination_file = join(
@@ -226,15 +222,11 @@ class __offline_media_import extends Offline {
       );
 
       if (statSync(absolute).isDirectory()) {
-        node.filesize = 1024;
+        node.filesize = 0;
         node.extension = "";
         node.category = "folder";
         node.mimetype = "";
-        node.file_path = join(
-          dest_attr.parent_path,
-          dest_attr.filename,
-          node.user_filename
-        );
+        Object.assign(node, childPaths(destFolder, node.user_filename));
         node.source = "";
         node.destination = "";
         node.destination_file = "";
@@ -243,7 +235,7 @@ class __offline_media_import extends Offline {
           absolute,
           node.id,
           node.lvl,
-          join(node.parent_path, node.user_filename),
+          node.file_path,
           dest_attr.home_dir
         );
       } else {

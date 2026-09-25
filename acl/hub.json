@@ -176,8 +176,57 @@
       }
     },
 
+    "decline_invite": {
+      "doc": "Turn down a workspace invitation, by the token from its email link or its notification row. Holding the secret is the authorisation, exactly as it is for accept_invite - and this is the less dangerous of the two, since accepting grants access while declining only destroys an invitation. No session is required: an invitation usually goes to somebody with no account, and saying no must not cost them a signup. Never removes membership (that is desk.leave_hub) and refuses any token that is not an ACTIVE hub_invite, so a stale link pressed after joining cannot rewrite how somebody got in. Idempotent - declining twice keeps the first answer and reports the same result.",
+      "scope": "hub",
+      "permission": {
+        "src": "anonymous",
+        "fast_check": "public-api"
+      },
+      "params": {
+        "token": {
+          "type": "string",
+          "required": true,
+          "doc": "The invite token secret from the email link or the notification row"
+        }
+      },
+      "returns": {
+        "status": { "type": "string", "doc": "declined on success; invalid when the token is not a live hub invite; already_used when it was already accepted" },
+        "hub_id": { "type": "string", "doc": "Workspace the invitation was for, when the token resolved one" }
+      }
+    },
+
+    "invitations": {
+      "doc": "Invitations this workspace is still waiting on, plus the ones that were turned down - the Pending Invitations section of the Access panel. One row per person, newest invitation wins. Accepted invitations are absent (those people are members) and so are lapsed ones. Current members are filtered out here rather than in the proc, because membership lives in the workspace database and hub_invitations reads yellow_page.",
+      "scope": "hub",
+      "permission": {
+        "src": "admin"
+      },
+      "params": {},
+      "returns": {
+        "type": "array",
+        "doc": "Pending and declined invitations",
+        "items": {
+          "email":             { "type": "string",  "doc": "Address the invitation was sent to" },
+          "status":            { "type": "string",  "doc": "pending | declined" },
+          "ctime":             { "type": "integer", "doc": "Unix timestamp the invitation was sent" },
+          "permission":        { "type": "number",  "doc": "Privilege bitmask the invitation offers" },
+          "invitee_uid":       { "type": "string",  "doc": "Invitee's Drumee user id, null when they have no account yet" },
+          "invitee_firstname": { "type": "string",  "doc": "Invitee's first name when they have an account" },
+          "invitee_lastname":  { "type": "string",  "doc": "Invitee's last name when they have an account" },
+          "invitee_fullname":  { "type": "string",  "doc": "Invitee's display name when they have an account" },
+          "invitee_avatar":    { "type": "string",  "doc": "Invitee's avatar when they have an account" },
+          "inviter_id":        { "type": "string",  "doc": "Who sent it" },
+          "inviter_firstname": { "type": "string",  "doc": "Inviter's first name" },
+          "inviter_lastname":  { "type": "string",  "doc": "Inviter's last name" },
+          "inviter_fullname":  { "type": "string",  "doc": "Inviter's display name" }
+        }
+      },
+      "errors": []
+    },
+
     "invite": {
-      "doc": "Invite one or more emails into this workspace, branching on area (share-link vs restricted) and drumate status.",
+      "doc": "Invite one or more emails into this workspace. Mints an invitation the recipient answers with Accept or Decline - it does NOT add anybody. An address that already has an account additionally gets a notification row carrying the token; every address gets the email. Membership is written by accept_invite.",
       "scope": "hub",
       "permission": {
         "src": "admin"

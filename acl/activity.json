@@ -234,6 +234,10 @@
             "lastname": { "type": "string" },
             "fullname": { "type": "string" },
             "hub_name": { "type": "string" },
+            "invite_status": {
+              "type": "string",
+              "description": "Workspace invitations only: pending | accepted | declined | expired | invalid. Absent when it could not be resolved; the client then falls back to invite_token alone"
+            },
             "link_label": { "type": "string" },
             "task_title": { "type": "string" },
             "meeting_action": { "type": "string" },

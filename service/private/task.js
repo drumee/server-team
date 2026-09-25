@@ -17,7 +17,8 @@
 
 const { Attr, RedisStore, toArray } = require('@drumee/server-essentials');
 const { isEmpty } = require('lodash');
-const { Entity } = require('@drumee/server-core');
+const { Entity, MfsTools } = require('@drumee/server-core');
+const { remove_node } = MfsTools;
 const { notifyTaskEvent } = require('../lib/activity-mailer');
 const {admit: admitMobilePush} = require('../lib/mobile-push');
 const { markFeatureUsage } = require('../lib/feature-usage');
@@ -99,13 +100,21 @@ class __private_task extends Entity {
 
   /**
    * Broadcast a task event to every socket connected to the current hub
-   * (sender excluded). Silently no-ops if hub_id is missing.
+   * (the originating socket excluded; every socket of the caller when no
+   * socket_id was sent). Silently no-ops if hub_id is missing.
    */
   async _broadcast(service, data) {
     const hub_id = this.hub && this.hub.get(Attr.id);
     if (!hub_id) return;
     let dest = await this.yp.await_proc('entity_sockets', hub_id);
-    dest = toArray(dest).filter((e) => e.uid != this.uid);
+    // Skip the socket that made this call — it already has the answer — but
+    // keep the caller's OTHER sessions, so a second tab sees its own user's
+    // change live. A client that sends no socket_id keeps the old behaviour
+    // (every socket of the caller skipped), as in chat.react.
+    const socket_id = this.input.get(Attr.socket_id);
+    dest = toArray(dest).filter((e) =>
+      socket_id ? e.socket_id != socket_id : e.uid != this.uid,
+    );
     if (isEmpty(dest)) return;
     await RedisStore.sendData(this.payload(data, { service }), dest);
   }
@@ -936,7 +945,10 @@ class __private_task extends Entity {
     const meta = await this._taskColMeta(id);
     // Log BEFORE the delete — task_activity_log snapshots the task's nid/title.
     await this._logActivity(id, 'update', { deleted: 1 });
+    // Read the attachments BEFORE task_delete drops the rows that name them.
+    const attached = await this._taskAttachedNids(id);
     const data = await this.db.await_proc('task_delete', id);
+    await this._purgeUnlinkedFiles(attached);
     const row = Array.isArray(data) ? data[0] : data;
     // The SP returns the children as a comma-separated string (GROUP_CONCAT),
     // NULL when there were none. Normalise to an array so the client never has
@@ -947,6 +959,112 @@ class __private_task extends Entity {
     const result = { id, ...(row || {}), subtask_ids };
     await this._broadcast('task.delete', result);
     this.output.data(result);
+  }
+
+  /**
+   * Drop an attachment's media node once nothing points at it any more.
+   *
+   * Only files the task panel UPLOADED are touched. Those live in the hub's
+   * hidden task folder (/__chat__/__task__ — see mfs_home), which exists so an
+   * attachment does not appear in the workspace's Files tab beside the real
+   * documents. A file LINKED from the workspace body is a document in its own
+   * right and is left exactly where it is; the file_path test below is what
+   * tells the two apart, and mfs_attachment_remove re-checks '^/__chat__'
+   * itself, so a wrong nid reaching here still cannot delete someone's file.
+   *
+   * Without this, an attachment outlived every task that referenced it, in a
+   * folder no listing shows, with no way for anyone to reclaim the space.
+   *
+   * NEVER THROWS: failing to reclaim a file must not fail the unlink or the
+   * delete that the user actually asked for.
+   */
+  async _purgeUnlinkedFiles(file_nids) {
+    const nids = [...new Set(toArray(file_nids).map(String).filter(Boolean))];
+    if (!nids.length) return;
+    let home;
+    try {
+      home = await this.db.call_proc('mfs_home');
+    } catch (err) {
+      this.warn('task: mfs_home failed, keeping orphan attachments', err && err.message);
+      return;
+    }
+    if (!home || !home.home_dir) return;
+    for (const nid of nids) {
+      try {
+        // Still referenced by another task, or by a comment on one? Then it is
+        // not an orphan. Both tables are checked: a file can be attached to the
+        // task AND quoted in a comment on it, and the last reference wins.
+        const refs = await this.db.await_query(
+          'SELECT 1 AS n FROM task_file WHERE file_nid=? LIMIT 1',
+          `${nid}`
+        );
+        if (!isEmpty(toArray(refs))) continue;
+        const crefs = await this.db.await_query(
+          'SELECT 1 AS n FROM task_comment_file WHERE file_nid=? LIMIT 1',
+          `${nid}`
+        );
+        if (!isEmpty(toArray(crefs))) continue;
+        const rows = await this.db.await_query(
+          'SELECT file_path FROM media WHERE id=?',
+          `${nid}`
+        );
+        const node = toArray(rows)[0];
+        const path = (node && node.file_path) || '';
+        if (!/^\/__chat__\/__task__\//.test(`${path}`)) continue;
+        await this.db.await_proc('mfs_attachment_remove', `${nid}`);
+        await remove_node({
+          nid,
+          hub_id: this.hub && this.hub.get(Attr.id),
+          mfs_root: `${home.home_dir}/__storage__/`,
+        });
+      } catch (err) {
+        this.warn('task: failed to purge orphan attachment', nid, err && err.message);
+      }
+    }
+  }
+
+  /**
+   * Every media nid a task and its subtasks point at, from both the task's own
+   * attachments and its comments' — read BEFORE task_delete removes the rows
+   * that name them, so _purgeUnlinkedFiles still has something to check.
+   */
+  async _taskAttachedNids(task_id) {
+    try {
+      const rows = await this.db.await_query(
+        `SELECT file_nid FROM task_file
+          WHERE task_id = ?
+             OR task_id IN (SELECT id FROM task WHERE parent_task_id = ?)
+         UNION
+         SELECT cf.file_nid FROM task_comment_file cf
+           JOIN task_comment c ON c.id = cf.comment_id
+          WHERE c.task_id = ?
+             OR c.task_id IN (SELECT id FROM task WHERE parent_task_id = ?)`,
+        `${task_id}`, `${task_id}`, `${task_id}`, `${task_id}`
+      );
+      return toArray(rows).map((r) => r && r.file_nid).filter(Boolean);
+    } catch (err) {
+      this.warn('task: could not read attachments before delete', err && err.message);
+      return [];
+    }
+  }
+
+  /**
+   * Every media nid a comment thread points at — the root and its replies, the
+   * same set task_comment_delete removes the links for.
+   */
+  async _commentAttachedNids(comment_id) {
+    try {
+      const rows = await this.db.await_query(
+        `SELECT cf.file_nid FROM task_comment_file cf
+           JOIN task_comment c ON c.id = cf.comment_id
+          WHERE c.id = ? OR c.parent_id = ?`,
+        `${comment_id}`, `${comment_id}`
+      );
+      return toArray(rows).map((r) => r && r.file_nid).filter(Boolean);
+    } catch (err) {
+      this.warn('task: could not read comment attachments before delete', err && err.message);
+      return [];
+    }
   }
 
   /**
@@ -977,6 +1095,8 @@ class __private_task extends Entity {
     const file_nid = this.input.need('file_nid');
 
     const data = await this.db.await_proc('task_unlink_file', task_id, file_nid);
+    // Reclaim the node if that was its last reference — see _purgeUnlinkedFiles.
+    await this._purgeUnlinkedFiles([file_nid]);
     const result = { task_id, file_nid, ...data };
     await this._broadcast('task.unlink_file', result);
     this.output.data(result);
@@ -1177,8 +1297,14 @@ class __private_task extends Entity {
   async comment_delete() {
     const id = this.input.need('id');
     const task_id = this.input.need('task_id');
+    // The SP takes the whole thread (root + replies) and their file links with
+    // it, so collect the nids while the links still name them.
+    const attached = await this._commentAttachedNids(id);
     const data = await this.db.await_proc('task_comment_delete', id, this.uid);
     const row = Array.isArray(data) ? data[0] : data;
+    // affected = 0 means a non-author asked: nothing was deleted, nothing to
+    // reclaim — and purging here would let anyone delete another's attachment.
+    if (row && row.affected) await this._purgeUnlinkedFiles(attached);
     const result = {
       id,
       task_id,
@@ -1266,8 +1392,10 @@ class __private_task extends Entity {
   }
 
   /**
-   * Detach a file from one's own comment. The media node itself is untouched —
-   * it lives in the folder body, exactly as with unlink_file.
+   * Detach a file from one's own comment. A file LINKED from the workspace body
+   * is untouched and stays where it is; one the panel uploaded into the hidden
+   * task folder is reclaimed once nothing else points at it — exactly as with
+   * unlink_file (see _purgeUnlinkedFiles).
    * Params: comment_id, file_nid, task_id (required, for the broadcast).
    */
   async comment_unlink_file() {
@@ -1285,6 +1413,7 @@ class __private_task extends Entity {
       this.uid
     );
     const row = Array.isArray(data) ? data[0] : data;
+    await this._purgeUnlinkedFiles([file_nid]);
     const result = { comment_id, file_nid, task_id, affected: row && row.affected };
     await this._broadcast('task.comment_update', { ...comment, task_id });
     this.output.data(result);
