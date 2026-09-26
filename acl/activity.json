@@ -500,6 +500,38 @@
       }
     },
 
+    "read_contact_event": {
+      "doc": "Mark a single contact_activity row (task, meeting, invitation, etc.) as read for the caller. Stamps yp.contact_activity.dismissed_at only, so the row stays in Activity history with is_read = 1. Removal is dismiss_contact_event / delete_contact_event.",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "params": {
+        "activity_id": {
+          "type": "integer",
+          "required": true,
+          "description": "The yp.contact_activity row ID to mark read"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "ok on success"
+          },
+          "activity_id": {
+            "type": "integer",
+            "description": "The contact_activity ID"
+          },
+          "dismissed_at": {
+            "type": "integer",
+            "description": "Unix timestamp of the read"
+          }
+        }
+      }
+    },
+
     "dismiss_contact_event": {
       "doc": "Dismiss a single contact_activity row (hub invite, contact invite, etc.) so it no longer appears in the activity feed. Stamps yp.contact_activity.dismissed_at without deleting the underlying audit row.",
       "scope": "hub",

@@ -366,6 +366,11 @@ test('Mark as all read on Other clears every Other source it counts', async () =
     async _optionalYpProc(proc) {
       return proc === 'contact_invite_accepted_unread' ? [{id: 726}] : [];
     },
+    async _optionalYpProcResult(proc, ...args) {
+      yp.push([proc, ...args]);
+      return {ok: true, rows: [{status: 'ok'}]};
+    },
+    _markContactRead: Activity.prototype._markContactRead,
     async _callUserProc(proc, ...args) {
       user.push([proc, ...args]);
       if (proc === 'notification_center_next') return [];
@@ -384,14 +389,51 @@ test('Mark as all read on Other clears every Other source it counts', async () =
 
   assert.equal(result.status, 'ok');
   assert.equal(result.bucket, 'other');
+  // Marked READ (dismissed_at only), never removed from history.
   assert.deepEqual(
-    user.filter(([p]) => p === 'contact_activity_dismiss').map(([, , id]) => id),
+    yp.filter(([p]) => p === 'contact_activity_mark_read').map(([, , id]) => id),
     [726, 7],
   );
+  assert.ok(!user.some(([p]) => p === 'contact_activity_dismiss'));
   assert.deepEqual(
     yp.filter(([p]) => p === 'contact_activity_dismiss_hub_invite').map(([, , hub]) => hub),
     ['h1', 'h2'],
   );
   // Other never touches the Files pointers.
   assert.ok(!user.some(([p]) => p === 'mfs_mark_all_read'));
+});
+
+test('reading a contact notification marks it read without removing it', async () => {
+  const Activity = require('../service/private/activity');
+  const make = (applied) => {
+    const calls = [];
+    const activity = Object.create(Activity.prototype);
+    activity.uid = 'me';
+    activity.input = {need: () => '726'};
+    activity.exception = {bad_request: code => ({error: code})};
+    activity.output = {data: d => { activity.sent = d; return d; }};
+    activity._optionalYpProcResult = async (proc, ...args) => {
+      calls.push([proc, ...args]);
+      return applied ? {ok: true, rows: [{status: 'ok', activity_id: 726}]} : {ok: false, rows: []};
+    };
+    activity._callUserProc = async (proc, ...args) => {
+      calls.push([proc, ...args]);
+      return [{status: 'ok', activity_id: 726}];
+    };
+    return {activity, calls};
+  };
+
+  const live = make(true);
+  await live.activity.read_contact_event();
+  assert.deepEqual(live.activity.sent, {status: 'ok', activity_id: 726});
+  assert.deepEqual(live.calls, [['contact_activity_mark_read', 'me', 726]]);
+
+  // Proc not applied yet: fall back to the previous read (+hide), never lose the read.
+  const rollout = make(false);
+  await rollout.activity.read_contact_event();
+  assert.deepEqual(rollout.calls.map(([p]) => p), ['contact_activity_mark_read', 'contact_activity_dismiss']);
+
+  const bad = make(true);
+  bad.activity.input = {need: () => 'x'};
+  assert.deepEqual(await bad.activity.read_contact_event(), {error: 'INVALID_DATA'});
 });

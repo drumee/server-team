@@ -903,7 +903,9 @@ class MfsActivity extends Entity {
             const activityId = parseInt(r && r.id);
             if (!activityId) continue;
             try {
-              await this._callUserProc('contact_activity_dismiss', this.uid, activityId);
+              // Read, not removed: the rows stay in Activity history, exactly
+              // as an unscoped Mark as all read leaves them.
+              await this._markContactRead(activityId);
             } catch (e) {
               this.warn('[MFS_ACTIVITY] mark_all_read: contact dismiss failed', bucket, activityId, e && e.message);
             }
@@ -946,7 +948,7 @@ class MfsActivity extends Entity {
             .filter(Boolean);
           if (!refused.length) break;
           for (const activityId of refused) {
-            await this._callUserProc('contact_activity_dismiss', this.uid, activityId);
+            await this._markContactRead(activityId);
           }
         }
       } catch (e) {
@@ -2121,6 +2123,37 @@ class MfsActivity extends Entity {
     const result = await this._callUserProc('mfs_dismiss_activity', this.uid, changelogId);
     const data = toArray(result)[0] || {};
     this.output.data(data);
+  }
+
+  /**
+   * Mark a single contact_activity row READ, leaving it in Activity history.
+   *
+   * dismiss_contact_event also stamps hidden_at (removal — what mobile relies
+   * on), so the web panel recording a read through it made the notification
+   * vanish from the Unread OFF list. This only writes dismissed_at, the read
+   * marker activity_get_feed_all turns into is_read = 1.
+   * Endpoint: POST /activity.read_contact_event
+   * Input: activity_id (integer)
+   */
+  async read_contact_event() {
+    const activityId = parseInt(this.input.need('activity_id'));
+    if (!Number.isSafeInteger(activityId) || activityId < 1) {
+      return this.exception.bad_request('INVALID_DATA');
+    }
+    const rows = await this._markContactRead(activityId);
+    this.output.data(toArray(rows)[0] || {});
+  }
+
+  /**
+   * Record one contact_activity row as read (dismissed_at only). Until
+   * contact_activity_mark_read is applied to a database, falls back to
+   * contact_activity_dismiss — read + hidden, the previous behaviour — so a
+   * read is never silently lost during a rollout.
+   */
+  async _markContactRead(activityId) {
+    const { ok, rows } = await this._optionalYpProcResult('contact_activity_mark_read', this.uid, activityId);
+    if (ok) return rows;
+    return this._callUserProc('contact_activity_dismiss', this.uid, activityId);
   }
 
   /**
