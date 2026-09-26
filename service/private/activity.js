@@ -453,6 +453,26 @@ function stampBuckets(rows) {
   return rows;
 }
 
+// The key notification_dismiss / notification_read act on for a rollup row.
+// It is NOT the rollup's display `key_id`: notification_center_next coalesces
+// key_id from the contact / drumate first, so a media rollup's key_id is the
+// UPLOADER and a p2p chat's is the CONTACT id — while the procs need the folder
+// nid (media) and the peer's drumate id (chat). A media rollup whose folder no
+// longer resolves has nid NULL and falls back to hub_id, which
+// notification_dismiss treats as "the files with no resolvable folder".
+// Shared by mark_all_read and the per-row read so both clear the same thing.
+function rollupDismissKey(r) {
+  if (!r) return null;
+  switch (r.category) {
+    case 'chat':     return r.drumate_id || r.key_id || null;
+    case 'media':    return r.nid || r.hub_id || r.key_id || null;
+    case 'teamchat': return r.key_id || r.nid || r.hub_id || null;
+    case 'contact':  return r.contact_id || r.key_id || null;
+    case 'ticket':   return r.key_id || r.hub_id || null;
+    default:         return null;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Scheduled meetings arrive on TWO channels, and exactly one row must survive.
 //
@@ -777,15 +797,8 @@ class MfsActivity extends Entity {
         // exactly the rows that tab shows — a teamchat rollup carrying a
         // meeting_action is cleared by Meeting, not by Chat.
         if (bucket && bucketOf(r) !== bucket) continue;
-        let keyId;
-        switch (r.category) {
-          case 'chat':     keyId = r.drumate_id || r.key_id; break;
-          case 'media':    keyId = r.nid || r.hub_id || r.key_id; break;
-          case 'teamchat': keyId = r.key_id || r.nid || r.hub_id; break;
-          case 'contact':  keyId = r.contact_id || r.key_id; break;
-          case 'ticket':   keyId = r.key_id || r.hub_id; break;
-          default:         continue; // only rollup categories
-        }
+        // null for anything that is not a rollup category, as before.
+        const keyId = rollupDismissKey(r);
         if (!keyId) continue;
         const category = String(r.category);
         const args = [
@@ -2079,10 +2092,12 @@ class MfsActivity extends Entity {
     }
     const row = await this._visibleNotificationRollup(category, keyId, hubId, lastId);
     if (!row) return this.exception.bad_request('INVALID_DATA');
+    // The same key mark_all_read uses. row.key_id is the uploader (media) or
+    // the contact (chat), which the proc cannot match — the read was a no-op.
     const result = await this._callUserProc(
       'notification_dismiss',
       category,
-      String(row.key_id),
+      String(rollupDismissKey(row) || row.key_id),
       String(row.hub_id || ''),
       Number(row.last_id || 0),
     );
@@ -2379,10 +2394,16 @@ class MfsActivity extends Entity {
   async _visibleNotificationRollup(category, keyId, hubId, lastId) {
     if (!ROLLUP_MUTATION_CATEGORIES.has(category)) return null;
     const rows = await this._notificationRollups();
+    // The client sends the key it can act on — the folder nid for media, the
+    // peer's drumate id for chat (see rollupDismissKey) — which is not the
+    // rollup's display key_id for those two categories, so matching key_id
+    // alone rejected every media/chat read with INVALID_DATA. Either key is
+    // accepted; both are still checked against a row that is live right now.
     return rows.find(row => (
       row
       && String(row.category || '') === category
-      && String(row.key_id || '') === keyId
+      && (String(row.key_id || '') === keyId
+        || String(rollupDismissKey(row) || '') === keyId)
       && String(row.hub_id || '') === hubId
       && (category === 'contact' || Number(row.last_id || 0) === lastId)
     )) || null;

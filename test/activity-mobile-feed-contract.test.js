@@ -172,6 +172,59 @@ test('legacy contact mutation remains canonical without a synthetic last id', as
   assert.equal(visible.key_id, '0123456789abcdef');
 });
 
+test('media and chat reads resolve by the key the dismiss proc acts on', async () => {
+  const Activity = require('../service/private/activity');
+  const calls = [];
+  const rollups = [{
+    category: 'media',
+    key_id: 'e5ece49ee5ece4a1', // the uploader's contact, NOT the folder
+    nid: '8e623a8c8e623a8f',
+    hub_id: '8e34ce938e34ce95',
+    last_id: 1399,
+  }, {
+    category: 'media',
+    key_id: 'c4871e5fc4871e6d',
+    nid: null, // folder no longer resolves
+    hub_id: 'c4871e5fc4871e6d',
+    last_id: 142,
+  }, {
+    category: 'chat',
+    key_id: 'e5ece49ee5ece4a1', // the contact id
+    drumate_id: 'b6e6cdd0b6e6cdd6',
+    hub_id: 'current-user',
+    last_id: 1790318086,
+  }];
+  const run = async (params) => {
+    const context = Object.create(Activity.prototype);
+    context._notificationRollups = async () => rollups;
+    context.input = {
+      need: (k) => params[k],
+      use: (k) => params[k],
+    };
+    context.exception = {bad_request: code => ({error: code})};
+    context.output = {data: d => d};
+    context._callUserProc = async (...args) => { calls.push(args); return [{status: 'ok'}]; };
+    return context.notification_dismiss();
+  };
+
+  await run({category: 'media', key_id: '8e623a8c8e623a8f', hub_id: '8e34ce938e34ce95', last_id: 1399});
+  await run({category: 'media', key_id: 'c4871e5fc4871e6d', hub_id: 'c4871e5fc4871e6d', last_id: 142});
+  await run({category: 'chat', key_id: 'b6e6cdd0b6e6cdd6', hub_id: 'current-user', last_id: 1790318086});
+  assert.deepEqual(calls, [
+    ['notification_dismiss', 'media', '8e623a8c8e623a8f', '8e34ce938e34ce95', 1399],
+    ['notification_dismiss', 'media', 'c4871e5fc4871e6d', 'c4871e5fc4871e6d', 142],
+    ['notification_dismiss', 'chat', 'b6e6cdd0b6e6cdd6', 'current-user', 1790318086],
+  ]);
+
+  // Still only a live row: a stale last_id or an unknown key is refused.
+  calls.length = 0;
+  const stale = await run({category: 'media', key_id: '8e623a8c8e623a8f', hub_id: '8e34ce938e34ce95', last_id: 1398});
+  const forged = await run({category: 'media', key_id: 'ffffffffffffffff', hub_id: '8e34ce938e34ce95', last_id: 1399});
+  assert.deepEqual(stale, {error: 'INVALID_DATA'});
+  assert.deepEqual(forged, {error: 'INVALID_DATA'});
+  assert.equal(calls.length, 0);
+});
+
 test('support-ticket rollups expose a positive snapshot id', () => {
   const source = fs.readFileSync(
     path.join(repositoryRoot, '..', 'schemas', 'drumate', 'procedures',
