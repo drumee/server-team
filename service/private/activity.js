@@ -629,6 +629,25 @@ function countMeetingsInWindow(rows, start, end) {
   return n;
 }
 
+// Every yp.contact_activity event that has its own *_unread procedure. This is
+// the ONE list the tab badges (unread_counts), the Unread ON feed and the
+// Unread OFF read state (_alignContactReadState) are built from, so the three
+// cannot disagree about which contact rows are unread. A new contact_activity
+// event that should notify needs its *_unread proc added HERE; one that is not
+// listed is shown as read rather than as an unread row nothing counts.
+const CONTACT_UNREAD_PROCS = [
+  'contact_task_assigned_unread',
+  'contact_task_mention_unread',
+  'contact_task_column_change_unread',
+  'contact_storage_alert_unread',
+  // Claim-reward term ending (offline/workers/rewardExpiryWorker.js).
+  'contact_reward_expiry_unread',
+  // Scheduled-meeting notices (room.book/update/remove) → Meeting.
+  'contact_meeting_notice_unread',
+  // "<X> accepted your invitation" → Other.
+  'contact_invite_accepted_unread',
+];
+
 const MISSING_PROCS = new Map(); // proc name -> epoch ms to retry after
 const PROC_RETRY_MS = 60 * 1000;
 
@@ -868,6 +887,13 @@ class MfsActivity extends Entity {
       [BUCKET.meeting]: [
         'contact_meeting_notice_unread',
       ],
+      // The Other tab counts these too (CONTACT_UNREAD_PROCS), so clearing Other
+      // must clear them, or its badge could never reach zero.
+      [BUCKET.other]: [
+        'contact_storage_alert_unread',
+        'contact_reward_expiry_unread',
+        'contact_invite_accepted_unread',
+      ],
     };
     if (bucket && lookup(CONTACT_CLEAR, bucket)) {
       for (const proc of lookup(CONTACT_CLEAR, bucket)) {
@@ -888,6 +914,43 @@ class MfsActivity extends Entity {
           // alert bot isn't spammed until the SQL lands).
           this.debug(`[MFS_ACTIVITY] mark_all_read: ${proc} skipped`, e && e.message);
         }
+      }
+    }
+
+    // Workspace invitations and refused contact invitations are Other rows too,
+    // but they come from their own rollup procs, not a *_unread one. Both procs
+    // return only the NEWEST undismissed row per group, so dismissing that row
+    // alone would just surface the next older one:
+    //   - hub invites are cleared per workspace, which dismisses every row of
+    //     the group at once (and leaves Accept/Decline alone — those read the
+    //     invitation token, not dismissed_at; see lib/hub-invite-status.js);
+    //   - refused rows are dismissed and re-read until none is left, bounded.
+    if (bucket === BUCKET.other) {
+      try {
+        const invites = toArray(await this._callUserProc('notification_hub_invites'));
+        const hubs = new Set();
+        for (const r of invites) {
+          const hubId = mapHubInviteRow(r || {}).hub_id;
+          if (hubId) hubs.add(hubId);
+        }
+        for (const hubId of hubs) {
+          await this.yp.await_proc('contact_activity_dismiss_hub_invite', this.uid, hubId);
+        }
+      } catch (e) {
+        this.warn('[MFS_ACTIVITY] mark_all_read: hub invites not cleared', e && e.message);
+      }
+      try {
+        for (let pass = 0; pass < 5; pass++) {
+          const refused = toArray(await this._callUserProc('notification_contact_refused'))
+            .map((r) => parseInt(r && r.id))
+            .filter(Boolean);
+          if (!refused.length) break;
+          for (const activityId of refused) {
+            await this._callUserProc('contact_activity_dismiss', this.uid, activityId);
+          }
+        }
+      } catch (e) {
+        this.warn('[MFS_ACTIVITY] mark_all_read: refused invitations not cleared', e && e.message);
       }
     }
 
@@ -1039,6 +1102,9 @@ class MfsActivity extends Entity {
     // these via activity.list / channel.list_notifications for the unread BADGE —
     // this only changes WHERE they render. Best-effort: a failure never breaks
     // the rest of the feed.
+    // Kept for _alignContactReadState below, so it can reuse this call's
+    // rollups instead of running notification_center_next a second time.
+    let liveRollups = null;
     if (filter !== 'mentions' && filter !== 'shares' && page <= 1) {
       try {
         // chat/media/teamchat/ticket rollups are NOT returned by
@@ -1048,6 +1114,7 @@ class MfsActivity extends Entity {
         // Unread ON — otherwise the same event double-shows under Unread OFF.
         const ALWAYS = ROLLUP_CATEGORIES;
         const rollups = await this._notificationRollups();
+        liveRollups = rollups;
         for (const r of rollups) {
           if (!r) continue;
           // Shared-workspace membership is not available to every legacy MFS
@@ -1110,20 +1177,7 @@ class MfsActivity extends Entity {
         // independently best-effort so a missing/failing one never sinks the
         // others.
         if (unreadOnly) {
-          for (const proc of [
-            'contact_task_assigned_unread',
-            'contact_task_mention_unread',
-            'contact_task_column_change_unread',
-            'contact_storage_alert_unread',
-            // Claim-reward term ending (offline/workers/rewardExpiryWorker.js).
-            // Added with the event, not after it, per the note above.
-            'contact_reward_expiry_unread',
-            // Scheduled-meeting notices (room.book/update/remove). Under Unread
-            // OFF these already arrive via activity_get_feed_all's generic
-            // contact branch, so the feature degrades to "visible with the
-            // toggle off" if this proc has not been applied yet.
-            'contact_meeting_notice_unread',
-          ]) {
+          for (const proc of CONTACT_UNREAD_PROCS) {
             try {
               const rows = await this._optionalYpProc(proc, this.uid);
               for (const r of rows) {
@@ -1183,6 +1237,7 @@ class MfsActivity extends Entity {
     await this._stampInviteStatus(result);
     await this._stampChatMentions(result);
     result = await this._stampMeetingRollups(result);
+    if (!unreadOnly) await this._alignContactReadState(result, liveRollups);
 
     stampBuckets(result);
     if (bucket) {
@@ -1197,6 +1252,85 @@ class MfsActivity extends Entity {
     result = await this._dropDeleted(result);
 
     this.output.list(await this._decorateBookmarks(result));
+  }
+
+  /**
+   * Unread OFF: a contact_activity row reads as unread ONLY if the badge counts
+   * it, i.e. if one of the sources behind unread_counts / Unread ON returns it.
+   *
+   * activity_get_feed_all marks every undismissed contact_activity row unread
+   * (is_read = dismissed_at IS NULL), but only some events have an unread
+   * source. The rest — invite_sent (a second row logged for the same
+   * invitation), invite_received once the invitation is no longer pending,
+   * older workspace invites superseded by a newer one — showed as unread rows
+   * that no badge counted and Unread ON never listed (Duy 2026-09-26: All
+   * showed 14 over 19 unread-looking rows, Other 0 over 5).
+   *
+   * The unread set is exactly what is counted:
+   *   - the CONTACT_UNREAD_PROCS rows,
+   *   - the workspace-invite and refused-invitation rollups,
+   *   - for a PENDING contact invitation (counted through the `contact`
+   *     rollup), the newest invite_received from that inviter.
+   *
+   * Only ever turns unread into read, never the reverse, and only on rows it
+   * can match. Fails open: if any source cannot be read, the rows are left as
+   * the procedure returned them rather than hiding something real. Costs
+   * nothing unless the page actually holds an unread contact row.
+   */
+  async _alignContactReadState(rows, rollups) {
+    if (!Array.isArray(rows)) return;
+    const candidates = rows.filter((r) => (
+      r && r.feed_page_source === 'base' && r.event_type === 'contact'
+      && Number(r.is_read) === 0 && r.id != null
+    ));
+    if (!candidates.length) return;
+
+    const unread = new Set();
+    let pendingInviters;
+    try {
+      const [procRows, hubInvites, refused, pending] = await Promise.all([
+        Promise.all(CONTACT_UNREAD_PROCS.map((proc) => this._optionalYpProc(proc, this.uid))),
+        this._callUserProc('notification_hub_invites'),
+        this._callUserProc('notification_contact_refused'),
+        // Page 1 already has the rollups, which respect a dismissed contact
+        // invitation exactly as the badge does. Later pages use the light
+        // pending-invitation list instead of recomputing every rollup.
+        rollups ? null : this._callUserProc('contact_notification_get'),
+      ]);
+      // await_proc answers undefined on a SQL error instead of throwing.
+      if (hubInvites === undefined || refused === undefined || pending === undefined) return;
+      for (const list of procRows) {
+        for (const r of list) if (r && r.id != null) unread.add(String(r.id));
+      }
+      for (const r of toArray(hubInvites)) if (r && r.id != null) unread.add(String(r.id));
+      for (const r of toArray(refused)) if (r && r.id != null) unread.add(String(r.id));
+      pendingInviters = new Set(
+        (rollups ? rollups.filter((r) => r && r.category === 'contact') : toArray(pending))
+          .map((r) => r && r.drumate_id)
+          .filter(Boolean)
+          .map(String)
+      );
+    } catch (e) {
+      this.debug('[ACTIVITY] contact read state left as is', e && e.message);
+      return;
+    }
+
+    // The newest undismissed invite_received per pending inviter, as
+    // contact.invite_get pairs them.
+    const newestInvite = new Map();
+    for (const r of candidates) {
+      if (r.event !== 'invite_received' || !pendingInviters.has(String(r.uid))) continue;
+      const cur = newestInvite.get(String(r.uid));
+      const newer = !cur
+        || Number(r.timestamp) > Number(cur.timestamp)
+        || (Number(r.timestamp) === Number(cur.timestamp) && Number(r.id) > Number(cur.id));
+      if (newer) newestInvite.set(String(r.uid), r);
+    }
+    for (const r of newestInvite.values()) unread.add(String(r.id));
+
+    for (const r of candidates) {
+      if (!unread.has(String(r.id))) r.is_read = 1;
+    }
   }
 
   async _decorateBookmarks(rows) {
@@ -2299,17 +2433,8 @@ class MfsActivity extends Entity {
     //    otherwise the Meeting badge would read one higher than the rows the tab
     //    actually shows. Collected here, counted below.
     const contactRows = [];
-    for (const proc of [
-      'contact_task_assigned_unread',
-      'contact_task_mention_unread',
-      'contact_task_column_change_unread',
-      'contact_storage_alert_unread',
-      'contact_reward_expiry_unread',
-      // Scheduled-meeting notices → Meeting, via BUCKET_BY_EVENT. Listed here
-      // for the same reason as the rest: the tab badge and the feed must agree
-      // on what exists.
-      'contact_meeting_notice_unread',
-    ]) {
+    // The same list the feed uses, so the badge and the rows agree.
+    for (const proc of CONTACT_UNREAD_PROCS) {
       try {
         for (const r of await this._optionalYpProc(proc, this.uid)) if (r) contactRows.push(r);
       } catch (e) {

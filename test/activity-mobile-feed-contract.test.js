@@ -274,3 +274,124 @@ test('mark-all fails closed before the global pointer after a rollup failure', a
   assert.deepEqual(calls, ['notification_center_next', 'notification_read']);
   assert.ok(!calls.includes('mfs_mark_all_read'));
 });
+
+test('Unread OFF shows a contact row as unread only when the badge counts it', async () => {
+  const Activity = require('../service/private/activity');
+  const calls = [];
+  const activity = Object.create(Activity.prototype);
+  activity.uid = 'me';
+  activity.debug = () => undefined;
+  activity._optionalYpProc = async (proc) => (
+    proc === 'contact_invite_accepted_unread' ? [{id: 726}] : []
+  );
+  activity._callUserProc = async (proc) => {
+    calls.push(proc);
+    if (proc === 'notification_hub_invites') return [{id: 784}];
+    if (proc === 'notification_contact_refused') return [];
+    throw new Error(`unexpected procedure: ${proc}`);
+  };
+  const base = {feed_page_source: 'base', event_type: 'contact', is_read: 0};
+  const rows = [
+    {...base, id: 726, event: 'invite_accepted', uid: 'A', timestamp: 90},
+    {...base, id: 688, event: 'invite_sent', uid: 'B', timestamp: 100},
+    {...base, id: 682, event: 'invite_received', uid: 'B', timestamp: 100},
+    {...base, id: 600, event: 'invite_received', uid: 'B', timestamp: 50},
+    {...base, id: 700, event: 'invite_received', uid: 'C', timestamp: 70},
+    {...base, id: 784, event: 'hub_invite_received', uid: 'D', timestamp: 60},
+    {...base, id: 780, event: 'hub_invite_received', uid: 'D', timestamp: 40},
+    {...base, id: 9, event: 'task_mention', uid: 'E', is_read: 1},
+    {feed_page_source: 'base', event_type: 'mfs', id: 5, event: 'media.new', is_read: 0},
+  ];
+
+  await activity._alignContactReadState(rows, [{category: 'contact', drumate_id: 'B'}]);
+
+  const state = Object.fromEntries(rows.map((r) => [r.id, r.is_read]));
+  assert.deepEqual(state, {
+    726: 0, // counted (contact_invite_accepted_unread)
+    688: 1, // duplicate of the invitation
+    682: 0, // newest invitation from a pending inviter
+    600: 1, // older copy
+    700: 1, // inviter no longer pending
+    784: 0, // live workspace invite
+    780: 1, // superseded workspace invite
+    9: 1,
+    5: 0,   // mfs rows are not touched
+  });
+  // Page 1 reuses the rollups: no pending-invitation lookup.
+  assert.ok(!calls.includes('contact_notification_get'));
+});
+
+test('Unread OFF contact read state fails open and uses the light list past page 1', async () => {
+  const Activity = require('../service/private/activity');
+  const make = (answers) => {
+    const activity = Object.create(Activity.prototype);
+    activity.uid = 'me';
+    activity.debug = () => undefined;
+    activity._optionalYpProc = async () => [];
+    activity._callUserProc = async (proc) => answers[proc];
+    return activity;
+  };
+  const row = () => [{feed_page_source: 'base', event_type: 'contact', is_read: 0,
+    id: 682, event: 'invite_received', uid: 'B', timestamp: 1}];
+
+  // A source that could not be read leaves the rows exactly as they were.
+  const failed = row();
+  await make({notification_hub_invites: undefined, notification_contact_refused: []})
+    ._alignContactReadState(failed, [{category: 'contact', drumate_id: 'B'}]);
+  assert.equal(failed[0].is_read, 0);
+
+  // Page 2+: pending inviters come from contact_notification_get.
+  const pending = row();
+  await make({notification_hub_invites: [], notification_contact_refused: [],
+    contact_notification_get: [{drumate_id: 'B'}]})._alignContactReadState(pending, null);
+  assert.equal(pending[0].is_read, 0);
+  const gone = row();
+  await make({notification_hub_invites: [], notification_contact_refused: [],
+    contact_notification_get: []})._alignContactReadState(gone, null);
+  assert.equal(gone[0].is_read, 1);
+});
+
+test('Mark as all read on Other clears every Other source it counts', async () => {
+  const Activity = require('../service/private/activity');
+  const user = [];
+  const yp = [];
+  let refusedReads = 0;
+  const context = {
+    uid: 'me',
+    input: {get: () => 0, use: (k) => (k === 'bucket' ? 'other' : undefined)},
+    debug: () => undefined,
+    warn: () => undefined,
+    output: {data: d => d},
+    yp: {await_proc: async (...args) => { yp.push(args); return [{status: 'ok'}]; }},
+    async _optionalYpProc(proc) {
+      return proc === 'contact_invite_accepted_unread' ? [{id: 726}] : [];
+    },
+    async _callUserProc(proc, ...args) {
+      user.push([proc, ...args]);
+      if (proc === 'notification_center_next') return [];
+      if (proc === 'notification_hub_invites') {
+        return [{id: 2, data: '{"hub_id":"h1"}'}, {id: 3, data: '{"hub_id":"h2"}'}];
+      }
+      if (proc === 'notification_contact_refused') {
+        refusedReads += 1;
+        return refusedReads === 1 ? [{id: 7}] : [];
+      }
+      return [{status: 'ok'}];
+    },
+  };
+
+  const result = await Activity.prototype.mark_all_read.call(context);
+
+  assert.equal(result.status, 'ok');
+  assert.equal(result.bucket, 'other');
+  assert.deepEqual(
+    user.filter(([p]) => p === 'contact_activity_dismiss').map(([, , id]) => id),
+    [726, 7],
+  );
+  assert.deepEqual(
+    yp.filter(([p]) => p === 'contact_activity_dismiss_hub_invite').map(([, , hub]) => hub),
+    ['h1', 'h2'],
+  );
+  // Other never touches the Files pointers.
+  assert.ok(!user.some(([p]) => p === 'mfs_mark_all_read'));
+});
