@@ -126,6 +126,10 @@ class __private_channel extends Entity {
     const order = this.input.use(Attr.order, "asc");
     const page = this.input.use(Attr.page) || 1;
     const nid = this.input.use(Attr.nid);
+    // `mark_read: 0` — the client is showing the history, not reading it (a
+    // workspace team chat mounted beside the file grid). Absent = the old
+    // behaviour, so every other caller still marks read on load.
+    const markRead = `${this.input.use("mark_read", 1)}` !== "0";
     let data = await this.db.await_proc(
       "channel_list_messages",
       this.uid,
@@ -206,7 +210,7 @@ class __private_channel extends Entity {
     for (const m of messages) {
       if (!newest || (m.ctime || 0) > (newest.ctime || 0)) newest = m;
     }
-    if (newest && newest.message_id) {
+    if (markRead && newest && newest.message_id) {
       await this.db.await_proc(
         "channel_read_messages",
         newest.message_id,
