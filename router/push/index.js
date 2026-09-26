@@ -18,6 +18,8 @@ const {
 const { isFunction, isEmpty, isString } = require("lodash");
 const { Data, Input } = require("@drumee/server-core");
 const Page = require("../../client/page");
+const { clearRoomStart } = require("../../service/lib/meeting-limit");
+const { onRoomEmptied } = require("../../service/lib/meeting-lifecycle");
 
 const WATCHDOG_TIMER = 15000;
 
@@ -191,7 +193,20 @@ class __websocket_router extends Logger {
         const recipients = remaining.filter(
           (p) => p && p.socket_id && p.socket_id !== socket_id
         );
-        if (!recipients.length) continue;
+        if (!recipients.length) {
+          // LAST ONE OUT, the abrupt way — the tab was closed, crashed or lost
+          // its network, so no conference.leave (and no client-side card flip)
+          // will ever come. Do what the clean leave does for an emptied room:
+          // forget the duration-cap start and the start announcement, and turn
+          // the "started a meeting" card into "Meeting ended". Before this the
+          // card kept offering Join forever, and clicking it started a NEW
+          // meeting in the clicker's name.
+          if (r.type === "meeting") {
+            await clearRoomStart(r.room_id);
+            await onRoomEmptied(this.yp, { hub_id: r.hub_id, room_id: r.room_id });
+          }
+          continue;
+        }
         // Same person still in the room on another socket — a second device, or
         // a reconnect that already landed. Announcing a leave here would drop a
         // participant who is very much still present, so say nothing: the row
