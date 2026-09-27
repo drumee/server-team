@@ -18,9 +18,9 @@ test('latest keeps calling the one-arg proc, so an unpatched instance still answ
   assert.deepEqual(showBinCall(1, undefined), ['mfs_show_bin', 1]);
 });
 
-test('earliest / expiring call mfs_show_bin_next with the sort', () => {
-  assert.deepEqual(showBinCall(1, 'earliest'), ['mfs_show_bin_next', 1, 'earliest']);
-  assert.deepEqual(showBinCall(3, 'expiring'), ['mfs_show_bin_next', 3, 'expiring']);
+test('earliest / expiring call mfs_show_bin_sorted with the sort', () => {
+  assert.deepEqual(showBinCall(1, 'earliest'), ['mfs_show_bin_sorted', 1, 'earliest']);
+  assert.deepEqual(showBinCall(3, 'expiring'), ['mfs_show_bin_sorted', 3, 'expiring']);
 });
 
 test('acl/media.json show_bin.sort enum mirrors SORTS', () => {
