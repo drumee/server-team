@@ -56,10 +56,11 @@ const {
 const {
   extract, MAX_ENTRIES, MAX_FILENAME, MAX_FILE_PATH,
 } = require("../../service/lib/archive");
+const { childPaths, nodeFolder } = require("../../service/lib/mfs-path");
 
 const FOLDER = "folder";
-/** Folders are booked at the same nominal size serverimport books them at. */
-const FOLDER_SIZE = 1024;
+/** Folders carry no bytes of their own, as media.make_dir writes them. */
+const FOLDER_SIZE = 0;
 
 class __offline_media_unzip extends Offline {
   /**
@@ -239,7 +240,6 @@ class __offline_media_unzip extends Offline {
       "mfs_unique_filename", dest.id, baseName, "");
     const folderName = (unique && unique.user_filename) || baseName;
 
-    const destParentPath = join(dest.parent_path || "", dest.filename || "");
     const rootNode = {
       id: uniqueId(8, "hex"),
       parent_id: dest.id,
@@ -249,8 +249,7 @@ class __offline_media_unzip extends Offline {
       category: FOLDER,
       filesize: FOLDER_SIZE,
       lvl: 0,
-      parent_path: destParentPath,
-      file_path: join(destParentPath, folderName),
+      ...childPaths(nodeFolder(dest), folderName),
       source: "",
       destination: "",
       destination_file: "",
@@ -442,7 +441,7 @@ class __offline_media_unzip extends Offline {
       name = this.uniqueSibling(seen, parent.id, name, extension);
 
       const leaf = extension ? `${name}.${extension}` : name;
-      const filePath = join(parent.file_path, leaf);
+      const { parent_path, file_path: filePath } = childPaths(parent.file_path, leaf);
       if (filePath.length > MAX_FILE_PATH) {
         // Deeper than the column can record. Skipping the branch is the only
         // honest option: a truncated file_path would either collide with a
@@ -460,7 +459,7 @@ class __offline_media_unzip extends Offline {
         category: isDir ? FOLDER : (info.category || "other"),
         filesize: isDir ? FOLDER_SIZE : st.size,
         lvl,
-        parent_path: parent.file_path,
+        parent_path,
         file_path: filePath,
         source: isDir ? "" : absolute,
         destination: isDir ? "" : join(homeDir, ""),

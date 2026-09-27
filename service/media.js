@@ -26,6 +26,7 @@ const { memberCan, CAN_DOWNLOAD } = require("./lib/member-capability");
 const { notifyHubActivity } = require("./lib/activity-mailer");
 const { markFunnelMilestone } = require("./lib/funnel-milestone");
 const { markFeatureUsage } = require("./lib/feature-usage");
+const ChunkedUpload = require("./lib/chunked-upload");
 const { DENIED } = Events;
 const {
   BATCH_FILE,
@@ -75,6 +76,7 @@ const {
   rename: renameAsync,
   copyFile: copyFileAsync,
   unlink: unlinkAsync,
+  stat: statAsync,
 } = require("fs/promises");
 
 /**
@@ -733,6 +735,186 @@ class __media extends Mfs {
     let filepath = resolve(tmp_dir, `${filename}`);
     writeFileSync(filepath, image, { encoding: "base64" });
     await this.store(parent.id, filepath, this.input.need(Attr.filename));
+  }
+
+  // ---------------------------------------------------------------------------
+  // Chunked, resumable upload: the browser cuts files of 64 MB and more into
+  // 16 MB pieces and sends them as independent requests (parallel, each with
+  // its own retries), so a network blip costs one chunk instead of the whole
+  // file and a reload resumes where it stopped. Session mechanics live in
+  // service/lib/chunked-upload.js; the five services below are the ACL
+  // surface. upload_init and upload_complete share the `upload` contract
+  // (write + pre_upload) because they are the two steps that touch the target
+  // folder; the per-chunk calls only need a session, and a session is bound
+  // to the uid and hub that opened it.
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Destination folder of a chunked upload, resolved the way upload() does it:
+   * nid "0" is the hub home, and pre_upload (ownpath) may have created the
+   * real parent and left it in heap.upload.
+   * @returns {string}
+   */
+  _chunkedTargetNid() {
+    let nid = this.input.use(Attr.nid);
+    if (nid == "0") nid = this.home_id;
+    if (this.heap.upload?.nid) nid = this.heap.upload.nid;
+    return nid;
+  }
+
+  /**
+   * The session named by upload_id, or null after answering the client when
+   * it does not exist or belongs to another user or hub.
+   * @returns {Promise<object|null>}
+   */
+  async _chunkedSession() {
+    const upload_id = this.input.need("upload_id");
+    const sess = await ChunkedUpload.getSession(upload_id);
+    if (!sess) {
+      this.exception.user("UPLOAD_SESSION_NOT_FOUND");
+      return null;
+    }
+    const hub_id = this.hub.get(Attr.id);
+    if (String(sess.uid) !== String(this.uid) || String(sess.hub_id) !== String(hub_id)) {
+      this.warn(`chunked upload ${upload_id}: session owner mismatch`);
+      this.exception.user("PERMISSION_DENIED");
+      return null;
+    }
+    return sess;
+  }
+
+  /**
+   * Chunked upload, step 1: open a session. Quota and folder permission are
+   * settled here, before a single byte of content travels.
+   */
+  async upload_init() {
+    let filename = this.input.need(Attr.filename);
+    try {
+      filename = decodeURI(filename);
+    } catch (e) { /* raw name with a stray percent sign: keep it */ }
+    const filesize = Number.parseInt(this.input.need(Attr.filesize), 10);
+    if (!Number.isInteger(filesize) || filesize <= 0) {
+      return this.exception.user("INVALID_FILESIZE");
+    }
+    const folder = this.granted_node();
+    if (isEmpty(folder) || !folder.id) {
+      return this.exception.user("PERMISSION_DENIED");
+    }
+    if (!(await this.chekcDiskLimit())) return;
+    const sess = await ChunkedUpload.createSession({
+      upload_id: this.randomString(),
+      uid: this.uid,
+      hub_id: this.hub.get(Attr.id),
+      nid: this._chunkedTargetNid(),
+      filename,
+      filesize,
+      replace: this.shouldReplace(),
+      ownpath: this.input.get(Attr.ownpath),
+    });
+    this.output.data({
+      upload_id: sess.upload_id,
+      filename,
+      filesize,
+      chunk_size: sess.chunk_size,
+      total: sess.total,
+      received: [],
+    });
+  }
+
+  /**
+   * Chunked upload, step 2 (once per chunk). The body was streamed by core/io
+   * into a tmp file (the request carries upload:1, like media.upload); it is
+   * copied into the session file at index * chunk_size, then removed.
+   */
+  async upload_chunk() {
+    const sess = await this._chunkedSession();
+    if (!sess) return;
+    const index = Number.parseInt(this.input.need("index"), 10);
+    const incoming = this.input.need(Attr.uploaded_file);
+    if (!Number.isInteger(index) || index < 0 || index >= sess.total) {
+      await ChunkedUpload.removeQuietly(incoming);
+      return this.exception.user("BAD_CHUNK_INDEX");
+    }
+    let size = -1;
+    try {
+      size = (await statAsync(incoming)).size;
+    } catch (e) { /* no tmp file: reported as a size mismatch below */ }
+    const expected = ChunkedUpload.expectedLength(sess, index);
+    if (size !== expected) {
+      this.warn(`chunked upload ${sess.upload_id}: chunk ${index} is ${size} bytes, expected ${expected}`);
+      await ChunkedUpload.removeQuietly(incoming);
+      return this.exception.user("BAD_CHUNK_SIZE");
+    }
+    try {
+      await ChunkedUpload.writeChunk(sess, index, incoming);
+    } finally {
+      await ChunkedUpload.removeQuietly(incoming);
+    }
+    await ChunkedUpload.markReceived(sess.upload_id, index);
+    this.output.data({
+      upload_id: sess.upload_id,
+      index,
+      received: await ChunkedUpload.received(sess.upload_id),
+    });
+  }
+
+  /**
+   * Which chunks have landed. The client asks after a reload, to send only
+   * the missing ones.
+   */
+  async upload_status() {
+    const sess = await this._chunkedSession();
+    if (!sess) return;
+    this.output.data({
+      upload_id: sess.upload_id,
+      filename: sess.filename,
+      filesize: sess.filesize,
+      chunk_size: sess.chunk_size,
+      total: sess.total,
+      received: await ChunkedUpload.received(sess.upload_id),
+    });
+  }
+
+  /**
+   * Chunked upload, step 3: commit. With chunks still missing the client gets
+   * their indices back (error INCOMPLETE) and sends them; otherwise the
+   * assembled file goes through the same store()/replace() a single-request
+   * upload ends in, so quota, changelog, live update and indexing are shared.
+   */
+  async upload_complete() {
+    const sess = await this._chunkedSession();
+    if (!sess) return;
+    const missing = await ChunkedUpload.missing(sess);
+    if (missing.length) {
+      return this.output.data({ upload_id: sess.upload_id, error: "INCOMPLETE", missing });
+    }
+    let size = -1;
+    try {
+      size = (await statAsync(sess.path)).size;
+    } catch (e) { /* file vanished from tmp */ }
+    if (size !== sess.filesize) {
+      this.warn(`chunked upload ${sess.upload_id}: assembled ${size} bytes, expected ${sess.filesize}`);
+      await ChunkedUpload.destroySession(sess);
+      return this.exception.user("UPLOAD_CORRUPTED");
+    }
+    const nid = this._chunkedTargetNid();
+    if (this.shouldReplace() && isFunction(this.replace)) {
+      await this.replace(this.granted_node().id, sess.path, sess.filename);
+    } else {
+      await this.store(nid, sess.path, sess.filename);
+    }
+    // store()/replace() moved the file into the MFS; only the keys remain.
+    await ChunkedUpload.destroySession(sess, true);
+  }
+
+  /**
+   * Cancelled by the user: drop the session and its half-written file.
+   */
+  async upload_abort() {
+    const sess = await this._chunkedSession();
+    if (!sess) return;
+    await ChunkedUpload.destroySession(sess);
+    this.output.data({ upload_id: sess.upload_id, aborted: 1 });
   }
 
   /**

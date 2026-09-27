@@ -291,6 +291,13 @@ class __private_room extends __public_room {
         recur,
         from: name,
         folder_name,
+        // The card's "View Calendar" button opens this meeting in its
+        // workspace calendar. `nid` alone cannot do that — it is a node id
+        // inside ONE hub's database — so the hub travels with it, and the
+        // parent folder so the pane lands where the meeting is filed (the same
+        // hub_id/pid the durable meeting_notice row carries).
+        hub_id: this.hub.get(Attr.id),
+        pid: (node && node.parent_id) || null,
         // The card's meta line counts who is invited ("N invited") and shows
         // their faces, exactly as the reminder's does. `attendees` is already
         // the normalised { uid, name } list built above, so this costs
