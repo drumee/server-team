@@ -1759,10 +1759,11 @@ class __private_hub extends Hub {
         });
       }
       if (!failed.length || !inviterSockets || !template) return;
+      // payload() wraps the data as `model` (the desk receives it as `data`);
+      // the failed list goes into that body, not next to it.
       const notice = JSON.parse(JSON.stringify(template));
-      if (notice.data && Array.isArray(notice.data.emails)) notice.data.emails = failed;
-      else if (Array.isArray(notice.emails)) notice.emails = failed;
-      else notice.emails = failed;
+      const body = notice.model || notice.data || notice;
+      body.emails = failed;
       await RedisStore.sendData(notice, inviterSockets);
     };
     run().catch((err) => warn("[hub] invite mail step crashed", err && err.message));
