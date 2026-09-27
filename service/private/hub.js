@@ -1517,6 +1517,19 @@ class __private_hub extends Hub {
     // _rememberInvitee). Null when the inviter has no drumate DB — the invite
     // still goes through, it just isn't remembered.
     const contactBook = await this._contactBookContext();
+    // The emails leave AFTER the reply (see the mail step below), when this
+    // worker's DB handles are gone: everything the background step needs is
+    // read here. The inviter's sockets carry the "email did not leave" notice.
+    let inviterSockets = null;
+    try {
+      inviterSockets = await this.yp.await_proc("user_sockets", this.uid);
+    } catch (err) {
+      this.warn("[hub] invite: inviter sockets unavailable", err && err.message);
+    }
+    const mailFailedTemplate = this.payload(
+      { hub_id: hubId, hub_name: hubname, emails: [] },
+      { service: "hub.invite_mail_failed" },
+    );
     // The popup fires one hub.invite per selected workspace with the same email
     // list, and a caller may repeat an address; remember each person once.
     const remembered = new Set();
@@ -1672,45 +1685,22 @@ class __private_hub extends Hub {
       preview_items,
       recent_messages,
     });
-    for (let i = 0; i < mailQueue.length; i += INVITE_MAIL_BATCH) {
-      const batch = mailQueue.slice(i, i + INVITE_MAIL_BATCH);
-      // One verdict per invitee: an Error, or null when it was delivered.
-      const verdicts = await Promise.all(batch.map(async ({ email, token }) => {
-        try {
-          const rejected = await this._sendInviteEmails(
-            WORKSPACE_INVITE_TPL, [email], subject, mailData(token),
-          );
-          return rejected.has(String(email).trim().toLowerCase())
-            ? new Error(`Email delivery to ${email} failed: the MTA rejected ${email}`)
-            : null;
-        } catch (err) {
-          // Nothing was dispatched (no MTA, unknown reply shape).
-          return new Error(`Email delivery to ${email} failed: ${err.message}`);
-        }
-      }));
-      batch.forEach(({ idx, email, granted, pending, drumate, had_account }, j) => {
-        const err = verdicts[j];
-        if (err) {
-          this.warn("[hub] invite failed for", email, err.message);
-          results[idx] = {
-            email,
-            status: "failed",
-            granted,
-            pending,
-            reason: this._inviteFailureReason(email, hubname, granted, pending, err),
-          };
-          return;
-        }
-        results[idx] = { email, status: "ok", granted, pending, had_account };
-        // Queue for address-book bookkeeping — only invitees whose branch
-        // actually succeeded (a failure must leave no contact).
-        // Deliberately deferred until every invite is done, see below.
-        const key = String(email).trim().toLowerCase();
-        if (!remembered.has(key)) {
-          remembered.add(key);
-          toRemember.push({ email, drumate });
-        }
-      });
+    // The reply does not wait for the emails any more. One SMTP session with
+    // the relay costs ~5 s (AUTH alone 2.3 s), which made a single invitation
+    // a 6-10 s spinner; the invitation itself (token, pending row, audit) is
+    // already written, and that is what "sent" means to the popup. The emails
+    // go out right after the reply, in batches, and an address the relay
+    // refuses is reported back over the socket as hub.invite_mail_failed (the
+    // desk shows it; the pending row stays, so the person can be invited
+    // again). Before 2026-09 the reply awaited the mail so the popup could
+    // report a failure; the socket notice keeps that report without the wait.
+    for (const { idx, email, granted, pending, drumate, had_account } of mailQueue) {
+      results[idx] = { email, status: "ok", granted, pending, had_account, mail: "queued" };
+      const key = String(email).trim().toLowerCase();
+      if (!remembered.has(key)) {
+        remembered.add(key);
+        toRemember.push({ email, drumate });
+      }
     }
 
     // Bookkeeping runs LAST, never interleaved with invite work. Reason: the
@@ -1727,6 +1717,55 @@ class __private_hub extends Hub {
     }
 
     this.output.data({ results: results.filter(Boolean) });
+
+    if (mailQueue.length) {
+      this._sendInviteMailsLater({
+        mailQueue, subject, mailData, inviterSockets, template: mailFailedTemplate,
+      });
+    }
+  }
+
+  /**
+   * The email step of invite(), after the reply has left. Batches bound the
+   * open SMTP sessions exactly as the awaited version did. Nothing here may
+   * touch this.db / this.yp (closed with the request) or this.output (already
+   * sent) — which is also why the Messenger handler is a logger and not
+   * this.exception.email.
+   */
+  _sendInviteMailsLater({ mailQueue, subject, mailData, inviterSockets, template }) {
+    const warn = (...a) => this.warn(...a);
+    const handler = (err) => warn("[hub] invite mail:", err && (err.message || err));
+    const failed = [];
+    const run = async () => {
+      for (let i = 0; i < mailQueue.length; i += INVITE_MAIL_BATCH) {
+        const batch = mailQueue.slice(i, i + INVITE_MAIL_BATCH);
+        // NOT one message to the whole batch: every recipient's Accept and
+        // Decline links carry their own token, so each gets its own rendering.
+        const verdicts = await Promise.all(batch.map(async ({ email, token }) => {
+          try {
+            const rejected = await this._sendInviteEmails(
+              WORKSPACE_INVITE_TPL, [email], subject, mailData(token), handler,
+            );
+            return rejected.has(String(email).trim().toLowerCase())
+              ? new Error(`the MTA rejected ${email}`) : null;
+          } catch (err) {
+            return new Error(err && err.message ? err.message : "not dispatched");
+          }
+        }));
+        batch.forEach(({ email }, j) => {
+          if (!verdicts[j]) return;
+          warn("[hub] invite mail failed for", email, verdicts[j].message);
+          failed.push(email);
+        });
+      }
+      if (!failed.length || !inviterSockets || !template) return;
+      const notice = JSON.parse(JSON.stringify(template));
+      if (notice.data && Array.isArray(notice.data.emails)) notice.data.emails = failed;
+      else if (Array.isArray(notice.emails)) notice.emails = failed;
+      else notice.emails = failed;
+      await RedisStore.sendData(notice, inviterSockets);
+    };
+    run().catch((err) => warn("[hub] invite mail step crashed", err && err.message));
   }
 
   /**
@@ -2345,12 +2384,12 @@ class __private_hub extends Hub {
    * @returns {Promise<Set<string>>} addresses (lowercased) the MTA rejected
    * @throws {Error} when nothing in the batch was dispatched at all
    */
-  async _sendInviteEmails(tpl, recipients, subject, data) {
+  async _sendInviteEmails(tpl, recipients, subject, data, handler = this.exception.email) {
     const tplPath = resolve(__dirname, "templates", "butler", `${tpl}.html`);
     const msg = new Messenger({
       subject,
       recipient: recipients,
-      handler: this.exception.email,
+      handler,
     });
     const html = msg.renderFrom(tplPath, data);
     // Display-name From ("Drumee" <contact@drumee.org>) so the inbox shows
