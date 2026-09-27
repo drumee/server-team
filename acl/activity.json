@@ -631,11 +631,12 @@
     },
 
     "bookmark_add": {
-      "doc": "Save one visible Activity item in the caller's personal notification bookmark store. The key is a server-generated SHA-256 activity identity.",
+      "doc": "Save one visible Activity item in the caller's personal notification bookmark store. The key is a server-generated SHA-256 activity identity. The web panel may also send the row itself, kept (when it matches the key) so bookmark_rows can pin it on top.",
       "scope": "hub",
       "permission": { "src": "read" },
       "params": {
-        "bookmark_key": { "type": "string", "required": true }
+        "bookmark_key": { "type": "string", "required": true },
+        "row": { "type": "object", "required": false }
       },
       "returns": {
         "type": "object",
@@ -660,6 +661,16 @@
           "is_saved": { "type": "integer" }
         }
       }
+    },
+
+    "bookmark_rows": {
+      "doc": "The caller's saved Activity items (snapshots stored by bookmark_add), newest first, to pin on top of the panel. Optional bucket scopes to one tab. is_read is always 1: the client uses the live feed row when it has one.",
+      "scope": "hub",
+      "permission": { "src": "read" },
+      "params": {
+        "bucket": { "type": "string", "required": false }
+      },
+      "returns": { "type": "array" }
     },
 
     "read": {

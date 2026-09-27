@@ -171,6 +171,13 @@ function bookmarkKey(row) {
   return createHash('sha256').update(JSON.stringify(identity)).digest('hex');
 }
 
+// A saved row's snapshot (bookmark_rows) never keeps per-render or per-state
+// fields: they are recomputed when the row is served back.
+const BOOKMARK_ROW_DROP = ['is_saved', 'is_read', 'day_header', 'pinned_source', 'feed_page_source'];
+// Plenty for any feed row (the largest carry a few hundred bytes of JSON), and
+// small enough that 1000 bookmarks cannot grow a user's database by much.
+const BOOKMARK_ROW_MAX = 16 * 1024;
+
 // Surface task fields at the top level from the nested contact_activity `data`
 // JSON so the client renders the right text and can navigate to the task,
 // without relying on the nested JSON surviving the LETC model. Handles BOTH
@@ -2610,7 +2617,15 @@ class MfsActivity extends Entity {
       'notification_activity_bookmark_add',
       bookmarkKey,
     );
-    return this.output.data(toArray(result)[0] || {});
+    const data = toArray(result)[0] || {};
+    // Optional: the web panel also sends the row itself so a saved row can be
+    // pinned on top whatever feed page it sits on (bookmark_rows). Mobile sends
+    // only the key and is unaffected. Best-effort: the bookmark above is the
+    // source of truth and stands even if the snapshot is refused or fails.
+    if (Number(data.is_saved) === 1) {
+      await this._saveBookmarkRow(bookmarkKey, this.input.use('row'));
+    }
+    return this.output.data(data);
   }
 
   async bookmark_remove() {
@@ -2622,7 +2637,89 @@ class MfsActivity extends Entity {
       'notification_activity_bookmark_remove',
       bookmarkKey,
     );
+    try {
+      await this._callUserProc('notification_activity_bookmark_row_remove', bookmarkKey);
+    } catch (e) {
+      this.debug('[ACTIVITY] bookmark row remove skipped', e && e.message);
+    }
     return this.output.data(toArray(result)[0] || {});
+  }
+
+  /**
+   * Store what a saved row looked like, keyed by its bookmark.
+   *
+   * The row comes from the client, so it is only kept when it IS the row the
+   * key names -- bookmarkKey(row) must reproduce the key -- and when it is a
+   * reasonable size. It is only ever returned to the same user (bookmark_rows),
+   * whose panel renders it through the same escaping as any feed row.
+   */
+  async _saveBookmarkRow(key, row) {
+    if (!row || typeof row !== 'object' || Array.isArray(row)) return;
+    try {
+      if (bookmarkKey(row) !== key) {
+        this.debug('[ACTIVITY] bookmark row does not match its key, not stored');
+        return;
+      }
+      const clean = { ...row };
+      for (const k of BOOKMARK_ROW_DROP) delete clean[k];
+      const payload = JSON.stringify(clean);
+      if (payload.length > BOOKMARK_ROW_MAX) {
+        this.debug('[ACTIVITY] bookmark row too large, not stored', payload.length);
+        return;
+      }
+      stampBuckets([clean]);
+      const rowTime = Math.max(0, parseInt(clean.timestamp || clean.ctime, 10) || 0);
+      await this._callUserProc(
+        'notification_activity_bookmark_row_save',
+        key,
+        validBucket(clean.bucket) || '',
+        rowTime,
+        payload,
+      );
+    } catch (e) {
+      this.debug('[ACTIVITY] bookmark row save skipped', e && e.message);
+    }
+  }
+
+  /**
+   * The rows the user saved, newest notification first, to pin on top of the
+   * panel. Scoped to a tab when `bucket` names one. Rows the user has since
+   * deleted with the trash button are dropped, like get_feed does.
+   *
+   * is_read is forced to 1: the snapshot's read state is as old as the save and
+   * cannot be trusted, and the client replaces a snapshot with the live row
+   * whenever the feed has it, which carries the true state.
+   * Endpoint: POST /activity.bookmark_rows
+   */
+  async bookmark_rows() {
+    const bucket = validBucket(this.input.use('bucket'));
+    let rows = [];
+    try {
+      rows = toArray(await this._callUserProc(
+        'notification_activity_bookmark_row_list',
+        bucket || '',
+      ));
+    } catch (e) {
+      this.debug('[ACTIVITY] bookmark rows unavailable', e && e.message);
+      return this.output.list([]);
+    }
+    let result = [];
+    for (const r of rows) {
+      if (!r || !r.payload) continue;
+      let row;
+      try { row = JSON.parse(r.payload); } catch (e) { continue; }
+      if (!row || typeof row !== 'object') continue;
+      result.push({
+        ...row,
+        bucket: row.bucket || r.bucket || undefined,
+        bookmark_key: r.bookmark_key,
+        is_saved: 1,
+        is_read: 1,
+        pinned_source: 'snapshot',
+      });
+    }
+    result = await this._dropDeleted(result);
+    return this.output.list(result);
   }
 
   /**
