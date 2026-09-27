@@ -855,6 +855,13 @@
           "default": 1,
           "min": 1,
           "doc": "Page number for pagination"
+        },
+        "sort": {
+          "type": "string",
+          "required": false,
+          "default": "latest",
+          "enum": ["latest", "earliest", "expiring"],
+          "doc": "latest: most recently deleted first. earliest: oldest deletion first. expiring: only items with 5 days or less left before auto-purge, fewest days first."
         }
       },
       "returns": {

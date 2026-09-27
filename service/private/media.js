@@ -50,6 +50,7 @@ const Media = require("../media");
 const { writeAudit } = require("./_audit");
 const { movePlanRows } = require("./_move-plan");
 const { createHub } = require("../lib/env");
+const { showBinCall } = require("../lib/trash-sort");
 const {
   ARCHIVE_EXTENSIONS, SMALL_MAX_BYTES, SMALL_MAX_ENTRIES,
   UNEXTRACTABLE_EXTENSIONS, inspect,
@@ -2747,7 +2748,8 @@ class __private_media extends Media {
     // sent 0 — i.e. the default was unreachable, not merely unused.
     let page = this.input.get(Attr.page);
     if (page == null || page == undefined || page == 0) page = 1;
-    this.db.call_proc("mfs_show_bin", page, this.output.list);
+    const [proc, ...args] = showBinCall(page, this.input.get('sort'));
+    this.db.call_proc(proc, ...args, this.output.list);
   }
 
   /**
