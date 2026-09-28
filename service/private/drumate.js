@@ -407,8 +407,7 @@ class __private_drumate extends Entity {
   /** do_update_profile
    * 
    */
-  async do_update_profile() {
-    let profile = this.input.need(Attr.profile);
+  async do_update_profile(profile = this.input.need(Attr.profile)) {
     const profile_str = JSON.stringify(profile);
     let data = await this.yp.await_proc(
       'drumate_update_profile',
@@ -464,6 +463,14 @@ class __private_drumate extends Entity {
       cur_profile = {};
     }
     if (await this.check_otp_and_change()) return;
+    // A username is not just a profile field: login, the directory and
+    // avatars read the drumate.username COLUMN (plus the -u vhost built from
+    // it), which drumate_update_profile never touches. Change it first so a
+    // taken/invalid name rejects the whole save instead of half-applying it.
+    if (profile && profile.username !== undefined) {
+      const failed = await this._changeUsername(profile.username);
+      if (failed) return this.output.data(failed);
+    }
     for (let key in profile) {
       if (['otp'].includes(key)) {
         if (cur_profile.otp != null) {
@@ -473,6 +480,44 @@ class __private_drumate extends Entity {
       }
     }
     await this.do_update_profile();
+  }
+
+  /**
+   * Rename the caller's account: validate, check it is free in the caller's
+   * domain, then update the username column and vhost (drumate_change_username).
+   * No-op when the name is unchanged (compared case-insensitively, like the
+   * column's collation).
+   * @param {String} username
+   * @returns {Object|null} { error } to send back, or null on success/no-op
+   */
+  async _changeUsername(username) {
+    username = String(username == null ? '' : username).trim();
+    const rows = toArray(await this.yp.await_query(
+      'SELECT username, domain_id FROM drumate WHERE id = ?', this.uid
+    ));
+    const cur = rows[0] || {};
+    if (username.toLowerCase() === String(cur.username || '').toLowerCase()) {
+      return null;
+    }
+    // 2-80 chars: letters, digits, dot, dash, underscore; must start with a
+    // letter or digit. It ends up in a hostname label (<name>-u.<domain>).
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{1,79}$/.test(username)) {
+      return { error: 'USERNAME_INVALID' };
+    }
+    // get_user_in_domain also matches by id/email; any hit that is not the
+    // caller means the name is not available.
+    const chk = await this.yp.await_proc('get_user_in_domain', username, cur.domain_id || 1);
+    if (chk && chk.exists == 1 && chk.id !== this.uid) {
+      return { error: 'USERNAME_TAKEN' };
+    }
+    try {
+      await this.yp.await_proc('drumate_change_username', this.uid, username);
+    } catch (e) {
+      // UNIQUE (username, domain_id) lost a race with another rename.
+      this.warn('_changeUsername failed', e && e.message);
+      return { error: 'USERNAME_TAKEN' };
+    }
+    return null;
   }
 
   /**
@@ -1244,7 +1289,9 @@ class __private_drumate extends Entity {
    */
   async update_ident() {
     const ident = this.input.need(Attr.ident);
-    const id = this.input.need(Attr.id);
+    // Always the caller: this used to rename whatever `id` the client sent,
+    // letting any signed-in user rename any other account.
+    const id = this.uid;
     let chk;
     let my_org = await this.yp.await_proc('my_organisation', id)
     if (isEmpty(my_org)) {
