@@ -31,7 +31,13 @@
       "permission": {
         "src": "read"
       },
-      "params": {},
+      "params": {
+        "files_since": {
+          "type": "object",
+          "required": false,
+          "description": "Web rail only: { \"<hub_id>\": <unix ts> } - per workspace, count files_by_hub only after the last time the user opened its Files tab. Malformed entries are ignored."
+        }
+      },
       "returns": {
         "type": "object",
         "properties": {
@@ -64,6 +70,11 @@
             "type": "integer",
             "description": "Other tab: workspace and team invites, contacts, tickets, access requests and system alerts",
             "example": 1
+          },
+          "files_by_hub": {
+            "type": "array",
+            "description": "Per workspace, NEW files and folders (media.new; not chat attachments, not workspace creation) newer than files_since: [{ hub_id, cnt, last_ts }]. Not added to any total above. [] until mfs_new_by_hub is deployed.",
+            "example": [{ "hub_id": "ac248fb1ac248fb9", "cnt": 3, "last_ts": 1790568840 }]
           }
         }
       },

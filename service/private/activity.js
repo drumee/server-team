@@ -658,6 +658,31 @@ const CONTACT_UNREAD_PROCS = [
 const MISSING_PROCS = new Map(); // proc name -> epoch ms to retry after
 const PROC_RETRY_MS = 60 * 1000;
 
+// unread_counts `files_since`: the web client's per-workspace "Files tab last
+// opened over" marks, { "<hub_id>": <unix ts> }. Only well-formed entries are
+// kept and the map is capped, so a malformed or oversized value can only mean
+// "no marks" — it never reaches the procedure as anything but a small JSON
+// document, passed as a bound parameter.
+const FILES_SINCE_MAX_KEYS = 500;
+function filesSinceArg(value) {
+  let v = value;
+  if (typeof v === 'string') {
+    try { v = JSON.parse(v); } catch (e) { v = null; }
+  }
+  const out = {};
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return '{}';
+  let n = 0;
+  for (const [hub, ts] of Object.entries(v)) {
+    if (n >= FILES_SINCE_MAX_KEYS) break;
+    if (!/^[0-9a-f]{16}$/.test(hub)) continue;
+    const t = parseInt(ts, 10);
+    if (!Number.isFinite(t) || t <= 0) continue;
+    out[hub] = t;
+    n += 1;
+  }
+  return JSON.stringify(out);
+}
+
 // A caller-supplied bucket is only honoured when it names one of the 5 tabs;
 // anything else (absent, empty, typo'd) means "no bucket scope" and every path
 // keeps its pre-existing, unscoped behaviour.
@@ -2553,7 +2578,46 @@ class MfsActivity extends Entity {
     }
 
     const all = counts.files + counts.task + counts.meeting + counts.chat + counts.other;
-    this.output.data({ all, ...counts });
+    // 6. Per workspace, the NEW files and folders — the desk rail's Files pill.
+    //    Its own field, NOT part of `files` above (that already counts every
+    //    changelog event; adding these again would double them). Additive: a
+    //    client that does not read it is unaffected, and it is [] while the
+    //    procedure is not deployed.
+    const files_by_hub = await this._newFilesByHub(filesSinceArg(this.input.use('files_since')));
+    this.output.data({ all, ...counts, files_by_hub });
+  }
+
+  /**
+   * mfs_new_by_hub (drumate DB): [{ hub_id, cnt, last_ts }] of media.new
+   * events — files and folders — per workspace, newer than the caller's marks.
+   * Best-effort, never throws. A DB that does not have the routine yet (the
+   * rollout window, or a user DB provisioned before it) is skipped for
+   * PROC_RETRY_MS, keyed PER DATABASE so one stale DB never silences another.
+   */
+  async _newFilesByHub(since) {
+    const key = `user-db:${this.user.get(Attr.db_name)}:mfs_new_by_hub`;
+    const now = Date.now();
+    const retryAfter = MISSING_PROCS.get(key);
+    if (retryAfter && now < retryAfter) return [];
+    try {
+      const rows = await this._callUserProc('mfs_new_by_hub', this.uid, since);
+      if (rows === undefined) {
+        MISSING_PROCS.set(key, now + PROC_RETRY_MS);
+        return [];
+      }
+      if (retryAfter) MISSING_PROCS.delete(key);
+      const out = [];
+      for (const r of toArray(rows)) {
+        if (!r || !r.hub_id) continue;
+        const cnt = parseInt(r.cnt, 10) || 0;
+        if (cnt <= 0) continue;
+        out.push({ hub_id: String(r.hub_id), cnt, last_ts: parseInt(r.last_ts, 10) || 0 });
+      }
+      return out;
+    } catch (e) {
+      this.debug('[ACTIVITY] unread_counts: mfs_new_by_hub skipped', e && e.message);
+      return [];
+    }
   }
 
   async _visibleNotificationRollup(category, keyId, hubId, lastId) {
