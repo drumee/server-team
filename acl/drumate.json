@@ -64,6 +64,16 @@
       },
       "errors": [
         {
+          "code": "USERNAME_INVALID",
+          "message": "Username must be 2-80 letters, digits, dot, dash or underscore, starting with a letter or digit",
+          "http_status": 200
+        },
+        {
+          "code": "USERNAME_TAKEN",
+          "message": "Username is already used in this domain",
+          "http_status": 200
+        },
+        {
           "code": "WRONG_PASSWORD",
           "message": "OTP code is incorrect",
           "http_status": 401
@@ -696,8 +706,8 @@
         },
         "id": {
           "type": "string",
-          "required": true,
-          "doc": "User ID to update"
+          "required": false,
+          "doc": "Ignored. The caller is always the account renamed"
         }
       },
       "returns": {

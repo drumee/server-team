@@ -32,6 +32,7 @@ const {
 const { Entity, Generator, MfsTools } = require("@drumee/server-core");
 const { get_node_content } = MfsTools;
 const { purge_account } = require("../lib/account-purge");
+const { missingPasswordRules } = require("../lib/password-policy");
 
 // Contextual tutorial tour ids. See tutorial_seen() below for why this list is
 // duplicated in acl/drumate.json and in ui-team's tours.js, and what a
@@ -184,7 +185,17 @@ class __private_drumate extends Entity {
    * @returns 
    */
   async change_password() {
-    const new_password = this.input.need(Attr.new_password);
+    // Trimmed like signup: that is the value login compares against.
+    const new_password = String(this.input.need(Attr.new_password)).trim();
+    // Same policy as signup, checked BEFORE the credential so a weak password
+    // never burns a single-use email OTP. `missing` lists the unmet rule keys
+    // (the UI's PW_NEEDS_* LOCALE keys); the error code stays
+    // uncompliant_password so older clients keep their existing message.
+    const missing = missingPasswordRules(new_password);
+    if (missing.length) {
+      this.output.data({ error: 'uncompliant_password', missing });
+      return
+    }
     // Accept EITHER credential, strictly verifying whichever was sent —
     // same contract as unlink_oauth. The FE picks by the ACCOUNT's state:
     // password-backed accounts send old_password, accounts that never set
@@ -209,25 +220,21 @@ class __private_drumate extends Entity {
       }
       await this.yp.await_proc('secret_clear', this.uid, 'all');
     }
-    if (!new_password.match(/(.+){8,}/)) { //(/(.+){2,} +(.+){4,}/)
-      this.output.data({ error: 'uncompliant_password' });
-    } else {
-      r = await this.yp.await_proc('set_password', this.uid, new_password);
-      // Flag the account as password-backed so step-up flows
-      // (delete_account, change_email) gate on password rather than OTP.
-      await this.yp.call_proc('drumate_update_profile', this.uid, { password_set: 1 });
-      // "Log out of other devices": drop every other session's cookie and
-      // socket; the calling session (input.sid) survives. Best-effort — a
-      // cleanup failure must not report the password change as failed.
-      if (parseInt(this.input.use('logout_others', 0))) {
-        try {
-          await this.yp.await_proc('session_logout_others', this.uid, this.input.sid());
-        } catch (e) {
-          this.warn('change_password: session_logout_others failed:', e && e.message);
-        }
+    r = await this.yp.await_proc('set_password', this.uid, new_password);
+    // Flag the account as password-backed so step-up flows
+    // (delete_account, change_email) gate on password rather than OTP.
+    await this.yp.call_proc('drumate_update_profile', this.uid, { password_set: 1 });
+    // "Log out of other devices": drop every other session's cookie and
+    // socket; the calling session (input.sid) survives. Best-effort — a
+    // cleanup failure must not report the password change as failed.
+    if (parseInt(this.input.use('logout_others', 0))) {
+      try {
+        await this.yp.await_proc('session_logout_others', this.uid, this.input.sid());
+      } catch (e) {
+        this.warn('change_password: session_logout_others failed:', e && e.message);
       }
-      this.output.data(r)
     }
+    this.output.data(r)
   }
 
   /**
@@ -400,8 +407,7 @@ class __private_drumate extends Entity {
   /** do_update_profile
    * 
    */
-  async do_update_profile() {
-    let profile = this.input.need(Attr.profile);
+  async do_update_profile(profile = this.input.need(Attr.profile)) {
     const profile_str = JSON.stringify(profile);
     let data = await this.yp.await_proc(
       'drumate_update_profile',
@@ -457,6 +463,14 @@ class __private_drumate extends Entity {
       cur_profile = {};
     }
     if (await this.check_otp_and_change()) return;
+    // A username is not just a profile field: login, the directory and
+    // avatars read the drumate.username COLUMN (plus the -u vhost built from
+    // it), which drumate_update_profile never touches. Change it first so a
+    // taken/invalid name rejects the whole save instead of half-applying it.
+    if (profile && profile.username !== undefined) {
+      const failed = await this._changeUsername(profile.username);
+      if (failed) return this.output.data(failed);
+    }
     for (let key in profile) {
       if (['otp'].includes(key)) {
         if (cur_profile.otp != null) {
@@ -466,6 +480,44 @@ class __private_drumate extends Entity {
       }
     }
     await this.do_update_profile();
+  }
+
+  /**
+   * Rename the caller's account: validate, check it is free in the caller's
+   * domain, then update the username column and vhost (drumate_change_username).
+   * No-op when the name is unchanged (compared case-insensitively, like the
+   * column's collation).
+   * @param {String} username
+   * @returns {Object|null} { error } to send back, or null on success/no-op
+   */
+  async _changeUsername(username) {
+    username = String(username == null ? '' : username).trim();
+    const rows = toArray(await this.yp.await_query(
+      'SELECT username, domain_id FROM drumate WHERE id = ?', this.uid
+    ));
+    const cur = rows[0] || {};
+    if (username.toLowerCase() === String(cur.username || '').toLowerCase()) {
+      return null;
+    }
+    // 2-80 chars: letters, digits, dot, dash, underscore; must start with a
+    // letter or digit. It ends up in a hostname label (<name>-u.<domain>).
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{1,79}$/.test(username)) {
+      return { error: 'USERNAME_INVALID' };
+    }
+    // get_user_in_domain also matches by id/email; any hit that is not the
+    // caller means the name is not available.
+    const chk = await this.yp.await_proc('get_user_in_domain', username, cur.domain_id || 1);
+    if (chk && chk.exists == 1 && chk.id !== this.uid) {
+      return { error: 'USERNAME_TAKEN' };
+    }
+    try {
+      await this.yp.await_proc('drumate_change_username', this.uid, username);
+    } catch (e) {
+      // UNIQUE (username, domain_id) lost a race with another rename.
+      this.warn('_changeUsername failed', e && e.message);
+      return { error: 'USERNAME_TAKEN' };
+    }
+    return null;
   }
 
   /**
@@ -1023,9 +1075,10 @@ class __private_drumate extends Entity {
       return;
     }
 
-    const password = this.input.need(Attr.password);
-    if (!password.match(/(.+){8,}/)) {
-      this.output.data({ error: "uncompliant_password" });
+    const password = String(this.input.need(Attr.password)).trim();
+    const missing = missingPasswordRules(password);
+    if (missing.length) {
+      this.output.data({ error: "uncompliant_password", missing });
       return;
     }
 
@@ -1236,7 +1289,9 @@ class __private_drumate extends Entity {
    */
   async update_ident() {
     const ident = this.input.need(Attr.ident);
-    const id = this.input.need(Attr.id);
+    // Always the caller: this used to rename whatever `id` the client sent,
+    // letting any signed-in user rename any other account.
+    const id = this.uid;
     let chk;
     let my_org = await this.yp.await_proc('my_organisation', id)
     if (isEmpty(my_org)) {
