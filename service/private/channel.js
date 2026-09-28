@@ -94,6 +94,8 @@ class __private_channel extends Entity {
     this.file_thread_messages = this.file_thread_messages.bind(this);
     this.file_thread_post = this.file_thread_post.bind(this);
     this.file_thread_list_by_folder = this.file_thread_list_by_folder.bind(this);
+    this.details = this.details.bind(this);
+    this.media_list = this.media_list.bind(this);
     this.file_thread_acknowledge = this.file_thread_acknowledge.bind(this);
     this.export_scope = this.export_scope.bind(this);
     this.export = this.export.bind(this);
@@ -1938,6 +1940,45 @@ class __private_channel extends Entity {
     );
     const { allowed } = await this._filterAccessibleFileThreads(data);
     this.output.list(allowed);
+  }
+
+  /**
+   * Chat details overview (Figma 775:132186): media counts for the team chat
+   * and the workspace members with presence. One round trip for the panel.
+   */
+  async details() {
+    const [stats, members] = await Promise.all([
+      this.db.await_proc("channel_media_stats", this.uid),
+      this.db.await_proc("hub_member_presence"),
+    ]);
+    const s = (Array.isArray(stats) ? stats[0] : stats) || {};
+    this.output.data({
+      stats: {
+        photos: Number(s.photos) || 0,
+        videos: Number(s.videos) || 0,
+        files: Number(s.files) || 0,
+        links: Number(s.links) || 0,
+      },
+      members: Array.isArray(members) ? members : members ? [members] : [],
+    });
+  }
+
+  /**
+   * One page of the team chat's photos / videos / files / links.
+   */
+  async media_list() {
+    const kind = `${this.input.need("kind")}`;
+    if (!["photo", "video", "file", "link"].includes(kind)) {
+      return this.output.list([]);
+    }
+    const page = Number(this.input.use(Attr.page)) || 1;
+    const rows = await this.db.await_proc(
+      "channel_media_list",
+      this.uid,
+      kind,
+      page,
+    );
+    this.output.list(Array.isArray(rows) ? rows : rows ? [rows] : []);
   }
 
   /**

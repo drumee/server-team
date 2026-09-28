@@ -1047,6 +1047,25 @@
       "returns": { "type": "array", "doc": "File-thread summaries with current file metadata" },
       "errors": []
     },
+    "details": {
+      "doc": "Chat details overview for the workspace team chat: photo/video/file/link counts and the hub's members with presence (online, last_seen). Team chat only (file threads excluded).",
+      "scope": "hub",
+      "permission": { "src": "read" },
+      "params": {},
+      "returns": { "type": "object", "doc": "{ stats: {photos, videos, files, links}, members: [...] }" },
+      "errors": []
+    },
+    "media_list": {
+      "doc": "One page of the team chat's shared photos, videos, files (60/page) or link messages (30/page), newest first.",
+      "scope": "hub",
+      "permission": { "src": "read" },
+      "params": {
+        "kind": { "type": "string", "required": true, "doc": "photo | video | file | link" },
+        "page": { "type": "number", "required": false, "doc": "Page number (default 1)" }
+      },
+      "returns": { "type": "array", "doc": "Media rows {nid, category, filename, extension, filesize, duration, ctime, message_id} or link rows {message_id, ctime, preview, url}" },
+      "errors": []
+    },
     "file_thread_acknowledge": {
       "doc": "Mark a canonical file thread seen up to a message after validating the message/thread pair and current file access. Broadcasts an acknowledgement DTO without message content.",
       "scope": "hub",
