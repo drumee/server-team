@@ -23,6 +23,18 @@ const { isEmpty } = require("lodash");
 const { notifyMemberJoined } = require("./lib/notify-member-joined");
 const { Mfs } = require("@drumee/server-core");
 
+// Password policy — KEEP IN STEP with PW_RULES in the signup UI
+// (signup/src/widgets/form/index.js). The UI checks first for the inline
+// message; this is the authoritative check, since the endpoint can be called
+// directly. Keys double as the UI's LOCALE keys for the "still needs" list.
+const PW_SPECIALS = /[\[\]\{\}\'\"\ \-\_\+\=\|\!\:\;\,\?\.\/\*\%\$\&\#\(\)\@]/;
+const PW_RULES = [
+  { key: "PW_NEEDS_MIN", test: (v) => v.length >= 8 },
+  { key: "PW_NEEDS_UPPERCASE", test: (v) => /[A-Z]/.test(v) },
+  { key: "PW_NEEDS_NUMBER", test: (v) => /[0-9]/.test(v) },
+  { key: "PW_NEEDS_SYMBOL", test: (v) => PW_SPECIALS.test(v) },
+];
+
 class __signup extends Mfs {
 
   /**
@@ -33,6 +45,13 @@ class __signup extends Mfs {
   async create_account() {
     const email = this.input.need(Attr.email).trim();
     const password = this.input.need(Attr.password).trim();
+
+    // Checked on the TRIMMED value — the one that is hashed and that login
+    // (yp.login, session.signin) compares against.
+    const missing = PW_RULES.filter((r) => !r.test(password)).map((r) => r.key);
+    if (missing.length) {
+      return this.output.data({ status: "weak_password", missing });
+    }
 
     const existingUser = await this.yp.await_proc("drumate_exists", email);
     if (existingUser && existingUser.email) {
