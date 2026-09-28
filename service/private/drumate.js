@@ -32,6 +32,7 @@ const {
 const { Entity, Generator, MfsTools } = require("@drumee/server-core");
 const { get_node_content } = MfsTools;
 const { purge_account } = require("../lib/account-purge");
+const { missingPasswordRules } = require("../lib/password-policy");
 
 // Contextual tutorial tour ids. See tutorial_seen() below for why this list is
 // duplicated in acl/drumate.json and in ui-team's tours.js, and what a
@@ -184,7 +185,17 @@ class __private_drumate extends Entity {
    * @returns 
    */
   async change_password() {
-    const new_password = this.input.need(Attr.new_password);
+    // Trimmed like signup: that is the value login compares against.
+    const new_password = String(this.input.need(Attr.new_password)).trim();
+    // Same policy as signup, checked BEFORE the credential so a weak password
+    // never burns a single-use email OTP. `missing` lists the unmet rule keys
+    // (the UI's PW_NEEDS_* LOCALE keys); the error code stays
+    // uncompliant_password so older clients keep their existing message.
+    const missing = missingPasswordRules(new_password);
+    if (missing.length) {
+      this.output.data({ error: 'uncompliant_password', missing });
+      return
+    }
     // Accept EITHER credential, strictly verifying whichever was sent —
     // same contract as unlink_oauth. The FE picks by the ACCOUNT's state:
     // password-backed accounts send old_password, accounts that never set
@@ -209,25 +220,21 @@ class __private_drumate extends Entity {
       }
       await this.yp.await_proc('secret_clear', this.uid, 'all');
     }
-    if (!new_password.match(/(.+){8,}/)) { //(/(.+){2,} +(.+){4,}/)
-      this.output.data({ error: 'uncompliant_password' });
-    } else {
-      r = await this.yp.await_proc('set_password', this.uid, new_password);
-      // Flag the account as password-backed so step-up flows
-      // (delete_account, change_email) gate on password rather than OTP.
-      await this.yp.call_proc('drumate_update_profile', this.uid, { password_set: 1 });
-      // "Log out of other devices": drop every other session's cookie and
-      // socket; the calling session (input.sid) survives. Best-effort — a
-      // cleanup failure must not report the password change as failed.
-      if (parseInt(this.input.use('logout_others', 0))) {
-        try {
-          await this.yp.await_proc('session_logout_others', this.uid, this.input.sid());
-        } catch (e) {
-          this.warn('change_password: session_logout_others failed:', e && e.message);
-        }
+    r = await this.yp.await_proc('set_password', this.uid, new_password);
+    // Flag the account as password-backed so step-up flows
+    // (delete_account, change_email) gate on password rather than OTP.
+    await this.yp.call_proc('drumate_update_profile', this.uid, { password_set: 1 });
+    // "Log out of other devices": drop every other session's cookie and
+    // socket; the calling session (input.sid) survives. Best-effort — a
+    // cleanup failure must not report the password change as failed.
+    if (parseInt(this.input.use('logout_others', 0))) {
+      try {
+        await this.yp.await_proc('session_logout_others', this.uid, this.input.sid());
+      } catch (e) {
+        this.warn('change_password: session_logout_others failed:', e && e.message);
       }
-      this.output.data(r)
     }
+    this.output.data(r)
   }
 
   /**
@@ -1023,9 +1030,10 @@ class __private_drumate extends Entity {
       return;
     }
 
-    const password = this.input.need(Attr.password);
-    if (!password.match(/(.+){8,}/)) {
-      this.output.data({ error: "uncompliant_password" });
+    const password = String(this.input.need(Attr.password)).trim();
+    const missing = missingPasswordRules(password);
+    if (missing.length) {
+      this.output.data({ error: "uncompliant_password", missing });
       return;
     }
 
