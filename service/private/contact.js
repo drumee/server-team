@@ -1534,41 +1534,82 @@ class __private_contact extends Contact {
 
 
   /**
-   * 
-   * @param {*} message 
-   * @param {*} uid 
-   * @param {*} entity_id 
+   * Seeds a brand-new contact conversation with one canned greeting.
+   *
+   * `message` is authored by `uid` and addressed to `entity_id`. It is a SINGLE
+   * write into the author's OWN drumate DB (`p2p_channel`, via
+   * p2p_post_message) — the model chat.post uses, see chat.js
+   * `_distributeMessage` — because `p2p_channel` is the table the 1:1 contact
+   * chat reads (`p2p_list_messages`, which unions both peers' DBs).
+   *
+   * It used to post through `channel_post_message` into BOTH drumates' legacy
+   * `channel` tables. That table has no peer column — in the drumate branch the
+   * SP does not persist `entity_id` at all — so the greeting never surfaced in
+   * the contact conversation, and instead piled up in the personal hub's
+   * channel list, where the workspace "Team Chat" panel (channel.messages ->
+   * channel_list_messages, which cannot filter by peer) rendered every
+   * contact's handshake, from every contact, as one conversation.
+   *
+   * @param {*} message   canned greeting, already resolved for the language
+   * @param {*} uid       author of the greeting
+   * @param {*} entity_id the peer it is addressed to
    */
   async handshake(message, uid, entity_id) {
-    let input = {};
-    let myinput = {};
-
-    let hisinput = {};
-    let mydata = {};
-    let hisdata = {};
-    let acknowledge = {};
     let message_id = await this.db.await_proc('message_id');
-    message_id = message_id.id
-    input.author_id = uid
-    input.uid = uid
-    input.message_id = message_id
-    hisinput = input
-    myinput = input
+    message_id = message_id.id;
+    if (!isEmpty(message)) {
+      message = message.replace(/'/gi, "''");
+    }
+    const input = {
+      author_id: uid,
+      uid,
+      peer_id: entity_id,
+      message_id,
+    };
+    const data = await this.yp.await_proc(
+      'forward_proc', uid, 'p2p_post_message',
+      `'${stringify(input)}','${message}'`
+    );
+    // A failing SP answers {SUCCESS:0, ERROR:{...}} rather than a row, so the
+    // absence of message_id — not emptiness — is the failure signal.
+    if (isEmpty(data) || isEmpty(data.message_id)) {
+      this.warn('[CONTACT] handshake post failed', uid, entity_id, stringify(data));
+      return;
+    }
+    data.is_attachment = 0;
+    // No echoId: this greeting is written by the server, so it echoes nothing
+    // either session posted. Forwarding the invite_accept request's id would
+    // only risk _.uniqueId() colliding with a bubble a session has pending.
 
-    myinput.entity_id = entity_id
-    mydata = await this.yp.await_proc('forward_proc', uid, 'channel_post_message', `'${stringify(myinput)}','${message}'`)
-    hisinput.entity_id = uid
-    hisdata = await this.yp.await_proc('forward_proc', entity_id, 'channel_post_message', `'${stringify(hisinput)}','${message}'`)
+    const service = "chat.post";
+    // Author's own sessions: the peer of this conversation is the recipient.
+    const mycount = await this.yp.await_proc(
+      'forward_proc', uid, 'count_yet_read_next', `'${uid}','${entity_id}'`
+    ) || {};
+    const mydata = {
+      ...data, to_id: uid, peer_id: entity_id,
+      room: mycount.room, total: mycount.total,
+    };
+    // Recipient's sessions: from their side the peer is the author, which is
+    // what their chat widget matches its own peerId against
+    // (chat/index.js -> `privateMach`). It also needs the author resolved, as
+    // chat.messages and chat.post both hand it one — without it a bubble that
+    // lands while the conversation is already open renders with no name.
+    const hiscount = await this.yp.await_proc(
+      'forward_proc', entity_id, 'count_yet_read_next', `'${entity_id}','${uid}'`
+    ) || {};
+    const hisdata = {
+      ...data, to_id: entity_id, peer_id: uid,
+      room: hiscount.room, total: hiscount.total,
+    };
+    try {
+      hisdata.entity = await this.yp.await_proc(
+        'forward_proc', entity_id, 'shareroom_contact_get', `'${uid}'`
+      );
+    } catch (error) {
+      this.warn('[CONTACT] handshake author lookup failed:', error.message);
+    }
 
-    acknowledge.message_id = message_id
-    acknowledge.entity_id = entity_id
-    acknowledge.uid = uid
-    await this.yp.await_proc('forward_proc', uid, 'acknowledge_message', `'${stringify(acknowledge)}'`)
-
-    mydata.to_id = uid;
-    mydata.echoId = this.input.get('echoId');
-    hisdata.to_id = entity_id
-    let service = "chat.post";
     let sockets = await this.yp.await_proc('user_sockets', entity_id);
     await RedisStore.sendData(this.payload(hisdata, { service }), sockets);
     sockets = await this.yp.await_proc('user_sockets', uid);

@@ -90,6 +90,19 @@ const OVER_LIMIT_MUTATING_ALLOWLIST = new Set([
   // exception: seeing a migration that was already running when the lock
   // landed, and STOPPING it, make the overage smaller, not bigger.
   "google_drive.get_state", "google_drive.cancel",
+  // 🚨 A PURE READ THAT LOOKS LIKE A MUTATION. hub.invitations lists the
+  // invitations a workspace is waiting on — it writes nothing — but its
+  // src is 'admin' because only an admin may see other people's addresses,
+  // and `mightMutate` is `permission.src > READ_LEVEL`. That is the same trap
+  // the admin./adminpanel. family exemption below is documented against:
+  // src:'admin' is a PRIVILEGE requirement, not a mutation marker.
+  //
+  // Without this the Access panel's Pending Invitations section is empty for
+  // exactly the org that most needs to read it — one that is over its seat
+  // limit and is trying to work out who it has outstanding invitations to.
+  // hub.invite itself stays clamped, so nothing here can grow the overage.
+  // Measured on the dev endpoint: 401 OVER_LIMIT_READ_ONLY:hub.invitations.
+  "hub.invitations",
 ]);
 // Once hard-locked, NON-admin members are denied entirely — not even read
 // (Owner/Admin keep view + resolution access). The FE still needs enough to

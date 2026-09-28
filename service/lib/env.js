@@ -153,6 +153,13 @@ function platform() {
   // single post-signup tour and no trigger fires, so this is a true kill
   // switch — the client writes nothing while it is 0.
   platform.contextual_tours = global.myDrumee.contextual_tours ? 1 : 0;
+  // Unix seconds. Contextual tours are for NEW users only: an account whose
+  // entity.ctime (get_user → data.user.ctime) is older than this is never
+  // offered one. The client compares the two, so no backfill of
+  // tutorials_seen is needed for existing accounts. 0/absent = no cutoff,
+  // every account is eligible — today's behaviour, which makes the rollout
+  // order free: ship, then set the date in myDrumee.json.
+  platform.tours_new_user_since = ~~global.myDrumee.tours_new_user_since;
   platform.cdnHost = global.myDrumee.cdnHost;
   platform.version = global.VERSION;
   platform.TfaMethods = TfaMethods;

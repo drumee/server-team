@@ -60,6 +60,11 @@ class privateChat extends Entity {
   async attachment() {
     let message_id = this.input.use(Attr.message_id);
     let peer_id = this.input.use(Attr.peer_id);
+    // The whole list, not a page of five. The chat bubble shows every
+    // attachment of a message and its card list never scrolls, so the old
+    // fixed page hid every file past the fifth. `page` is still read and
+    // echoed on each row because the list widget sends it and the card
+    // model carries it; it no longer selects a slice.
     let page = this.input.use(Attr.page) || 1;
     let attach = {};
     let data = await this.db.await_proc("channel_get", message_id);
@@ -76,7 +81,7 @@ class privateChat extends Entity {
 
     if (!isEmpty(data) && !isEmpty(data.attachment)) {
       data.attachment = this.parseJSON(data.attachment);
-      attach = data.attachment.slice((page - 1) * 5, page * 5);
+      attach = data.attachment;
       if (!isEmpty(attach)) {
         attach = await this._getAttachmentsInfo(attach, this.uid, page);
       }

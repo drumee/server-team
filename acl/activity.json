@@ -31,7 +31,13 @@
       "permission": {
         "src": "read"
       },
-      "params": {},
+      "params": {
+        "files_since": {
+          "type": "object",
+          "required": false,
+          "description": "Web rail only: { \"<hub_id>\": <unix ts> } - per workspace, count files_by_hub only after the last time the user opened its Files tab. Malformed entries are ignored."
+        }
+      },
       "returns": {
         "type": "object",
         "properties": {
@@ -64,6 +70,11 @@
             "type": "integer",
             "description": "Other tab: workspace and team invites, contacts, tickets, access requests and system alerts",
             "example": 1
+          },
+          "files_by_hub": {
+            "type": "array",
+            "description": "Per workspace, NEW files and folders (media.new; not chat attachments, not workspace creation) newer than files_since: [{ hub_id, cnt, last_ts }]. Not added to any total above. [] until mfs_new_by_hub is deployed.",
+            "example": [{ "hub_id": "ac248fb1ac248fb9", "cnt": 3, "last_ts": 1790568840 }]
           }
         }
       },
@@ -234,6 +245,10 @@
             "lastname": { "type": "string" },
             "fullname": { "type": "string" },
             "hub_name": { "type": "string" },
+            "invite_status": {
+              "type": "string",
+              "description": "Workspace invitations only: pending | accepted | declined | expired | invalid. Absent when it could not be resolved; the client then falls back to invite_token alone"
+            },
             "link_label": { "type": "string" },
             "task_title": { "type": "string" },
             "meeting_action": { "type": "string" },
@@ -496,6 +511,38 @@
       }
     },
 
+    "read_contact_event": {
+      "doc": "Mark a single contact_activity row (task, meeting, invitation, etc.) as read for the caller. Stamps yp.contact_activity.dismissed_at only, so the row stays in Activity history with is_read = 1. Removal is dismiss_contact_event / delete_contact_event.",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "params": {
+        "activity_id": {
+          "type": "integer",
+          "required": true,
+          "description": "The yp.contact_activity row ID to mark read"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "ok on success"
+          },
+          "activity_id": {
+            "type": "integer",
+            "description": "The contact_activity ID"
+          },
+          "dismissed_at": {
+            "type": "integer",
+            "description": "Unix timestamp of the read"
+          }
+        }
+      }
+    },
+
     "dismiss_contact_event": {
       "doc": "Dismiss a single contact_activity row (hub invite, contact invite, etc.) so it no longer appears in the activity feed. Stamps yp.contact_activity.dismissed_at without deleting the underlying audit row.",
       "scope": "hub",
@@ -595,11 +642,12 @@
     },
 
     "bookmark_add": {
-      "doc": "Save one visible Activity item in the caller's personal notification bookmark store. The key is a server-generated SHA-256 activity identity.",
+      "doc": "Save one visible Activity item in the caller's personal notification bookmark store. The key is a server-generated SHA-256 activity identity. The web panel may also send the row itself, kept (when it matches the key) so bookmark_rows can pin it on top.",
       "scope": "hub",
       "permission": { "src": "read" },
       "params": {
-        "bookmark_key": { "type": "string", "required": true }
+        "bookmark_key": { "type": "string", "required": true },
+        "row": { "type": "object", "required": false }
       },
       "returns": {
         "type": "object",
@@ -624,6 +672,16 @@
           "is_saved": { "type": "integer" }
         }
       }
+    },
+
+    "bookmark_rows": {
+      "doc": "The caller's saved Activity items (snapshots stored by bookmark_add), newest first, to pin on top of the panel. Optional bucket scopes to one tab. is_read is always 1: the client uses the live feed row when it has one.",
+      "scope": "hub",
+      "permission": { "src": "read" },
+      "params": {
+        "bucket": { "type": "string", "required": false }
+      },
+      "returns": { "type": "array" }
     },
 
     "read": {
