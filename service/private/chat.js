@@ -46,6 +46,8 @@ class privateChat extends Entity {
     this.pages_to_read = this.pages_to_read.bind(this);
     this.delete = this.delete.bind(this);
     this.messages = this.messages.bind(this);
+    this.p2p_details = this.p2p_details.bind(this);
+    this.p2p_media_list = this.p2p_media_list.bind(this);
     this.remove_attachment = this.remove_attachment.bind(this);
     this.count_all = this.count_all.bind(this);
     this.attachment = this.attachment.bind(this);
@@ -1142,6 +1144,69 @@ class privateChat extends Entity {
     //});
 
     this.output.data(res);
+  }
+
+  /**
+   * Chat details overview for a DIRECT conversation: media counts from both
+   * participants' p2p_channel (p2p_media_stats, run in the viewer's DB like
+   * p2p_list_messages) and the two participants with presence.
+   */
+  async p2p_details() {
+    const peer_id = `${this.input.need(Attr.peer_id)}`;
+    const [stats, members] = await Promise.all([
+      this.db.await_proc("p2p_media_stats", peer_id),
+      this.yp.await_proc("drumate_presence", JSON.stringify([this.uid, peer_id])),
+    ]);
+    const s = (Array.isArray(stats) ? stats[0] : stats) || {};
+    this.output.data({
+      stats: {
+        photos: Number(s.photos) || 0,
+        videos: Number(s.videos) || 0,
+        files: Number(s.files) || 0,
+        links: Number(s.links) || 0,
+      },
+      members: Array.isArray(members) ? members : members ? [members] : [],
+    });
+  }
+
+  /**
+   * One page of a DIRECT conversation's photos / videos / files / links. Media
+   * rows carry their own hub_id (the sender's wicket); a video's missing
+   * duration is read from that hub's info.json, one home lookup per hub.
+   */
+  async p2p_media_list() {
+    const peer_id = `${this.input.need(Attr.peer_id)}`;
+    const kind = `${this.input.need("kind")}`;
+    if (!["photo", "video", "file", "link"].includes(kind)) {
+      return this.output.list([]);
+    }
+    const page = Number(this.input.use(Attr.page)) || 1;
+    const rows = await this.db.await_proc("p2p_media_list", peer_id, kind, page);
+    const list = Array.isArray(rows) ? rows : rows ? [rows] : [];
+    if (kind === "video") {
+      const { mediaInfoDuration } = require("../lib/media-duration");
+      const homes = new Map();
+      const homeOf = (hub_id) => {
+        if (!homes.has(hub_id)) {
+          homes.set(
+            hub_id,
+            this.yp
+              .await_query("SELECT home_dir FROM entity WHERE id=?", `${hub_id}`)
+              .then((r) => ((toArray(r)[0] || {}).home_dir) || null)
+              .catch(() => null),
+          );
+        }
+        return homes.get(hub_id);
+      };
+      await Promise.all(
+        list.map(async (row) => {
+          if (Number(row.duration) > 0) return;
+          const d = await mediaInfoDuration(await homeOf(row.hub_id), row.nid);
+          row.duration = d ? Math.round(d) : null;
+        }),
+      );
+    }
+    this.output.list(list);
   }
 
   /**

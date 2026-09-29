@@ -2001,17 +2001,11 @@ class __private_channel extends Entity {
    * so the read can never leave __storage__.
    */
   async _mediaInfoDuration(nid) {
-    try {
-      if (!/^[\w-]+$/.test(`${nid || ""}`)) return null;
-      const home = this.hub && this.hub.get(Attr.home_dir);
-      if (!home) return null;
-      const file = require("path").join(home, "__storage__", `${nid}`, "info.json");
-      const info = JSON.parse(await require("fs").promises.readFile(file, "utf8"));
-      const d = Number(info && info.orig && info.orig.format && info.orig.format.duration);
-      return Number.isFinite(d) && d > 0 ? d : null;
-    } catch (e) {
-      return null;
-    }
+    // Shared with chat.p2p_media_list (service/lib/media-duration).
+    return require("../lib/media-duration").mediaInfoDuration(
+      this.hub && this.hub.get(Attr.home_dir),
+      nid,
+    );
   }
 
   /**

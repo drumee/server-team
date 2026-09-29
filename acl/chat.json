@@ -416,6 +416,28 @@
         }
       ]
     },
+    "p2p_details": {
+      "doc": "Chat details overview for a DIRECT conversation: photo/video/file/link counts from both participants' p2p_channel, and the two participants with presence (online, last_seen).",
+      "scope": "hub",
+      "permission": { "src": "write" },
+      "params": {
+        "peer_id": { "type": "string", "required": true, "doc": "The other participant's user id" }
+      },
+      "returns": { "type": "object", "doc": "{ stats: {photos, videos, files, links}, members: [...] }" },
+      "errors": []
+    },
+    "p2p_media_list": {
+      "doc": "One page of a DIRECT conversation's shared photos, videos, files (60/page) or link messages (30/page), newest first. Media rows carry their own hub_id (the sender's wicket).",
+      "scope": "hub",
+      "permission": { "src": "write" },
+      "params": {
+        "peer_id": { "type": "string", "required": true, "doc": "The other participant's user id" },
+        "kind": { "type": "string", "required": true, "doc": "photo | video | file | link" },
+        "page": { "type": "number", "required": false, "doc": "Page number (default 1)" }
+      },
+      "returns": { "type": "array", "doc": "Media rows {nid, hub_id, category, filename, extension, filesize, duration, ctime, message_id} or link rows {message_id, ctime, preview, url}" },
+      "errors": []
+    },
 
     "forward": {
       "doc": "Forward messages to multiple recipients. Takes existing messages and sends copies to specified entities. Preserves original message content and attachments. Supports bulk forwarding.",
