@@ -1151,11 +1151,31 @@ class privateChat extends Entity {
    * participants' p2p_channel (p2p_media_stats, run in the viewer's DB like
    * p2p_list_messages) and the two participants with presence.
    */
+  /**
+   * Whether `peer_id` is someone the viewer may see in a direct conversation's
+   * details: a contact, or a conversation partner (p2p_time holds one row per
+   * partner, whichever side wrote). Anyone else's presence and email stay out
+   * of reach of a caller walking ids.
+   */
+  async _p2pRelated(peer_id) {
+    const [contact, talked] = await Promise.all([
+      this.db.await_proc("my_contact_exists", "entity", peer_id, null, null),
+      this.db.await_query("SELECT 1 AS ok FROM p2p_time WHERE peer_id=? LIMIT 1", peer_id),
+    ]);
+    const c = Array.isArray(contact) ? contact[0] : contact;
+    if (c && `${c.uid}` === peer_id) return true;
+    return Array.isArray(talked) ? talked.length > 0 : !isEmpty(talked);
+  }
+
   async p2p_details() {
     const peer_id = `${this.input.need(Attr.peer_id)}`;
+    const related = await this._p2pRelated(peer_id);
     const [stats, members] = await Promise.all([
-      this.db.await_proc("p2p_media_stats", peer_id),
-      this.yp.await_proc("drumate_presence", JSON.stringify([this.uid, peer_id])),
+      related ? this.db.await_proc("p2p_media_stats", peer_id) : null,
+      this.yp.await_proc(
+        "drumate_presence",
+        JSON.stringify(related ? [this.uid, peer_id] : [this.uid]),
+      ),
     ]);
     const s = (Array.isArray(stats) ? stats[0] : stats) || {};
     this.output.data({
@@ -1180,6 +1200,7 @@ class privateChat extends Entity {
     if (!["photo", "video", "file", "link"].includes(kind)) {
       return this.output.list([]);
     }
+    if (!(await this._p2pRelated(peer_id))) return this.output.list([]);
     const page = Number(this.input.use(Attr.page)) || 1;
     const rows = await this.db.await_proc("p2p_media_list", peer_id, kind, page);
     const list = Array.isArray(rows) ? rows : rows ? [rows] : [];
