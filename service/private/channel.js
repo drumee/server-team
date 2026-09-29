@@ -96,6 +96,7 @@ class __private_channel extends Entity {
     this.file_thread_list_by_folder = this.file_thread_list_by_folder.bind(this);
     this.details = this.details.bind(this);
     this.media_list = this.media_list.bind(this);
+    this._mediaInfoDuration = this._mediaInfoDuration.bind(this);
     this.file_thread_acknowledge = this.file_thread_acknowledge.bind(this);
     this.export_scope = this.export_scope.bind(this);
     this.export = this.export.bind(this);
@@ -1978,7 +1979,39 @@ class __private_channel extends Entity {
       kind,
       page,
     );
-    this.output.list(Array.isArray(rows) ? rows : rows ? [rows] : []);
+    const list = Array.isArray(rows) ? rows : rows ? [rows] : [];
+    // The media table carries no video duration (the Videos page's pill needs
+    // it): it is in the node's info.json, written at transcode time.
+    if (kind === "video") {
+      await Promise.all(
+        list.map(async (row) => {
+          if (Number(row.duration) > 0) return;
+          const d = await this._mediaInfoDuration(row.nid);
+          row.duration = d ? Math.round(d) : null;
+        }),
+      );
+    }
+    this.output.list(list);
+  }
+
+  /**
+   * Seconds of a video node, from <hub home>/__storage__/<nid>/info.json
+   * (orig.format.duration, ffprobe output). null when absent or unreadable.
+   * The nid is a plain id — anything with a path separator or dot is refused,
+   * so the read can never leave __storage__.
+   */
+  async _mediaInfoDuration(nid) {
+    try {
+      if (!/^[\w-]+$/.test(`${nid || ""}`)) return null;
+      const home = this.hub && this.hub.get(Attr.home_dir);
+      if (!home) return null;
+      const file = require("path").join(home, "__storage__", `${nid}`, "info.json");
+      const info = JSON.parse(await require("fs").promises.readFile(file, "utf8"));
+      const d = Number(info && info.orig && info.orig.format && info.orig.format.duration);
+      return Number.isFinite(d) && d > 0 ? d : null;
+    } catch (e) {
+      return null;
+    }
   }
 
   /**
