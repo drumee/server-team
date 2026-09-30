@@ -2973,6 +2973,29 @@ class MfsActivity extends Entity {
    * legitimately arrive together, but this does not assert on that — it
    * reports what is there.
    */
+  // Session-uid person mutes (notification_mute_peer). Fails open: an old
+  // schema without the routine answers none.
+  async _peerMutes(rows) {
+    const list = rows !== undefined ? rows : await this._optionalYpProc('notification_mute_peer_state', this.uid);
+    const peers = [];
+    for (const r of toArray(list)) {
+      const id = r && r.peer_id != null ? String(r.peer_id) : '';
+      if (id && !peers.includes(id)) peers.push(id);
+    }
+    return peers;
+  }
+
+  // '1'/'0'/true/false/absent → boolean. Absent means mute: the endpoints are
+  // named for what they usually do, and only the explicit falsey values
+  // unmute. Strings are checked because form and query payloads arrive as
+  // strings, where '0' and 'false' are both truthy in JS and would silently
+  // invert the caller's intent.
+  _muteFlag(raw) {
+    return raw === undefined || raw === null || raw === ''
+      ? true
+      : !(raw === 0 || raw === '0' || raw === false || raw === 'false');
+  }
+
   _muteState(rows) {
     let global = 0;
     const hubs = [];
@@ -2995,7 +3018,7 @@ class MfsActivity extends Entity {
    */
   async mute_state() {
     const rows = await this._optionalYpProc('notification_mute_state', this.uid);
-    this.output.data(this._muteState(rows));
+    this.output.data({ ...this._muteState(rows), peers: await this._peerMutes() });
   }
 
   /**
@@ -3015,22 +3038,46 @@ class MfsActivity extends Entity {
    */
   async mute_set() {
     const hub_id = String(this.input.use('hub_id') || '');
-    const raw = this.input.use('muted');
-    // Absent means mute: the endpoint is named for what it usually does, and
-    // only the explicit falsey values unmute. Strings are checked because form
-    // and query payloads arrive as strings, where '0' and 'false' are both
-    // truthy in JS and would silently invert the caller's intent.
-    const muted =
-      raw === undefined || raw === null || raw === ''
-        ? true
-        : !(raw === 0 || raw === '0' || raw === false || raw === 'false');
+    const muted = this._muteFlag(this.input.use('muted'));
     const proc = muted ? 'notification_mute_set' : 'notification_mute_unset';
     const { ok, rows } = await this._optionalYpProcResult(proc, this.uid, hub_id);
+    // "Unmute all" clears everything — person mutes included.
+    let peers;
+    if (ok && !muted && hub_id === '') {
+      peers = await this._peerMutes(await this._optionalYpProc('notification_mute_peer_unset', this.uid, ''));
+    } else {
+      peers = await this._peerMutes();
+    }
     this.output.data({
       status: ok ? 'ok' : 'error',
       muted: muted ? 1 : 0,
       hub_id,
       ...this._muteState(rows),
+      peers,
+    });
+  }
+
+  /**
+   * Mute or unmute the DM popups from ONE person.
+   * Endpoint: POST /activity.mute_peer_set
+   * Input: peer_id (a user id, not the caller), muted (default true)
+   * Popup channel only, like mute_set; answers the full state.
+   */
+  async mute_peer_set() {
+    const peer_id = String(this.input.use('peer_id') || '');
+    if (!/^[0-9a-zA-Z]{1,16}$/.test(peer_id) || peer_id === String(this.uid)) {
+      return this.exception.user('INVALID_PEER');
+    }
+    const muted = this._muteFlag(this.input.use('muted'));
+    const proc = muted ? 'notification_mute_peer_set' : 'notification_mute_peer_unset';
+    const { ok, rows } = await this._optionalYpProcResult(proc, this.uid, peer_id);
+    const hubRows = await this._optionalYpProc('notification_mute_state', this.uid);
+    this.output.data({
+      status: ok ? 'ok' : 'error',
+      muted: muted ? 1 : 0,
+      peer_id,
+      ...this._muteState(hubRows),
+      peers: await this._peerMutes(rows),
     });
   }
   // ── Daily reminder card (Round 3 / Sprint 1 row 7) ───────────────
