@@ -43,6 +43,11 @@ const { tmp_dir, mfs_dir } = sysEnv();
 const SPAWN_OPT = { detached: true, stdio: ["ignore", "ignore", "ignore"] };
 const OFFLINE_DIR = pathResolve(__dirname, "..", "..", "offline", "media");
 const EXPORT_CAP = 10000;
+// Folder chat topic ids (channel_topic.id, 16 chars). They reach a proc-call
+// string through channel.post's metadata, so the pattern is also a guard.
+const TOPIC_ID_RE = /^[0-9a-zA-Z]{1,16}$/;
+const TOPIC_SCOPES = new Set(["all", "general"]);
+const isTopicId = (t) => !!t && !TOPIC_SCOPES.has(`${t}`) && TOPIC_ID_RE.test(`${t}`);
 const EXPORT_MIME = { json: "application/json", pdf: "application/pdf" };
 const MFS_PERMISSION_READ =
   (Constants.permission && Constants.permission.read) || 0b0000010;
@@ -125,23 +130,31 @@ class __private_channel extends Entity {
   /**
    *
    */
-  async messages() {
-    const order = this.input.use(Attr.order, "asc");
-    const page = this.input.use(Attr.page) || 1;
-    const nid = this.input.use(Attr.nid);
-    // `mark_read: 0` — the client is showing the history, not reading it (a
-    // workspace team chat mounted beside the file grid). Absent = the old
-    // behaviour, so every other caller still marks read on load.
-    const markRead = `${this.input.use("mark_read", 1)}` !== "0";
-    let data = await this.db.await_proc(
-      "channel_list_messages",
-      this.uid,
-      "date",
-      order,
-      page,
+  // ── Folder chat topics (channel_topic) ─────────────────────────────────
+  // A topic is a named sub-conversation of one folder's team chat; a message
+  // belongs to it through metadata._topic_id, as it belongs to a folder
+  // through _scope_nid.
+
+  /** The active topic `topic_id` when it belongs to folder `nid`, else null. */
+  async _topicInFolder(topic_id, nid) {
+    if (!isTopicId(topic_id) || isEmpty(nid)) return null;
+    const row = toArray(await this.db.await_proc("channel_topic_get", `${topic_id}`))[0];
+    return row && `${row.folder_nid}` === `${nid}` ? row : null;
+  }
+
+  /** Rows for a chat scope: the folder chat, its General part, or a topic. */
+  async _listRowsForScope(nid, topic_id, order, page) {
+    if (topic_id != null && topic_id !== "" && !TOPIC_SCOPES.has(`${topic_id}`)) {
+      if (!(await this._topicInFolder(topic_id, nid))) return [];
+      return toArray(
+        await this.db.await_proc("channel_topic_messages", this.uid, `${topic_id}`, order, page),
+      );
+    }
+    let data = toArray(
+      await this.db.await_proc("channel_list_messages", this.uid, "date", order, page),
     );
-    data = toArray(data);
-    if (!isEmpty(nid)) {
+    const general = `${topic_id}` === "general";
+    if (!isEmpty(nid) || general) {
       // Legacy messages (no _scope_nid) appear in every folder context for
       // backward compatibility. New messages scoped via _scope_nid stay isolated.
       data = data.filter((msg) => {
@@ -150,12 +163,84 @@ class __private_channel extends Entity {
             typeof msg.metadata === "string"
               ? JSON.parse(msg.metadata)
               : msg.metadata || {};
-          return !meta._scope_nid || meta._scope_nid === `${nid}`;
+          if (general && meta._topic_id) return false;
+          return isEmpty(nid) || !meta._scope_nid || meta._scope_nid === `${nid}`;
         } catch (e) {
           return true;
         }
       });
     }
+    return data;
+  }
+
+  /** Mark the scope read: a topic its own cursor, else the hub's. */
+  async _markScopeRead(topic_id, newest, markRead) {
+    if (!markRead) return;
+    if (isTopicId(topic_id)) {
+      await this.db.await_proc("channel_topic_mark_read", this.uid, `${topic_id}`);
+      return;
+    }
+    if (newest && newest.message_id) {
+      await this.db.await_proc("channel_read_messages", newest.message_id, this.uid);
+    }
+  }
+
+  /** channel.post: no topic, or one that exists in the posted folder. */
+  async _postTopicGuard(topic_id, nid) {
+    if (topic_id == null || topic_id === "" || TOPIC_SCOPES.has(`${topic_id}`)) return { ok: true };
+    if (!(await this._topicInFolder(topic_id, nid))) return { ok: false, status: "INVALID_TOPIC" };
+    return { ok: true };
+  }
+
+  /** The metadata that scopes a posted message (folder, and topic if any). */
+  _scopeMetadata(nid, topic_id) {
+    if (isEmpty(nid)) return undefined;
+    const meta = { _scope_nid: `${nid}` };
+    if (isTopicId(topic_id)) meta._topic_id = `${topic_id}`;
+    return meta;
+  }
+
+  /**
+   * A folder's topics with the caller's unread (Topics section of the thread
+   * menu). A member without chat access gets none.
+   */
+  async topic_list() {
+    if (!(await memberCan(this, CAN_CHAT))) return this.output.list([]);
+    const folder_nid = `${this.input.use("folder_nid") || ""}`;
+    if (!folder_nid) return this.output.list([]);
+    this.output.list(toArray(await this.db.await_proc("channel_topic_list", this.uid, folder_nid)));
+  }
+
+  /** New topic in a folder's team chat (name 1–60, one emoji). */
+  async topic_create() {
+    if (!(await memberCan(this, CAN_CHAT))) return this.output.data({ status: "FORBIDDEN" });
+    const folder_nid = `${this.input.use("folder_nid") || ""}`;
+    const name = `${this.input.use("name") || ""}`.trim();
+    const emoji = `${this.input.use("emoji") || ""}`;
+    const len = [...name].length;
+    if (!folder_nid || len < 1 || len > 60 || !emoji || Buffer.byteLength(emoji) > 16) {
+      return this.output.data({ status: "INVALID_TOPIC" });
+    }
+    const row = toArray(
+      await this.db.await_proc("channel_topic_create", this.uid, folder_nid, name, emoji),
+    )[0];
+    if (!row) return this.output.data({ status: "ERROR" });
+    if (row.error) return this.output.data({ status: `${row.error}` });
+    this.output.data(row);
+  }
+
+  async messages() {
+    const order = this.input.use(Attr.order, "asc");
+    const page = this.input.use(Attr.page) || 1;
+    const nid = this.input.use(Attr.nid);
+    // `mark_read: 0` — the client is showing the history, not reading it (a
+    // workspace team chat mounted beside the file grid). Absent = the old
+    // behaviour, so every other caller still marks read on load.
+    const markRead = `${this.input.use("mark_read", 1)}` !== "0";
+    // Folder chat topic: absent / "all" = the whole folder chat, "general" =
+    // without topic messages, an id = that topic (_listRowsForScope).
+    const topic_id = this.input.use("topic_id");
+    let data = await this._listRowsForScope(nid, topic_id, order, page);
     let messages = [];
 
     let cache = {};
@@ -213,13 +298,7 @@ class __private_channel extends Entity {
     for (const m of messages) {
       if (!newest || (m.ctime || 0) > (newest.ctime || 0)) newest = m;
     }
-    if (markRead && newest && newest.message_id) {
-      await this.db.await_proc(
-        "channel_read_messages",
-        newest.message_id,
-        this.uid,
-      );
-    }
+    await this._markScopeRead(topic_id, newest, markRead);
     // Former members stay in _seen_ forever; show only current readers.
     await pruneToCurrentReaders(this, messages);
     let dest = await this.yp.await_proc("entity_sockets", hub_id);
@@ -1586,6 +1665,12 @@ class __private_channel extends Entity {
       }
     }
 
+    // A topic must exist and belong to the posted folder — checked before
+    // anything is minted or moved.
+    const topic_id = this.input.use("topic_id");
+    const topicCheck = await this._postTopicGuard(topic_id, this.input.use(Attr.nid));
+    if (!topicCheck.ok) return this.output.data({ status: topicCheck.status });
+
     // Existence guard BEFORE minting message_id (~:1070 below) — a folder
     // that moved/vanished cross-hub must not burn an id nor write anything;
     // checked ahead of the staging-promote block so a gone scope also skips
@@ -1705,9 +1790,8 @@ class __private_channel extends Entity {
     if (!isEmpty(thread_id)) {
       input.thread_id = thread_id;
     }
-    if (!isEmpty(nid)) {
-      input.metadata = { _scope_nid: `${nid}` };
-    }
+    const scopeMeta = this._scopeMetadata(nid, topic_id);
+    if (scopeMeta) input.metadata = scopeMeta;
     // Persist @-mentions so the message shows in the recipient's Mentions tab —
     // channel_list_notifications filters on mention_ids, and channel_post_message
     // reads `$.mention_ids` from the input JSON and stores it on the row. Without
