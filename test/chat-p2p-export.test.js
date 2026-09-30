@@ -41,13 +41,18 @@ test('normalizeP2pRow maps a p2p row onto the export message shape', () => {
   assert.equal(m.attachments.length, 1);
 });
 
-test('gatherP2pSection pages until a short page', async () => {
-  const full = Array.from({ length: 45 }, (_, i) => ({ message_id: `a${i}`, author_id: 'me', message: 'x', ctime: i }));
-  const c = ctx({ pages: [full, [{ message_id: 'z', author_id: 'peer', message: 'y', ctime: 99 }]] });
-  const s = await gatherP2pSection(c.db, 'peer', 'Ann Peer', null, null);
+// Review: paging re-copied the whole DM into a temp table per 45-row page
+// (≈223 round trips near the 10k cap). The export is count-capped, so the
+// section is read in ONE call: p2p_export_messages page 0 = every message.
+test('gatherP2pSection reads the whole DM in one call (page 0)', async () => {
+  const all = Array.from({ length: 120 }, (_, i) => ({ message_id: `a${i}`, author_id: 'me', message: 'x', ctime: i }));
+  const calls = [];
+  const db = { await_proc: async (n, ...a) => (calls.push([n, ...a]), a[3] === 0 ? all : all.slice(0, 45)) };
+  const s = await gatherP2pSection(db, 'peer', 'Ann Peer', 5, 9);
   assert.equal(s.type, 'direct_chat');
   assert.equal(s.name, 'Ann Peer');
-  assert.equal(s.messages.length, 46);
+  assert.equal(s.messages.length, 120);
+  assert.deepEqual(calls, [['p2p_export_messages', 'peer', 5, 9, 0]]);
 });
 
 test('p2p_export_scope answers the export_scope shape', async () => {
