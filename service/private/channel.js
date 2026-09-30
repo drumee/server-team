@@ -150,11 +150,16 @@ class __private_channel extends Entity {
         await this.db.await_proc("channel_topic_messages", this.uid, `${topic_id}`, order, page),
       );
     }
-    let data = toArray(
-      await this.db.await_proc("channel_list_messages", this.uid, "date", order, page),
-    );
+    // # General is filtered in SQL (channel_general_messages, on the indexed
+    // channel.topic_id): a JS filter shortened pages and the list stopped
+    // paging at the first short one.
     const general = `${topic_id}` === "general";
-    if (!isEmpty(nid) || general) {
+    let data = toArray(
+      general
+        ? await this.db.await_proc("channel_general_messages", this.uid, order, page)
+        : await this.db.await_proc("channel_list_messages", this.uid, "date", order, page),
+    );
+    if (!isEmpty(nid)) {
       // Legacy messages (no _scope_nid) appear in every folder context for
       // backward compatibility. New messages scoped via _scope_nid stay isolated.
       data = data.filter((msg) => {
@@ -163,8 +168,7 @@ class __private_channel extends Entity {
             typeof msg.metadata === "string"
               ? JSON.parse(msg.metadata)
               : msg.metadata || {};
-          if (general && meta._topic_id) return false;
-          return isEmpty(nid) || !meta._scope_nid || meta._scope_nid === `${nid}`;
+          return !meta._scope_nid || meta._scope_nid === `${nid}`;
         } catch (e) {
           return true;
         }
@@ -183,6 +187,29 @@ class __private_channel extends Entity {
     if (newest && newest.message_id) {
       await this.db.await_proc("channel_read_messages", newest.message_id, this.uid);
     }
+  }
+
+  /**
+   * channel.acknowledge inside a topic: move that topic's cursor (and its
+   * receipts) only — never the hub-wide read_channel cursor, which would mark
+   * General and other topics read. `handled: false` when no topic is named
+   * (the hub path runs as before); a message outside the named topic is
+   * refused and nothing moves.
+   */
+  async _acknowledgeTopic(topic_id, message_id) {
+    if (!isTopicId(topic_id) || !message_id) return { handled: false };
+    const message = await this.db.await_proc("channel_get", message_id);
+    let meta = message && message.metadata;
+    try {
+      meta = typeof meta === "string" ? JSON.parse(meta) : meta || {};
+    } catch (e) {
+      meta = {};
+    }
+    if (!message || `${(meta && meta._topic_id) || ""}` !== `${topic_id}`) {
+      return { handled: true, status: "INVALID_TOPIC" };
+    }
+    await this.db.await_proc("channel_topic_mark_read", this.uid, `${topic_id}`);
+    return { handled: true, message };
   }
 
   /** channel.post: no topic, or one that exists in the posted folder. */
@@ -2848,6 +2875,20 @@ class __private_channel extends Entity {
             : acknowledgement.failure,
         );
       }
+    }
+
+    // Read inside a folder chat topic: that topic's cursor only.
+    const topicAck = await this._acknowledgeTopic(this.input.use("topic_id"), message_id);
+    if (topicAck.handled) {
+      if (topicAck.status) return this.output.data({ status: topicAck.status });
+      const message = topicAck.message;
+      message.key_id = this.hub.get(Attr.id);
+      const recipients = await this.yp.await_proc("entity_sockets", {
+        hub_id: message.key_id,
+        exclude,
+      });
+      await RedisStore.sendData(this.payload(message), recipients);
+      return this.output.data({});
     }
 
     let res = {};

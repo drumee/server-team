@@ -7,6 +7,7 @@
         "src": "read"
       },
       "params": {
+        "topic_id": { "type": "string", "required": false, "doc": "Read inside a folder chat topic: moves only that topic's cursor (and receipts); the message must belong to it" },
         "message_id": {
           "type": "string",
           "required": false,

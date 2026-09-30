@@ -13,7 +13,7 @@ global.debug = {};
 const Channel = require('../service/private/channel');
 const P = Channel.prototype;
 
-const HELPERS = ['_topicInFolder', '_listRowsForScope', '_markScopeRead', '_postTopicGuard', '_scopeMetadata'];
+const HELPERS = ['_topicInFolder', '_listRowsForScope', '_markScopeRead', '_postTopicGuard', '_scopeMetadata', '_acknowledgeTopic'];
 
 // procs: name → value | (…args) => value. priv: the caller's privilege on the
 // hub root (memberCan reads it through mfs_access_node; 7 = chat, 3 = view).
@@ -96,14 +96,21 @@ const rows = [
   { message_id: 'm4', metadata: null },
 ];
 
-test('messages scope: absent / all keep topic messages; general drops them', async () => {
+test('messages scope: absent / all keep topic messages; general is paged in SQL', async () => {
   for (const topic_id of [undefined, 'all']) {
     const c = ctx({ procs: { channel_list_messages: rows } });
     const got = await c._listRowsForScope('fA', topic_id, 'desc', 1);
     assert.deepEqual(got.map((r) => r.message_id), ['m1', 'm2', 'm4'], String(topic_id));
   }
-  const g = ctx({ procs: { channel_list_messages: rows } });
-  assert.deepEqual((await g._listRowsForScope('fA', 'general', 'desc', 1)).map((r) => r.message_id), ['m1', 'm4']);
+  // Review: filtering General in JS shortened pages and ui-core stopped
+  // paging — channel_general_messages filters in SQL (full pages).
+  const general = rows.filter((r) => !/_topic_id/.test(r.metadata || ''));
+  const g = ctx({ procs: { channel_general_messages: general } });
+  assert.deepEqual((await g._listRowsForScope('fA', 'general', 'desc', 3)).map((r) => r.message_id), ['m1', 'm4']);
+  assert.deepEqual(g.calls, [['channel_general_messages', 'me00000000000001', 'desc', 3]]);
+  // Workspace team chat (no folder scope): General is the whole hub's.
+  const w = ctx({ procs: { channel_general_messages: general.concat([{ message_id: 'm7', metadata: JSON.stringify({ _scope_nid: 'fB' }) }]) } });
+  assert.deepEqual((await w._listRowsForScope(undefined, 'general', 'desc', 1)).map((r) => r.message_id), ['m1', 'm3', 'm4', 'm7']);
 });
 
 test('messages scope: a topic id lists that topic; marks it read (mark_read=0 does not)', async () => {
@@ -149,5 +156,29 @@ test('topic_id must be [0-9a-zA-Z]{1,16} (it reaches a proc-call string)', async
     assert.deepEqual(await c._postTopicGuard(bad, 'fA'), { ok: false, status: 'INVALID_TOPIC' }, bad);
     assert.deepEqual(await c._listRowsForScope('fA', bad, 'desc', 1), [], bad);
     assert.equal(c.calls.length, 0, bad);
+  }
+});
+
+// Review: the team chat reads through channel.acknowledge (read on
+// interaction), so a topic's cursor must move there — and ONLY it: the
+// hub-wide cursor would mark General read and send false receipts.
+test('acknowledge inside a topic moves only that topic cursor', async () => {
+  const msg = { message_id: 'm2', metadata: JSON.stringify({ _scope_nid: 'fA', _topic_id: TOPIC.id }) };
+  const c = ctx({ procs: { channel_get: msg } });
+  const r = await c._acknowledgeTopic(TOPIC.id, 'm2');
+  assert.equal(r.handled, true);
+  assert.equal(r.message, msg);
+  assert.ok(c.calls.some((x) => x[0] === 'channel_topic_mark_read' && x[2] === TOPIC.id));
+  assert.ok(!c.calls.some((x) => x[0] === 'acknowledge_message' || x[0] === 'channel_read_messages'));
+  // A message of another topic / General under a topic_id: refused, nothing moves.
+  const other = ctx({ procs: { channel_get: { message_id: 'm1', metadata: JSON.stringify({ _scope_nid: 'fA' }) } } });
+  const r2 = await other._acknowledgeTopic(TOPIC.id, 'm1');
+  assert.deepEqual({ handled: r2.handled, status: r2.status }, { handled: true, status: 'INVALID_TOPIC' });
+  assert.ok(!other.calls.some((x) => /mark_read|acknowledge_message|read_messages/.test(x[0])));
+  // No topic (All / General): not handled here — the hub path runs as before.
+  for (const t of [undefined, '', 'all', 'general', "x';DROP"]) {
+    const n = ctx();
+    assert.equal((await n._acknowledgeTopic(t, 'm1')).handled, false, String(t));
+    assert.equal(n.calls.length, 0);
   }
 });
