@@ -95,3 +95,22 @@ test('the DM manifest pins the viewer\'s own hub; JSON is staged inline', async 
   assert.equal(out.sections[0].messages.length, 2);
   assert.ok(c.calls.some((x) => x[0] === 'p2p_export_count' && x[2] === 50));
 });
+
+// Review: the export endpoints refuse a hub that is not the caller's own
+// (this.db would be that hub owner's DB, and their DMs with a contact).
+test("someone else's hub: no DM export or scope", async () => {
+  const mk = (input) => {
+    const c = ctx({ input });
+    c._p2pRelated = ChatPrivate.prototype._p2pRelated;
+    c.hub = { get: () => 'owner' };
+    c.db.await_query = async () => [{ ok: 1 }]; // the owner talked to the peer
+    return c;
+  };
+  const e = mk({ peer_id: 'peer', format: 'json' });
+  await ChatPrivate.prototype.p2p_export.call(e);
+  assert.equal(e.seen.data.status, 'INVALID_PEER');
+  assert.ok(!e.calls.some((x) => /^p2p_export_/.test(x[0])));
+  const s = mk({ peer_id: 'peer' });
+  await ChatPrivate.prototype.p2p_export_scope.call(s);
+  assert.equal(s.seen.data.hub.message_count, 0);
+});

@@ -1163,6 +1163,12 @@ class privateChat extends Entity {
    * of reach of a caller walking ids.
    */
   async _p2pRelated(peer_id) {
+    // this.db is the DB of the hub the REQUEST names (acl scope: hub). A
+    // direct conversation is only ever the caller's own: naming someone
+    // else's hub (e.g. a folder they shared with write) must not reach their
+    // DMs with their contacts.
+    const hub_id = this.hub && typeof this.hub.get === "function" ? this.hub.get(Attr.id) : null;
+    if (!hub_id || `${hub_id}` !== `${this.uid}`) return false;
     const [contact, talked] = await Promise.all([
       this.db.await_proc("my_contact_exists", "entity", peer_id, null, null),
       this.db.await_query("SELECT 1 AS ok FROM p2p_time WHERE peer_id=? LIMIT 1", peer_id),

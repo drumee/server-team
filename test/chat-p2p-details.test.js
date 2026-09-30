@@ -15,13 +15,15 @@ global.debug = {};
 const ChatPrivate = require('../service/private/chat');
 const { mediaInfoDuration } = require('../service/lib/media-duration');
 
-function ctx(db = {}, yp = {}, input = {}, homes = {}) {
+function ctx(db = {}, yp = {}, input = {}, homes = {}, hub = 'me00000000000001') {
   const calls = { db: [], yp: [], q: [] };
   const seen = {};
   return {
     calls, seen,
     _p2pRelated: ChatPrivate.prototype._p2pRelated,
     uid: 'me00000000000001',
+    // The hub the request names (acl scope: hub) — normally the caller's own.
+    hub: { get: () => hub },
     input: {
       need: (k) => { if (input[k] == null) throw new Error(`missing ${k}`); return input[k]; },
       use: (k, d) => (input[k] == null ? d : input[k]),
@@ -123,4 +125,18 @@ test('p2p_media_list: a stranger gets an empty page and the proc never runs', as
   await ChatPrivate.prototype.p2p_media_list.call(c);
   assert.ok(!c.calls.db.some((x) => x[0] === 'p2p_media_list'));
   assert.deepEqual(c.seen.list, []);
+});
+
+// Review: this.db is the DB of the hub the REQUEST names. A caller with write
+// on someone else's shared folder could name that hub and read the owner's
+// DMs with a contact. A direct conversation is only ever the caller's own.
+test("someone else's hub: no DM data, even for that hub owner's contact", async () => {
+  const d = ctx({ p2p_media_stats: [{ photos: '3' }], p2p_time: ['peer'] }, { drumate_presence: [{ id: 'me00000000000001' }] }, { peer_id: 'peer' }, {}, 'owner0000000000a');
+  await ChatPrivate.prototype.p2p_details.call(d);
+  assert.ok(!d.calls.db.some((x) => x[0] === 'p2p_media_stats'));
+  assert.deepEqual(d.calls.yp, [['drumate_presence', JSON.stringify(['me00000000000001'])]]);
+  const l = ctx({ p2p_media_list: [{ nid: 'i1' }], p2p_time: ['peer'] }, {}, { peer_id: 'peer', kind: 'photo' }, {}, 'owner0000000000a');
+  await ChatPrivate.prototype.p2p_media_list.call(l);
+  assert.ok(!l.calls.db.some((x) => x[0] === 'p2p_media_list'));
+  assert.deepEqual(l.seen.list, []);
 });
