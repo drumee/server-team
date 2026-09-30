@@ -438,6 +438,24 @@
       "returns": { "type": "array", "doc": "Media rows {nid, hub_id, category, filename, extension, filesize, duration, ctime, message_id} or link rows {message_id, ctime, preview, url}" },
       "errors": []
     },
+    "p2p_export_scope": {
+      "doc": "Export dialog card for a DIRECT conversation (peer's name, message count). Same shape as channel.export_scope. Empty for a peer who is neither a contact nor a conversation partner.",
+      "scope": "hub",
+      "permission": { "src": "write" },
+      "params": { "peer_id": { "type": "string", "required": true } }
+    },
+    "p2p_export": {
+      "doc": "Export ONE direct conversation as json (inline) or pdf (offline worker, progress over socket_id). Staged like channel.export; fetch with channel.export_fetch using the caller's own hub_id.",
+      "scope": "hub",
+      "permission": { "src": "write" },
+      "params": {
+        "peer_id": { "type": "string", "required": true },
+        "format": { "type": "string", "required": false, "default": "json" },
+        "start_date": { "type": "integer", "required": false },
+        "end_date": { "type": "integer", "required": false },
+        "socket_id": { "type": "string", "required": false }
+      }
+    },
 
     "forward": {
       "doc": "Forward messages to multiple recipients. Takes existing messages and sends copies to specified entities. Preserves original message content and attachments. Supports bulk forwarding.",
