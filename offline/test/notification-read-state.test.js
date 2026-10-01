@@ -78,6 +78,14 @@ if (!ROLLUP_LINE) {
 const dropDeletedSrc = sliceMethod('_dropDeleted');
 const storeRollupsSrc = sliceMethod('_storeRollups');
 const storedRollupsSrc = sliceMethod('_storedRollups');
+const aliasesSrc = sliceMethod('_deleteStoredRollupAliases');
+// Module-scope helper the alias sweep keys on.
+const dismissKeyStart = src.indexOf('\nfunction rollupDismissKey(r) {');
+if (dismissKeyStart < 0) {
+  console.error('FATAL: rollupDismissKey not found at module scope — fix this slicer');
+  process.exit(1);
+}
+const dismissKeySrc = sliceBraced(dismissKeyStart + 1, 'rollupDismissKey');
 
 // Sanity-check the slices, so a silent mis-slice can never masquerade as a pass.
 const guards = [
@@ -85,6 +93,8 @@ const guards = [
   [dropDeletedSrc, "row.event_type === 'mfs'", '_dropDeleted must discriminate on event_type'],
   [storeRollupsSrc, 'notification_rollup_put', '_storeRollups must call the put proc'],
   [storedRollupsSrc, 'notification_rollup_list', '_storedRollups must call the list proc'],
+  [aliasesSrc, 'notification_rollup_delete', '_deleteStoredRollupAliases must call the delete proc'],
+  [aliasesSrc, 'rollupDismissKey', '_deleteStoredRollupAliases must match on the dismiss key'],
 ];
 for (const [blk, needle, why] of guards) {
   if (!blk.includes(needle)) { console.error(`FATAL: ${why}`); process.exit(1); }
@@ -93,10 +103,12 @@ for (const [blk, needle, why] of guards) {
 const helpers = (new Function('toArray', `
   ${ROLLUP_LINE[0]}
   ${bucketBlock}
+  ${dismissKeySrc}
   return {
     ${dropDeletedSrc},
     ${storeRollupsSrc},
-    ${storedRollupsSrc}
+    ${storedRollupsSrc},
+    ${aliasesSrc}
   };
 `))(toArray);
 
@@ -287,6 +299,64 @@ function fakeCtx(procImpl) {
   out = await helpers._storedRollups.call(ctx);
   check('columns win over the snapshot for identity and time',
     [out[0].category, out[0].key_id, out[0].ctime], ['chat', 'RIGHT', 900]);
+
+  // ------------------------------------------------------------------
+  // _deleteStoredRollupAliases — the trash button on a rollup stored under an
+  // older key_id (drumee.in 2026-09-30: such rows came back after deletion)
+  // ------------------------------------------------------------------
+  const aliasCtx = (stored, failDelete) => {
+    const c = fakeCtx((name) => {
+      if (name === 'notification_rollup_delete' && failDelete) throw new Error('boom');
+      return [];
+    });
+    c._storedRollups = async () => stored;
+    return c;
+  };
+  const deletes = (c) => c.calls.filter(x => x.name === 'notification_rollup_delete').map(x => x.args);
+
+  // The two rows measured on drumee.in.
+  let ac = aliasCtx([
+    { category: 'media', key_id: '7d500ab67d500aba', nid: '7def13177def131b', hub_id: 'h1' },
+    { category: 'media', key_id: 'f18b57acf18b57b1', nid: 'f18b57acf18b57b1', hub_id: 'h2' },
+  ]);
+  await helpers._deleteStoredRollupAliases.call(ac, 'media', '7def13177def131b');
+  check('media copy stored under its old key is flagged by its folder nid',
+    deletes(ac), [['u1', 'media', '7d500ab67d500aba']]);
+
+  ac = aliasCtx([
+    { category: 'chat', key_id: '7e4e53dc7e4e53e2', drumate_id: '20cdcad320cdcad9' },
+    { category: 'chat', key_id: '70ba905970ba905d', drumate_id: '70ba905970ba905d' },
+  ]);
+  await helpers._deleteStoredRollupAliases.call(ac, 'chat', '20cdcad320cdcad9');
+  check('chat copy stored under a contact id is flagged by the peer id',
+    deletes(ac), [['u1', 'chat', '7e4e53dc7e4e53e2']]);
+
+  // The exact key is what notification_rollup_delete already flagged; doing it
+  // twice is harmless but would hide a slicing mistake, so it must be skipped.
+  ac = aliasCtx([{ category: 'media', key_id: 'n1', nid: 'n1' }]);
+  await helpers._deleteStoredRollupAliases.call(ac, 'media', 'n1');
+  check('the key already deleted is not deleted again', deletes(ac), []);
+
+  // Other conversations, other categories: untouched.
+  ac = aliasCtx([
+    { category: 'chat', key_id: 'c9', drumate_id: 'peerB' },
+    { category: 'teamchat', key_id: 'peerA', nid: 'x' },
+    { category: 'media', key_id: 'old', nid: 'otherFolder' },
+  ]);
+  await helpers._deleteStoredRollupAliases.call(ac, 'chat', 'peerA');
+  check('nothing else is flagged', deletes(ac), []);
+
+  // Failure must never surface: the trash button keeps its previous outcome.
+  ac = aliasCtx([{ category: 'media', key_id: 'old', nid: 'n2' }], true);
+  threw = false;
+  try { await helpers._deleteStoredRollupAliases.call(ac, 'media', 'n2'); } catch (e) { threw = true; }
+  check('a failing delete does not throw', threw, false);
+
+  ac = fakeCtx(() => []);
+  ac._storedRollups = async () => { throw new Error('boom'); };
+  threw = false;
+  try { await helpers._deleteStoredRollupAliases.call(ac, 'media', 'n2'); } catch (e) { threw = true; }
+  check('a failing store read does not throw', [threw, deletes(ac)], [false, []]);
 
   // ------------------------------------------------------------------
   console.log(`\n${pass} passed, ${failures.length} failed`);
