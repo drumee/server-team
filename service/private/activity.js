@@ -2271,8 +2271,47 @@ class MfsActivity extends Entity {
 
     await this._callUserProc('notification_dismiss', category, key_id, hub_id, last_id);
     const result = await this._callUserProc('notification_rollup_delete', this.uid, category, key_id);
+    await this._deleteStoredRollupAliases(category, key_id);
     const data = toArray(result)[0] || {};
     this.output.data(data);
+  }
+
+  /**
+   * Flag the stored copies of a rollup that sit under a key_id other than the
+   * one the client deleted by.
+   *
+   * The client sends the key it can ACT on (rollupDismissKey: the folder nid
+   * for media, the peer's drumate id for chat), which is also how
+   * notification_center_next files those rollups today. A copy captured under
+   * an earlier keying is still stored under its old key_id (seen on drumee.in:
+   * media under 7d500ab6… for folder 7def1317…, chat under a contact id for the
+   * peer's drumate id, both captured 2026-08-31). notification_rollup_delete
+   * flagged only the key it was given, so that copy stayed `deleted = 0` and
+   * get_feed rendered it straight back as a read row: deleted, then back on the
+   * next tab switch or reopen.
+   *
+   * Only copies whose own dismiss key IS the deleted key are flagged, i.e. the
+   * same conversation / folder filed twice. Page 1 of the store is what
+   * get_feed renders from, so it is all that can reappear. Best-effort: on any
+   * failure the outcome is the previous one.
+   */
+  async _deleteStoredRollupAliases(category, keyId) {
+    let stored;
+    try {
+      stored = await this._storedRollups();
+    } catch (e) {
+      return;
+    }
+    for (const st of stored || []) {
+      if (!st || st.category !== category) continue;
+      if (String(st.key_id) === keyId) continue;
+      if (String(rollupDismissKey(st) || '') !== keyId) continue;
+      try {
+        await this._callUserProc('notification_rollup_delete', this.uid, category, String(st.key_id));
+      } catch (e) {
+        this.debug('[ACTIVITY] stored rollup alias delete skipped', e && e.message);
+      }
+    }
   }
 
   /**
