@@ -117,6 +117,11 @@ class GoogleDriveImporter {
     this.errors = [];          // retained sample, capped at MAX_ERRORS
     this.errorCount = 0;       // true total (may exceed errors.length)
     this.processedFiles = 0;
+    // Of processedFiles, those left alone because a node of the same name was
+    // already in the destination (conflict_policy 'skip'). They still count as
+    // processed — the bar must reach 100% — but nothing new was written, so
+    // the popup must not report them as imported.
+    this.skippedExisting = 0;
     this.totalFolders = 0;
     this.totalFiles = 0;
     // Bytes durably written by THIS attempt, for the Aha-moment page's
@@ -356,6 +361,7 @@ class GoogleDriveImporter {
       ok: true,
       cancelled: this._cancelled,
       processed_files: this.processedFiles,
+      skipped_existing: this.skippedExisting,
       total_files: this.totalFiles,
       total_folders: this.totalFolders,
       total_bytes: this.totalBytes,
@@ -728,6 +734,12 @@ class GoogleDriveImporter {
    */
   async _importItemGuarded(item, opts) {
     if (this._cancelled) return;                      // drain fast once cancelled
+    // Re-read the sentinel as each pooled file STARTS. The dispatch loop in
+    // _traverse checks it too, but it queues a whole folder's files in a few
+    // milliseconds, so a cancel pressed during the downloads found no gate
+    // left: every queued file still imported and the job ended as 'done'
+    // ("Migration complete" after the user pressed Cancel).
+    if (await this._checkCancelled()) return;
     // Already imported in a prior attempt of this job (keyed by Drive id) —
     // skip the download + DB work, just account for it.
     if (this._done.has(item.id)) {
@@ -817,6 +829,7 @@ class GoogleDriveImporter {
   async _pushProgress(_opts, currentFilename) {
     const payload = {
       processed_files: this.processedFiles,
+      skipped_existing: this.skippedExisting,
       total_files: this.totalFiles,
       total_folders: this.totalFolders,
       errors_count: this.errorCount,
@@ -913,6 +926,7 @@ class GoogleDriveImporter {
       if (existingId != null) {
         if (opts.conflictPolicy === 'skip') {              // silent skip
           this.bytesDone += Number(item.size || 0);
+          this.skippedExisting += 1;
           return;
         }
         throw new Error('conflict policy not implemented yet'); // Phase 2 handles overwrite/rename

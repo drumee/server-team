@@ -454,6 +454,9 @@ class GoogleDrive extends ExtImport {
       job_id: snap.id,
       status,
       processed_files: prog.processed_files || ret.processed_files || 0,
+      // Of processed_files, those skipped because the destination already had
+      // them — the popup subtracts these from "Imported N files".
+      skipped_existing: prog.skipped_existing || ret.skipped_existing || 0,
       total_files:     prog.total_files     || ret.total_files     || 0,
       total_folders:   prog.total_folders   || ret.total_folders   || 0,
       current_filename: prog.current_filename || null,
