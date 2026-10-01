@@ -72,6 +72,9 @@ const TOKEN_SAFETY_SEC = 60;
 // response/inactivity, which is the case we care about (a wedged connection),
 // not a slow-but-progressing transfer.
 const DRIVE_HTTP_TIMEOUT_MS = 120000;
+// How often a running job re-reads the cancel sentinel on its own, so a Cancel
+// also stops a download already under way — not only the next file.
+const CANCEL_POLL_MS = 500;
 // Cap the RETAINED per-file error list so a pathological run (e.g. a 10k-file
 // folder where every child fails NOT_GRANTED) can't bloat job.returnvalue,
 // which is JSON-serialized into Redis. The TRUE total is tracked in errorCount.
@@ -144,6 +147,8 @@ class GoogleDriveImporter {
     this._inflight = new Map();   // Drive id -> { name, bytes }
     this._lastBytesPush = 0;
     this._cancelled = false;
+    // Aborts every Drive download in flight once the job is cancelled.
+    this._abort = new AbortController();
     // Token cache populated lazily; refreshed when expires_at - safety < now.
     this._tokenCache = null;          // { access_token, expires_at }
     // Single-flight guard: collapse N concurrent token refreshes (file pool)
@@ -277,6 +282,13 @@ class GoogleDriveImporter {
           .catch(() => {});
       }
     }, 60000);
+    // The per-file gates only run BETWEEN files. A single-file import is one
+    // file, so a Cancel pressed while it downloaded was never seen and the job
+    // ended 'done'. This watcher notices the sentinel mid-file and
+    // _checkCancelled aborts the download.
+    const cancelWatch = setInterval(() => {
+      if (!this._cancelled) this._checkCancelled().catch(() => {});
+    }, CANCEL_POLL_MS);
 
     try {
       const destFolder = await hubDb.await_proc('mfs_node_attr', nid);
@@ -334,6 +346,7 @@ class GoogleDriveImporter {
       }
     } finally {
       clearInterval(keepAlive);
+      clearInterval(cancelWatch);
       // Mariadb.end() returns undefined (not a promise) and swallows its own
       // errors internally. Chaining `.catch()` on it threw "Cannot read
       // properties of undefined (reading 'catch')" in this finally block —
@@ -585,6 +598,8 @@ class GoogleDriveImporter {
         await this._pushProgress(base, meta.name);
       } catch (e) {
         this._inflight.delete(meta.id);
+        // Cancelled mid-file (download aborted / last gate) — not a failure.
+        if (this._cancelled) return;
         this._pushError({ file: meta.name, code: this._grantCode(e, 'IMPORT_FAILED'), reason: e.message });
         await this._pushProgress(base);
       }
@@ -856,6 +871,7 @@ class GoogleDriveImporter {
     try {
       if (await isCancelled(this.job.id)) {
         this._cancelled = true;
+        if (!this._abort.signal.aborted) this._abort.abort();
         return true;
       }
     } catch (_) {}
@@ -964,6 +980,7 @@ class GoogleDriveImporter {
           responseType: 'stream',
           maxRedirects: 5,
           timeout: DRIVE_HTTP_TIMEOUT_MS,
+          signal: this._abort.signal,
         });
         // Each retry attempt streams from byte 0 again, so restart the count.
         const size = Number(item.size || 0);
@@ -982,6 +999,16 @@ class GoogleDriveImporter {
           dl.data.on('error', done);
           out.on('error', done);
           out.on('finish', () => done(null));
+          // Cancel mid-stream: stop reading and drop the partial file. Done
+          // here rather than trusting the HTTP client to error the stream.
+          const onAbort = () => {
+            done(new Error('CANCELLED'));
+            try { dl.data.destroy(); } catch (_) {}
+            try { out.destroy(); } catch (_) {}
+          };
+          if (this._abort.signal.aborted) return onAbort();
+          this._abort.signal.addEventListener('abort', onAbort, { once: true });
+          out.on('close', () => this._abort.signal.removeEventListener('abort', onAbort));
           if (size) {
             dl.data.on('data', (chunk) => {
               const cur = this._inflight.get(item.id);
@@ -996,6 +1023,10 @@ class GoogleDriveImporter {
       // see the complete file at `source`.
       await fsp.rename(partFile, source);
     }
+
+    // Last gate before anything is written into Drumee: a Cancel that came
+    // while the file downloaded (or right after) leaves the folder untouched.
+    if (this._cancelled || await this._checkCancelled()) throw new Error('CANCELLED');
 
     const stat = await fsp.stat(source);
     if (stat.isDirectory()) throw new Error('downloaded source is a directory');
