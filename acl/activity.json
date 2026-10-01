@@ -758,10 +758,10 @@
     },
 
     "delete_rollup": {
-      "doc": "Remove a chat/teamchat/media/ticket rollup permanently (the trash button). Two writes, both required: notification_dismiss advances the underlying read pointer so the LIVE rollup stops being generated, and notification_rollup_delete flags the stored copy so it stops being rendered as a read row.",
+      "doc": "Remove a chat/teamchat/media/ticket rollup permanently (the trash button). Two writes, both required: notification_dismiss advances the underlying read pointer so the LIVE rollup stops being generated, and notification_rollup_delete flags the stored copy so it stops being rendered as a read row. Read permission, like dismiss_rollup: hub_id is the workspace the notification is about, and a view or chat member must be able to delete their own notification of it; the writes are the dismiss one plus a flag in the caller's own store.",
       "scope": "hub",
       "permission": {
-        "src": "write"
+        "src": "read"
       },
       "params": {
         "category": {
