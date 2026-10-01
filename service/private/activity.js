@@ -480,6 +480,31 @@ function rollupDismissKey(r) {
   }
 }
 
+// Stored rollup copies left behind by an EARLIER keying of the same
+// conversation / folder. notification_center_next now files chat by the
+// peer's drumate id and media by the folder nid (= rollupDismissKey); a copy
+// captured before that sits under its old key_id (drumee.in: chat with
+// 20cdcad3… stored once under a contact id on 2026-08-31 and once under
+// 20cdcad3… on 2026-09-30), so the panel showed one conversation twice.
+// A copy is superseded only when its key_id is NOT its dismiss key AND a row
+// filed under that dismiss key exists (live or stored): the same conversation
+// is then represented already. A lone old-keyed copy is the only record of
+// its notification and stays.
+function supersededRollups(live, stored) {
+  const out = new Set();
+  const filed = new Set();
+  for (const r of [...(live || []), ...(stored || [])]) {
+    if (r && r.category && r.key_id != null) filed.add(`${r.category}:${r.key_id}`);
+  }
+  for (const st of stored || []) {
+    if (!st || (st.category !== 'chat' && st.category !== 'media')) continue;
+    const key = rollupDismissKey(st);
+    if (!key || String(key) === String(st.key_id)) continue;
+    if (filed.has(`${st.category}:${key}`)) out.add(st);
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // Scheduled meetings arrive on TWO channels, and exactly one row must survive.
 //
@@ -1196,10 +1221,14 @@ class MfsActivity extends Entity {
             rollups.filter((r) => r && ROLLUP_CATEGORIES.has(r.category))
               .map((r) => `${r.category}:${r.key_id}`)
           );
-          for (const st of await this._storedRollups()) {
+          const stored = await this._storedRollups();
+          const superseded = supersededRollups(rollups, stored);
+          for (const st of stored) {
             if (live.has(`${st.category}:${st.key_id}`)) continue;
+            if (superseded.has(st)) continue;
             result.push({ ...st, is_read: 1 });
           }
+          await this._retireRollups(superseded);
         }
         // Task @-mentions / assignments and admin-console storage alerts live
         // in yp.contact_activity → under Unread OFF they already come from
@@ -2517,6 +2546,24 @@ class MfsActivity extends Entity {
       });
     }
     return stampBuckets(out);
+  }
+
+  /**
+   * Flag superseded stored copies (supersededRollups) as deleted, so they stay
+   * gone once the row that superseded them is itself trashed — hiding them
+   * alone would bring the old copy back at that moment. The flag keeps the
+   * payload (reversible: deleted = 0), and notification_rollup_put never
+   * writes an old key again. Best-effort: on failure they are still hidden
+   * and the next get_feed tries again.
+   */
+  async _retireRollups(rows) {
+    for (const st of rows || []) {
+      try {
+        await this._callUserProc('notification_rollup_delete', this.uid, st.category, String(st.key_id));
+      } catch (e) {
+        this.debug('[ACTIVITY] superseded rollup retire skipped', e && e.message);
+      }
+    }
   }
 
   /**

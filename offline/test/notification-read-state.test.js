@@ -87,6 +87,13 @@ if (dismissKeyStart < 0) {
   process.exit(1);
 }
 const dismissKeySrc = sliceBraced(dismissKeyStart + 1, 'rollupDismissKey');
+const supersededStart = src.indexOf('\nfunction supersededRollups(live, stored) {');
+if (supersededStart < 0) {
+  console.error('FATAL: supersededRollups not found at module scope — fix this slicer');
+  process.exit(1);
+}
+const supersededSrc = sliceBraced(supersededStart + 1, 'supersededRollups');
+const retireSrc = sliceMethod('_retireRollups');
 
 // Sanity-check the slices, so a silent mis-slice can never masquerade as a pass.
 const guards = [
@@ -97,6 +104,8 @@ const guards = [
   [clickedSrc, 'rollupDismissKey', '_clickedRollup must match on the dismiss key'],
   [clickedSrc, 'last_id', '_clickedRollup must tell rows apart by last_id'],
   [deleteRollupSrc, '_clickedRollup', 'delete_rollup must resolve the clicked row'],
+  [retireSrc, 'notification_rollup_delete', '_retireRollups must flag through the delete proc'],
+  [supersededSrc, 'rollupDismissKey', 'supersededRollups must key on the dismiss key'],
 ];
 for (const [blk, needle, why] of guards) {
   if (!blk.includes(needle)) { console.error(`FATAL: ${why}`); process.exit(1); }
@@ -106,12 +115,15 @@ const helpers = (new Function('toArray', `
   ${ROLLUP_LINE[0]}
   ${bucketBlock}
   ${dismissKeySrc}
+  ${supersededSrc}
   return {
+    supersededRollups,
     ${dropDeletedSrc},
     ${storeRollupsSrc},
     ${storedRollupsSrc},
     ${clickedSrc},
-    ${deleteRollupSrc}
+    ${deleteRollupSrc},
+    ${retireSrc}
   };
 `))(toArray);
 
@@ -374,6 +386,39 @@ function fakeCtx(procImpl) {
   check('no last_id sent: previous behaviour',
     writes(dc), [['notification_dismiss', 'media', 'n9', 'h', 0], ['notification_rollup_delete', 'media', 'n9']]);
   check('the response is still the proc result', dc.out, { status: 'ok' });
+
+  // ------------------------------------------------------------------
+  // supersededRollups / _retireRollups — one conversation shown twice
+  // ------------------------------------------------------------------
+  const keys = (set) => [...set].map(r => r.key_id).sort();
+  check('old chat copy is superseded by the stored copy under the peer id',
+    keys(helpers.supersededRollups([], [chatNew, chatOld])), ['7e4e53dc7e4e53e2']);
+  check('old chat copy is superseded by a LIVE row under the peer id',
+    keys(helpers.supersededRollups([chatNew], [chatOld])), ['7e4e53dc7e4e53e2']);
+  check('a lone old-keyed copy stays (only record of its notification)',
+    keys(helpers.supersededRollups([], [chatOld, { category: 'media', key_id: '7d500ab67d500aba', nid: '7def13177def131b' }])), []);
+  check('old media copy under the hub key is superseded by its folder row',
+    keys(helpers.supersededRollups([{ category: 'media', key_id: 'f1', nid: 'f1' }], [{ category: 'media', key_id: 'hub1', nid: 'f1', hub_id: 'hub1' }])), ['hub1']);
+  check('current-keyed rows are never superseded',
+    keys(helpers.supersededRollups([], [chatNew, { category: 'media', key_id: 'f1', nid: 'f1' }])), []);
+  check('teamchat / ticket are never touched (their dismiss key is the key_id)',
+    keys(helpers.supersededRollups([{ category: 'teamchat', key_id: 'x' }], [{ category: 'teamchat', key_id: 'y', nid: 'x' }, { category: 'ticket', key_id: 't', hub_id: 'x' }])), []);
+  check('another peer is not a duplicate',
+    keys(helpers.supersededRollups([], [chatOld, { category: 'chat', key_id: '70ba905970ba905d', drumate_id: '70ba905970ba905d' }])), []);
+  check('a media key that is another category is not a duplicate',
+    keys(helpers.supersededRollups([{ category: 'chat', key_id: 'f1' }], [{ category: 'media', key_id: 'hub1', nid: 'f1' }])), []);
+
+  let rc = fakeCtx(() => [{ status: 'ok' }]);
+  await helpers._retireRollups.call(rc, new Set([chatOld]));
+  check('a superseded copy is flagged by its own key',
+    rc.calls.map(c => [c.name, ...c.args]), [['notification_rollup_delete', 'u1', 'chat', '7e4e53dc7e4e53e2']]);
+  rc = fakeCtx(() => { throw new Error('boom'); });
+  threw = false;
+  try { await helpers._retireRollups.call(rc, new Set([chatOld])); } catch (e) { threw = true; }
+  check('a failing retire does not throw', threw, false);
+  rc = fakeCtx(() => [{ status: 'ok' }]);
+  await helpers._retireRollups.call(rc, new Set());
+  check('nothing superseded: no write', rc.calls.length, 0);
 
   // ------------------------------------------------------------------
   console.log(`\n${pass} passed, ${failures.length} failed`);
