@@ -78,7 +78,8 @@ if (!ROLLUP_LINE) {
 const dropDeletedSrc = sliceMethod('_dropDeleted');
 const storeRollupsSrc = sliceMethod('_storeRollups');
 const storedRollupsSrc = sliceMethod('_storedRollups');
-const aliasesSrc = sliceMethod('_deleteStoredRollupAliases');
+const clickedSrc = sliceMethod('_clickedRollup');
+const deleteRollupSrc = sliceMethod('delete_rollup');
 // Module-scope helper the alias sweep keys on.
 const dismissKeyStart = src.indexOf('\nfunction rollupDismissKey(r) {');
 if (dismissKeyStart < 0) {
@@ -93,8 +94,9 @@ const guards = [
   [dropDeletedSrc, "row.event_type === 'mfs'", '_dropDeleted must discriminate on event_type'],
   [storeRollupsSrc, 'notification_rollup_put', '_storeRollups must call the put proc'],
   [storedRollupsSrc, 'notification_rollup_list', '_storedRollups must call the list proc'],
-  [aliasesSrc, 'notification_rollup_delete', '_deleteStoredRollupAliases must call the delete proc'],
-  [aliasesSrc, 'rollupDismissKey', '_deleteStoredRollupAliases must match on the dismiss key'],
+  [clickedSrc, 'rollupDismissKey', '_clickedRollup must match on the dismiss key'],
+  [clickedSrc, 'last_id', '_clickedRollup must tell rows apart by last_id'],
+  [deleteRollupSrc, '_clickedRollup', 'delete_rollup must resolve the clicked row'],
 ];
 for (const [blk, needle, why] of guards) {
   if (!blk.includes(needle)) { console.error(`FATAL: ${why}`); process.exit(1); }
@@ -108,7 +110,8 @@ const helpers = (new Function('toArray', `
     ${dropDeletedSrc},
     ${storeRollupsSrc},
     ${storedRollupsSrc},
-    ${aliasesSrc}
+    ${clickedSrc},
+    ${deleteRollupSrc}
   };
 `))(toArray);
 
@@ -301,62 +304,76 @@ function fakeCtx(procImpl) {
     [out[0].category, out[0].key_id, out[0].ctime], ['chat', 'RIGHT', 900]);
 
   // ------------------------------------------------------------------
-  // _deleteStoredRollupAliases — the trash button on a rollup stored under an
-  // older key_id (drumee.in 2026-09-30: such rows came back after deletion)
+  // delete_rollup — the trash button deletes exactly the row pressed
+  // (drumee.in 2026-09-30/10-01: a row stored under an older key_id came back;
+  // a chat had two rows, old key 7e4e53dc… and current key 20cdcad3…)
   // ------------------------------------------------------------------
-  const aliasCtx = (stored, failDelete) => {
-    const c = fakeCtx((name) => {
-      if (name === 'notification_rollup_delete' && failDelete) throw new Error('boom');
-      return [];
-    });
-    c._storedRollups = async () => stored;
+  const delCtx = ({ input, live = [], stored = [], liveThrows, storedThrows }) => {
+    const c = fakeCtx(() => [{ status: 'ok' }]);
+    c.input = { need: (k) => input[k], use: (k) => input[k] };
+    c.output = { data: (d) => { c.out = d; } };
+    c._notificationRollups = async () => { if (liveThrows) throw new Error('boom'); return live; };
+    c._storedRollups = async () => { if (storedThrows) throw new Error('boom'); return stored; };
+    c._clickedRollup = helpers._clickedRollup;
     return c;
   };
-  const deletes = (c) => c.calls.filter(x => x.name === 'notification_rollup_delete').map(x => x.args);
+  const writes = (c) => c.calls.map(x => [x.name, ...(x.name === 'notification_rollup_delete' ? x.args.slice(1) : x.args)]);
+  const chatOld = { category: 'chat', key_id: '7e4e53dc7e4e53e2', drumate_id: '20cdcad320cdcad9', last_id: 1788172484 };
+  const chatNew = { category: 'chat', key_id: '20cdcad320cdcad9', drumate_id: '20cdcad320cdcad9', last_id: 1790767001 };
 
-  // The two rows measured on drumee.in.
-  let ac = aliasCtx([
-    { category: 'media', key_id: '7d500ab67d500aba', nid: '7def13177def131b', hub_id: 'h1' },
-    { category: 'media', key_id: 'f18b57acf18b57b1', nid: 'f18b57acf18b57b1', hub_id: 'h2' },
-  ]);
-  await helpers._deleteStoredRollupAliases.call(ac, 'media', '7def13177def131b');
-  check('media copy stored under its old key is flagged by its folder nid',
-    deletes(ac), [['u1', 'media', '7d500ab67d500aba']]);
+  let dc = delCtx({
+    input: { category: 'chat', key_id: '20cdcad320cdcad9', hub_id: 'h', last_id: 1788172484 },
+    stored: [chatNew, chatOld],
+  });
+  await helpers.delete_rollup.call(dc);
+  check('trash on the OLD chat row flags only its own key and moves no read pointer',
+    writes(dc), [['notification_rollup_delete', 'chat', '7e4e53dc7e4e53e2']]);
 
-  ac = aliasCtx([
-    { category: 'chat', key_id: '7e4e53dc7e4e53e2', drumate_id: '20cdcad320cdcad9' },
-    { category: 'chat', key_id: '70ba905970ba905d', drumate_id: '70ba905970ba905d' },
-  ]);
-  await helpers._deleteStoredRollupAliases.call(ac, 'chat', '20cdcad320cdcad9');
-  check('chat copy stored under a contact id is flagged by the peer id',
-    deletes(ac), [['u1', 'chat', '7e4e53dc7e4e53e2']]);
+  dc = delCtx({
+    input: { category: 'chat', key_id: '20cdcad320cdcad9', hub_id: 'h', last_id: 1790767001 },
+    stored: [chatNew, chatOld],
+  });
+  await helpers.delete_rollup.call(dc);
+  check('trash on the NEW (read) chat row flags only its own key',
+    writes(dc), [['notification_rollup_delete', 'chat', '20cdcad320cdcad9']]);
 
-  // The exact key is what notification_rollup_delete already flagged; doing it
-  // twice is harmless but would hide a slicing mistake, so it must be skipped.
-  ac = aliasCtx([{ category: 'media', key_id: 'n1', nid: 'n1' }]);
-  await helpers._deleteStoredRollupAliases.call(ac, 'media', 'n1');
-  check('the key already deleted is not deleted again', deletes(ac), []);
+  dc = delCtx({
+    input: { category: 'chat', key_id: '20cdcad320cdcad9', hub_id: 'h', last_id: 1790767001 },
+    live: [chatNew], stored: [chatOld],
+  });
+  await helpers.delete_rollup.call(dc);
+  check('trash on an UNREAD row dismisses it, then flags it',
+    writes(dc), [['notification_dismiss', 'chat', '20cdcad320cdcad9', 'h', 1790767001], ['notification_rollup_delete', 'chat', '20cdcad320cdcad9']]);
 
-  // Other conversations, other categories: untouched.
-  ac = aliasCtx([
-    { category: 'chat', key_id: 'c9', drumate_id: 'peerB' },
-    { category: 'teamchat', key_id: 'peerA', nid: 'x' },
-    { category: 'media', key_id: 'old', nid: 'otherFolder' },
-  ]);
-  await helpers._deleteStoredRollupAliases.call(ac, 'chat', 'peerA');
-  check('nothing else is flagged', deletes(ac), []);
+  dc = delCtx({
+    input: { category: 'media', key_id: '7def13177def131b', hub_id: '7d500ab67d500aba', last_id: 39 },
+    stored: [{ category: 'media', key_id: '7d500ab67d500aba', nid: '7def13177def131b', last_id: 39 }],
+  });
+  await helpers.delete_rollup.call(dc);
+  check('media copy stored under its hub key is flagged by that key',
+    writes(dc), [['notification_rollup_delete', 'media', '7d500ab67d500aba']]);
 
-  // Failure must never surface: the trash button keeps its previous outcome.
-  ac = aliasCtx([{ category: 'media', key_id: 'old', nid: 'n2' }], true);
-  threw = false;
-  try { await helpers._deleteStoredRollupAliases.call(ac, 'media', 'n2'); } catch (e) { threw = true; }
-  check('a failing delete does not throw', threw, false);
+  // Not identifiable -> byte-for-byte the previous behaviour.
+  const legacy = [['notification_dismiss', 'media', 'n9', 'h', 5], ['notification_rollup_delete', 'media', 'n9']];
+  dc = delCtx({ input: { category: 'media', key_id: 'n9', hub_id: 'h', last_id: 5 }, stored: [chatOld] });
+  await helpers.delete_rollup.call(dc);
+  check('nothing matches: previous behaviour', writes(dc), legacy);
 
-  ac = fakeCtx(() => []);
-  ac._storedRollups = async () => { throw new Error('boom'); };
-  threw = false;
-  try { await helpers._deleteStoredRollupAliases.call(ac, 'media', 'n2'); } catch (e) { threw = true; }
-  check('a failing store read does not throw', [threw, deletes(ac)], [false, []]);
+  dc = delCtx({ input: { category: 'media', key_id: 'n9', hub_id: 'h', last_id: 6 },
+    stored: [{ category: 'media', key_id: 'n9', nid: 'n9', last_id: 5 }] });
+  await helpers.delete_rollup.call(dc);
+  check('last_id moved on since the panel drew it: previous behaviour',
+    writes(dc), [['notification_dismiss', 'media', 'n9', 'h', 6], ['notification_rollup_delete', 'media', 'n9']]);
+
+  dc = delCtx({ input: { category: 'media', key_id: 'n9', hub_id: 'h', last_id: 5 }, liveThrows: true, storedThrows: true });
+  await helpers.delete_rollup.call(dc);
+  check('both lookups failing: previous behaviour', writes(dc), legacy);
+
+  dc = delCtx({ input: { category: 'media', key_id: 'n9', hub_id: 'h' }, stored: [{ category: 'media', key_id: 'n9', nid: 'n9', last_id: 0 }] });
+  await helpers.delete_rollup.call(dc);
+  check('no last_id sent: previous behaviour',
+    writes(dc), [['notification_dismiss', 'media', 'n9', 'h', 0], ['notification_rollup_delete', 'media', 'n9']]);
+  check('the response is still the proc result', dc.out, { status: 'ok' });
 
   // ------------------------------------------------------------------
   console.log(`\n${pass} passed, ${failures.length} failed`);
