@@ -2260,6 +2260,10 @@ class MfsActivity extends Entity {
    * the flagging then fails, the user is left with today's outcome (the row
    * returns as read) rather than a row that is flagged deleted while its
    * conversation is still unread and still counted by the badge.
+   *
+   * Both writes are for an UNREAD (live) row. A READ copy only gets the flag:
+   * its conversation may have newer unread messages under another row, which
+   * a dismiss would mark read (see _clickedRollup).
    * Endpoint: POST /activity.delete_rollup
    * Input: category (string), key_id (string), hub_id (string), last_id (integer)
    */
@@ -2269,49 +2273,58 @@ class MfsActivity extends Entity {
     const hub_id = String(this.input.use('hub_id') || '');
     const last_id = parseInt(this.input.use('last_id') || 0);
 
-    await this._callUserProc('notification_dismiss', category, key_id, hub_id, last_id);
-    const result = await this._callUserProc('notification_rollup_delete', this.uid, category, key_id);
-    await this._deleteStoredRollupAliases(category, key_id);
-    const data = toArray(result)[0] || {};
-    this.output.data(data);
+    // The row the user pressed trash on, told apart by last_id from another
+    // row of the same conversation / folder stored under an older key_id.
+    const { live, stored } = await this._clickedRollup(category, key_id, last_id);
+    if (!live && !stored) {
+      // Not identifiable (not captured yet, or newer activity since the panel
+      // drew it): exactly the previous behaviour.
+      await this._callUserProc('notification_dismiss', category, key_id, hub_id, last_id);
+      const result = await this._callUserProc('notification_rollup_delete', this.uid, category, key_id);
+      return this.output.data(toArray(result)[0] || {});
+    }
+    // Only an unread (live) row moves the read pointer. Deleting a read copy
+    // must not mark the conversation's NEWER messages read under another row.
+    if (live) {
+      await this._callUserProc('notification_dismiss', category, key_id, hub_id, last_id);
+    }
+    // Flag the clicked row by its own stored key, which can differ from the
+    // key the client sends (rollupDismissKey); flagging the sent key missed a
+    // copy stored under an older key_id, so it came back as a read row.
+    const target = String((live || stored).key_id);
+    const result = await this._callUserProc('notification_rollup_delete', this.uid, category, target);
+    this.output.data(toArray(result)[0] || {});
   }
 
   /**
-   * Flag the stored copies of a rollup that sit under a key_id other than the
-   * one the client deleted by.
+   * The live rollup and / or stored copy the trash button was pressed on.
    *
-   * The client sends the key it can ACT on (rollupDismissKey: the folder nid
-   * for media, the peer's drumate id for chat), which is also how
-   * notification_center_next files those rollups today. A copy captured under
-   * an earlier keying is still stored under its old key_id (seen on drumee.in:
-   * media under 7d500ab6… for folder 7def1317…, chat under a contact id for the
-   * peer's drumate id, both captured 2026-08-31). notification_rollup_delete
-   * flagged only the key it was given, so that copy stayed `deleted = 0` and
-   * get_feed rendered it straight back as a read row: deleted, then back on the
-   * next tab switch or reopen.
-   *
-   * Only copies whose own dismiss key IS the deleted key are flagged, i.e. the
-   * same conversation / folder filed twice. Page 1 of the store is what
-   * get_feed renders from, so it is all that can reappear. Best-effort: on any
-   * failure the outcome is the previous one.
+   * The client sends rollupDismissKey (folder nid for media, peer drumate id
+   * for chat) plus the row's last_id. A stored copy can sit under another
+   * key_id for the same dismiss key (captured under an earlier keying; on
+   * drumee.in a chat with 20cdcad3… had one row under a contact id from
+   * 2026-08-31 and one under 20cdcad3… from 2026-09-30), so the key alone does
+   * not say WHICH row was pressed; last_id does. Best-effort: a failing read
+   * returns nothing found, i.e. the previous behaviour.
    */
-  async _deleteStoredRollupAliases(category, keyId) {
-    let stored;
+  async _clickedRollup(category, keyId, lastId) {
+    const same = (r) => r && String(r.category || '') === category
+      && (String(r.key_id) === keyId || String(rollupDismissKey(r) || '') === keyId)
+      && Number(r.last_id || 0) === lastId;
+    let live = null;
+    let stored = null;
+    if (!lastId) return { live, stored };
     try {
-      stored = await this._storedRollups();
+      live = (await this._notificationRollups()).find(same) || null;
     } catch (e) {
-      return;
+      this.debug('[ACTIVITY] delete_rollup live lookup skipped', e && e.message);
     }
-    for (const st of stored || []) {
-      if (!st || st.category !== category) continue;
-      if (String(st.key_id) === keyId) continue;
-      if (String(rollupDismissKey(st) || '') !== keyId) continue;
-      try {
-        await this._callUserProc('notification_rollup_delete', this.uid, category, String(st.key_id));
-      } catch (e) {
-        this.debug('[ACTIVITY] stored rollup alias delete skipped', e && e.message);
-      }
+    try {
+      stored = (await this._storedRollups()).find(same) || null;
+    } catch (e) {
+      this.debug('[ACTIVITY] delete_rollup store lookup skipped', e && e.message);
     }
+    return { live, stored };
   }
 
   /**
