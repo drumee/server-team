@@ -888,6 +888,11 @@
             "description": "1 when popups are muted for every workspace, 0 otherwise",
             "example": 0
           },
+          "peers": {
+            "type": "array",
+            "description": "Person ids whose DM popups are muted (activity.mute_peer_set)",
+            "items": { "type": "string" }
+          },
           "hubs": {
             "type": "array",
             "description": "Workspace ids muted individually. Empty when global is 1 - the two do not layer.",
@@ -940,6 +945,11 @@
             "description": "Resulting global flag",
             "example": 1
           },
+          "peers": {
+            "type": "array",
+            "description": "Person ids whose DM popups are muted (activity.mute_peer_set)",
+            "items": { "type": "string" }
+          },
           "hubs": {
             "type": "array",
             "description": "Resulting list of individually muted workspace ids",
@@ -948,6 +958,24 @@
         }
       },
       "errors": []
+    },
+    "mute_peer_set": {
+      "doc": "Mute or unmute the direct-message POPUPS from one person. Popup channel only - the feed and the unread badge are never affected. Writes the caller's own preference row (notification_mute_peer). Answers the full state, like mute_set. The caller sends their own hub (Visitor.id) as hub_id.",
+      "scope": "hub",
+      "permission": { "src": "read" },
+      "params": {
+        "peer_id": { "type": "string", "required": true, "description": "The person to mute (a user id, never the caller)." },
+        "muted": { "type": "boolean", "required": false, "default": true, "description": "true or absent mutes; explicit false, 0 or the string false unmutes." }
+      },
+      "returns": { "type": "object", "properties": {
+        "status": { "type": "string", "example": "ok" },
+        "muted": { "type": "integer", "example": 1 },
+        "peer_id": { "type": "string" },
+        "global": { "type": "integer" },
+        "hubs": { "type": "array", "items": { "type": "string" } },
+        "peers": { "type": "array", "description": "Person ids whose DM popups are muted", "items": { "type": "string" } }
+      } },
+      "errors": [ { "code": "INVALID_PEER", "message": "peer_id is missing, malformed or the caller", "http_status": 400 } ]
     }
   },
 

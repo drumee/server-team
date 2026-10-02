@@ -7,6 +7,7 @@
         "src": "read"
       },
       "params": {
+        "topic_id": { "type": "string", "required": false, "doc": "Read inside a folder chat topic: moves only that topic's cursor (and receipts); the message must belong to it" },
         "message_id": {
           "type": "string",
           "required": false,
@@ -174,6 +175,7 @@
         "src": "read"
       },
       "params": {
+        "topic_id": { "type": "string", "required": false, "doc": "Folder chat topic: absent or all = the whole folder chat, general = without topic messages, a topic id = that topic (must belong to nid)" },
         "order": {
           "type": "string",
           "required": false,
@@ -230,6 +232,7 @@
         "src": "read"
       },
       "params": {
+        "topic_id": { "type": "string", "required": false, "doc": "Post into this folder chat topic (must exist and belong to nid); absent = no topic" },
         "message": {
           "type": "string",
           "required": false,
@@ -1045,6 +1048,43 @@
         "page": { "type": "number", "required": false, "doc": "Page number for pagination (default 1)" }
       },
       "returns": { "type": "array", "doc": "File-thread summaries with current file metadata" },
+      "errors": []
+    },
+    "topic_list": {
+      "doc": "Folder chat topics of one folder, oldest first, each with the caller's unread (other people's messages after the caller's per-topic read cursor). Empty for a member without chat access.",
+      "scope": "hub",
+      "permission": { "src": "read" },
+      "params": {
+        "folder_nid": { "type": "string", "required": true, "doc": "Media node ID of the folder" }
+      }
+    },
+    "topic_create": {
+      "doc": "Create a topic in a folder's team chat. Name 1-60 characters after trim, unique per folder (case-insensitive) -> TOPIC_EXISTS; emoji one picker glyph (<= 16 bytes). Requires chat access (CAN_CHAT) -> FORBIDDEN. Invalid input -> INVALID_TOPIC.",
+      "scope": "hub",
+      "permission": { "src": "read" },
+      "params": {
+        "folder_nid": { "type": "string", "required": true, "doc": "Media node ID of the folder" },
+        "name": { "type": "string", "required": true, "doc": "Topic name" },
+        "emoji": { "type": "string", "required": true, "doc": "Topic icon (an emoji)" }
+      }
+    },
+    "details": {
+      "doc": "Chat details overview for the workspace team chat: photo/video/file/link counts and the hub's members with presence (online, last_seen). Team chat only (file threads excluded).",
+      "scope": "hub",
+      "permission": { "src": "read" },
+      "params": {},
+      "returns": { "type": "object", "doc": "{ stats: {photos, videos, files, links}, members: [...] }" },
+      "errors": []
+    },
+    "media_list": {
+      "doc": "One page of the team chat's shared photos, videos, files (60/page) or link messages (30/page), newest first.",
+      "scope": "hub",
+      "permission": { "src": "read" },
+      "params": {
+        "kind": { "type": "string", "required": true, "doc": "photo | video | file | link" },
+        "page": { "type": "number", "required": false, "doc": "Page number (default 1)" }
+      },
+      "returns": { "type": "array", "doc": "Media rows {nid, category, filename, extension, filesize, duration, ctime, message_id} or link rows {message_id, ctime, preview, url}" },
       "errors": []
     },
     "file_thread_acknowledge": {

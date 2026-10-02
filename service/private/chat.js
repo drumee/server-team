@@ -14,12 +14,17 @@
  * limitations under the License.
  * =============================================================================
  */
-const { Attr, RedisStore, toArray } = require("@drumee/server-essentials");
+const { Attr, RedisStore, toArray, Constants, sysEnv } = require("@drumee/server-essentials");
 const { Entity, MfsTools } = require("@drumee/server-core");
 const { remove_node, move_node, copy_node } = MfsTools;
 
 const { stringify } = JSON;
-const { mkdirSync } = require("fs");
+const { mkdirSync, writeFileSync } = require("fs");
+const { resolve: pathResolve, join: pathJoin } = require("path");
+const Spawn = require("child_process").spawn;
+const { gatherP2pSection } = require("../lib/p2p-export");
+const { DOWNLOAD_FOLDER } = Constants;
+const { tmp_dir } = sysEnv();
 const { isEmpty, isArray, map, includes } = require("lodash");
 const { CAN_CHAT, privilegeAllows } = require("../lib/member-capability");
 const {admit: admitMobilePush} = require('../lib/mobile-push');
@@ -46,6 +51,8 @@ class privateChat extends Entity {
     this.pages_to_read = this.pages_to_read.bind(this);
     this.delete = this.delete.bind(this);
     this.messages = this.messages.bind(this);
+    this.p2p_details = this.p2p_details.bind(this);
+    this.p2p_media_list = this.p2p_media_list.bind(this);
     this.remove_attachment = this.remove_attachment.bind(this);
     this.count_all = this.count_all.bind(this);
     this.attachment = this.attachment.bind(this);
@@ -1142,6 +1149,224 @@ class privateChat extends Entity {
     //});
 
     this.output.data(res);
+  }
+
+  /**
+   * Chat details overview for a DIRECT conversation: media counts from both
+   * participants' p2p_channel (p2p_media_stats, run in the viewer's DB like
+   * p2p_list_messages) and the two participants with presence.
+   */
+  /**
+   * Whether `peer_id` is someone the viewer may see in a direct conversation's
+   * details: a contact, or a conversation partner (p2p_time holds one row per
+   * partner, whichever side wrote). Anyone else's presence and email stay out
+   * of reach of a caller walking ids.
+   */
+  async _p2pRelated(peer_id) {
+    // this.db is the DB of the hub the REQUEST names (acl scope: hub). A
+    // direct conversation is only ever the caller's own: naming someone
+    // else's hub (e.g. a folder they shared with write) must not reach their
+    // DMs with their contacts.
+    const hub_id = this.hub && typeof this.hub.get === "function" ? this.hub.get(Attr.id) : null;
+    if (!hub_id || `${hub_id}` !== `${this.uid}`) return false;
+    const [contact, talked] = await Promise.all([
+      this.db.await_proc("my_contact_exists", "entity", peer_id, null, null),
+      this.db.await_query("SELECT 1 AS ok FROM p2p_time WHERE peer_id=? LIMIT 1", peer_id),
+    ]);
+    const c = Array.isArray(contact) ? contact[0] : contact;
+    if (c && `${c.uid}` === peer_id) return true;
+    return Array.isArray(talked) ? talked.length > 0 : !isEmpty(talked);
+  }
+
+  async p2p_details() {
+    const peer_id = `${this.input.need(Attr.peer_id)}`;
+    const related = await this._p2pRelated(peer_id);
+    const [stats, members] = await Promise.all([
+      related ? this.db.await_proc("p2p_media_stats", peer_id) : null,
+      this.yp.await_proc(
+        "drumate_presence",
+        JSON.stringify(related ? [this.uid, peer_id] : [this.uid]),
+      ),
+    ]);
+    const s = (Array.isArray(stats) ? stats[0] : stats) || {};
+    this.output.data({
+      stats: {
+        photos: Number(s.photos) || 0,
+        videos: Number(s.videos) || 0,
+        files: Number(s.files) || 0,
+        links: Number(s.links) || 0,
+      },
+      members: Array.isArray(members) ? members : members ? [members] : [],
+    });
+  }
+
+  /** Display name of a DM peer (drumate_presence), '' when unknown. */
+  async _p2pPeerName(peer_id) {
+    const rows = toArray(await this.yp.await_proc("drumate_presence", JSON.stringify([peer_id])));
+    const r = rows.find((x) => x && `${x.id}` === `${peer_id}`) || rows[0] || {};
+    return r.fullname || `${r.firstname || ""} ${r.lastname || ""}`.trim() || "";
+  }
+
+  /**
+   * The export dialog's card for a DIRECT conversation — the export_scope
+   * shape widget_chat_export reads. A stranger gets an empty card.
+   */
+  async p2p_export_scope() {
+    const peer_id = `${this.input.need(Attr.peer_id)}`;
+    if (!(await this._p2pRelated(peer_id))) {
+      return this.output.data({ hub: { name: "", message_count: 0, mtime: null }, folders: [], file_threads: [] });
+    }
+    const [count, name] = await Promise.all([
+      this.db.await_proc("p2p_export_count", peer_id, null, null),
+      this._p2pPeerName(peer_id),
+    ]);
+    const c = toArray(count)[0];
+    this.output.data({
+      hub: { name, message_count: c ? Number(c.message_count) || 0 : 0, mtime: null },
+      folders: [],
+      file_threads: [],
+    });
+  }
+
+  /**
+   * Export ONE direct conversation — JSON inline, PDF through the offline
+   * worker (mode "p2p"). Staged exactly like channel.export, with the
+   * manifest pinned to the viewer's own hub, so channel.export_fetch (called
+   * with hub_id = the viewer's id) serves it and nothing else can.
+   */
+  async p2p_export() {
+    const EXPORT_CAP = 10000;
+    const format = this.input.use("format") || "json";
+    if (!["json", "pdf"].includes(format)) return this.output.data({ status: "INVALID_FORMAT" });
+    const peer_id = `${this.input.need(Attr.peer_id)}`;
+    if (!(await this._p2pRelated(peer_id))) return this.output.data({ status: "INVALID_PEER" });
+    const socket_id = this.input.use(Attr.socket_id) || null;
+    if (format === "pdf" && !socket_id) return this.output.data({ status: "MISSING_SOCKET_ID" });
+    const num = (v) => (v === null || v === undefined || v === "" ? null : Number(v));
+    const start = num(this.input.use("start_date"));
+    const end = num(this.input.use("end_date"));
+
+    const c = toArray(await this.db.await_proc("p2p_export_count", peer_id, start, end))[0];
+    const message_count = c ? Number(c.message_count) || 0 : 0;
+    if (message_count > EXPORT_CAP) {
+      return this.output.data({
+        status: "EXPORT_TOO_LARGE",
+        message_count,
+        hint: "Narrow the date range to reduce the export size.",
+      });
+    }
+
+    const name = (await this._p2pPeerName(peer_id)) || peer_id;
+    const zipid = this.randomString();
+    const base = name.replace(/[^0-9a-zA-Z_.-]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 80) || "chat-export";
+    const zipname = `${base}.${format}`;
+    // _exportStageRoot: test seam (tests/chat-p2p-export) — unset in service.
+    const root = this._exportStageRoot || pathResolve(tmp_dir, DOWNLOAD_FOLDER);
+    const stageDir = pathResolve(root, `${this.uid}`, zipid);
+    mkdirSync(stageDir, { recursive: true });
+    writeFileSync(
+      pathJoin(stageDir, ".file-thread-access.json"),
+      stringify({ schema_version: 1, hub_id: `${this.uid}`, file_threads: [] }),
+      "utf8",
+    );
+
+    if (format === "json") {
+      const section = await gatherP2pSection(this.db, peer_id, name, start, end);
+      const Moment = require("moment");
+      writeFileSync(
+        pathJoin(stageDir, zipname),
+        stringify(
+          {
+            meta: {
+              schema_version: 2,
+              kind: "direct",
+              peer_id,
+              peer_name: name,
+              exported_by: this.uid,
+              exported_at: Moment(Moment.now() / 1000, "X").format("YYYY-MM-DD HH:mm"),
+              date_start: start,
+              date_end: end,
+              format: "json",
+            },
+            sections: [section],
+          },
+          null,
+          2,
+        ),
+        "utf8",
+      );
+      return this.output.data({ wait: 0, zipid, zipname, format });
+    }
+
+    const args = {
+      mode: "p2p",
+      uid: this.uid,
+      hub_id: `${this.uid}`,
+      hub_name: name,
+      root_name: name,
+      peer_id,
+      // No folders / file threads in a DM; the worker requires explicit
+      // (empty) scopes and fails closed otherwise.
+      folder_sel: "none",
+      thread_sel: "none",
+      start_date: start,
+      end_date: end,
+      format: "pdf",
+      zipid,
+      zipname,
+      socket_id,
+      lang: this.client_language ? this.client_language() : "en",
+      authorized_file_threads: [],
+    };
+    const cmd = pathResolve(__dirname, "..", "..", "offline", "media", "chat-export.js");
+    const child = Spawn(cmd, [stringify(args)], { detached: true, stdio: ["ignore", "ignore", "ignore"] });
+    // As channel.export: a spawn failure must not crash the REST service.
+    child.on("error", (e) => {
+      this.warn(`chat-export (p2p) spawn failed: ${e && e.message}`);
+    });
+    child.unref();
+    return this.output.data({ wait: 1, zipid, zipname, format });
+  }
+
+  /**
+   * One page of a DIRECT conversation's photos / videos / files / links. Media
+   * rows carry their own hub_id (the sender's wicket); a video's missing
+   * duration is read from that hub's info.json, one home lookup per hub.
+   */
+  async p2p_media_list() {
+    const peer_id = `${this.input.need(Attr.peer_id)}`;
+    const kind = `${this.input.need("kind")}`;
+    if (!["photo", "video", "file", "link"].includes(kind)) {
+      return this.output.list([]);
+    }
+    if (!(await this._p2pRelated(peer_id))) return this.output.list([]);
+    const page = Number(this.input.use(Attr.page)) || 1;
+    const rows = await this.db.await_proc("p2p_media_list", peer_id, kind, page);
+    const list = Array.isArray(rows) ? rows : rows ? [rows] : [];
+    if (kind === "video") {
+      const { mediaInfoDuration } = require("../lib/media-duration");
+      const homes = new Map();
+      const homeOf = (hub_id) => {
+        if (!homes.has(hub_id)) {
+          homes.set(
+            hub_id,
+            this.yp
+              .await_query("SELECT home_dir FROM entity WHERE id=?", `${hub_id}`)
+              .then((r) => ((toArray(r)[0] || {}).home_dir) || null)
+              .catch(() => null),
+          );
+        }
+        return homes.get(hub_id);
+      };
+      await Promise.all(
+        list.map(async (row) => {
+          if (Number(row.duration) > 0) return;
+          const d = await mediaInfoDuration(await homeOf(row.hub_id), row.nid);
+          row.duration = d ? Math.round(d) : null;
+        }),
+      );
+    }
+    this.output.list(list);
   }
 
   /**

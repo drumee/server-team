@@ -414,6 +414,14 @@ class __chat_export_job extends Offline {
     this.zipname    = data.zipname;
     this.socket_id  = data.socket_id || null;
     this.lang       = data.lang || "en";
+    // "p2p": a direct conversation (chat.p2p_export) — gathered from the
+    // viewer's own drumate DB, no folders or file threads.
+    this.mode       = data.mode === "p2p" ? "p2p" : "hub";
+    this.peer_id    = data.peer_id || null;
+    if (this.mode === "p2p" && isEmpty(this.peer_id)) {
+      console.error("chat-export: required arg 'peer_id' is missing (p2p)");
+      exit(1);
+    }
 
     for (const name of ["uid", "hub_id", "zipid", "zipname"]) {
       if (isEmpty(this[name])) {
@@ -481,16 +489,31 @@ class __chat_export_job extends Offline {
       zipid: this.zipid, zipname: this.zipname, message: "IN_PREPARATION",
     });
 
-    // Resolve hub DB name
-    const hub = await this.yp.await_proc("get_hub", this.hub_id);
-    if (!hub || !hub.db_name) {
-      throw new Error(`chat-export: hub not found for hub_id=${this.hub_id}`);
+    let db;
+    if (this.mode === "p2p") {
+      // A DM lives in the viewer's own drumate DB (p2p_export_messages reads
+      // the peer's side from there).
+      // Plain entity lookup: get_entity inner-joins domain/vhost and can
+      // answer nothing for a real user.
+      const me = toArray(
+        await this.yp.await_query("SELECT db_name FROM entity WHERE id=?", `${this.uid}`),
+      )[0];
+      if (!me || !me.db_name) {
+        throw new Error(`chat-export: no drumate db for uid=${this.uid}`);
+      }
+      db = new Mariadb({ name: me.db_name, user: process.env.USER });
+    } else {
+      // Resolve hub DB name
+      const hub = await this.yp.await_proc("get_hub", this.hub_id);
+      if (!hub || !hub.db_name) {
+        throw new Error(`chat-export: hub not found for hub_id=${this.hub_id}`);
+      }
+      // Mariadb reads the target schema from the `name` key (Attr.name); the `db`
+      // key is ignored and the connection silently falls back to YELLOW_PAGE (yp),
+      // where the channel_export_* procs do not exist. Mirror the working workers
+      // (expiryWorker / backfill-posters): pass the hub schema as `name`.
+      db = new Mariadb({ name: hub.db_name, user: process.env.USER });
     }
-    // Mariadb reads the target schema from the `name` key (Attr.name); the `db`
-    // key is ignored and the connection silently falls back to YELLOW_PAGE (yp),
-    // where the channel_export_* procs do not exist. Mirror the working workers
-    // (expiryWorker / backfill-posters): pass the hub schema as `name`.
-    const db = new Mariadb({ name: hub.db_name, user: process.env.USER });
 
     const stageDir = pathResolve(tmp_dir, DOWNLOAD_FOLDER, this.uid, this.zipid);
     mkdirSync(stageDir, { recursive: true });
@@ -501,32 +524,46 @@ class __chat_export_job extends Offline {
       zipid: this.zipid, message: "GATHERING_MESSAGES",
     });
 
-    const file_threads = await revalidateAuthorizedFileThreads(
-      db,
-      this.uid,
-      this.authorized_file_threads,
-    );
-    writeFileSync(
-      pathJoin(stageDir, EXPORT_ACCESS_MANIFEST),
-      stringify({
-        schema_version: 1,
-        hub_id: `${this.hub_id}`,
-        file_threads: file_threads.map((ft) => ({
-          file_thread_id: ft.file_thread_id,
-          file_nid: ft.file_nid,
-        })),
-      }),
-      "utf8",
-    );
-    const folder_tree = toArray(
-      await db.await_proc("channel_export_folder_tree", this.hub_id, this.root_nid),
-    );
+    let sections;
+    if (this.mode === "p2p") {
+      // Pinned to the viewer's own hub, as chat.p2p_export stages it.
+      writeFileSync(
+        pathJoin(stageDir, EXPORT_ACCESS_MANIFEST),
+        stringify({ schema_version: 1, hub_id: `${this.uid}`, file_threads: [] }),
+        "utf8",
+      );
+      const { gatherP2pSection } = require("../../service/lib/p2p-export");
+      sections = [
+        await gatherP2pSection(db, this.peer_id, this.hub_name, this.date_start, this.date_end),
+      ];
+    } else {
+      const file_threads = await revalidateAuthorizedFileThreads(
+        db,
+        this.uid,
+        this.authorized_file_threads,
+      );
+      writeFileSync(
+        pathJoin(stageDir, EXPORT_ACCESS_MANIFEST),
+        stringify({
+          schema_version: 1,
+          hub_id: `${this.hub_id}`,
+          file_threads: file_threads.map((ft) => ({
+            file_thread_id: ft.file_thread_id,
+            file_nid: ft.file_nid,
+          })),
+        }),
+        "utf8",
+      );
+      const folder_tree = toArray(
+        await db.await_proc("channel_export_folder_tree", this.hub_id, this.root_nid),
+      );
 
-    const sections = await gatherSections(
-      db, this.uid, this.hub_id, this.root_nid,
-      this.folder_sel, this.thread_sel, this.date_start, this.date_end,
-      file_threads, folder_tree,
-    );
+      sections = await gatherSections(
+        db, this.uid, this.hub_id, this.root_nid,
+        this.folder_sel, this.thread_sel, this.date_start, this.date_end,
+        file_threads, folder_tree,
+      );
+    }
 
     // ── Build the Flat ODT document ─────────────────────────────────────────
     await this._send({
