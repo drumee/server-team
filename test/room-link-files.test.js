@@ -22,12 +22,13 @@ require.cache[require.resolve("@drumee/server-essentials")] = {
   },
 };
 stub("service/room.js", class {});
-stub("service/lib/member-capability.js", { memberCan: async () => true, CAN_WRITE: 2 });
+let canWrite = true;
+stub("service/lib/member-capability.js", { memberCan: async () => canWrite, CAN_WRITE: 2 });
 const Room = require("../service/private/room");
 
 const MEET = "aaaaaaaaaaaaaaaa", F1 = "1111111111111111", F2 = "2222222222222222", OWNER = "uuuuuuuuuuuuuuuu";
 
-function make({ input = {}, nodes = {}, publicPriv = 0, uid = OWNER } = {}) {
+function make({ input = {}, nodes = {}, publicPriv = 0, callerPriv = 63, uid = OWNER } = {}) {
   const calls = [];
   const out = {};
   const self = Object.create(Room.prototype);
@@ -45,12 +46,12 @@ function make({ input = {}, nodes = {}, publicPriv = 0, uid = OWNER } = {}) {
       await_proc: async (name, ...args) => {
         calls.push([name, ...args]);
         if (name === "mfs_node_attr") return nodes[args[0]] || {};
-        if (name === "mfs_access_node") return { privilege: publicPriv };
+        if (name === "mfs_access_node") return { privilege: args[0] === PUBLIC ? publicPriv : callerPriv };
         return {};
       },
     },
     yp: { await_proc: async (name, ...args) => { calls.push([name, ...args]); return { token: "t" }; } },
-    exception: { user: (code) => { out.error = code; } },
+    exception: { user: (code) => { out.error = code; }, forbiden: () => { out.error = "FORBIDDEN"; } },
     output: { data: (d) => { out.data = d; } },
     randomString: () => "r",
     debug: () => {},
@@ -105,6 +106,31 @@ const fileNode = (id) => ({ id, filetype: "document", filename: "f" });
       nodes: { [MEET]: meetingNode({ created_by: OWNER }), [F1]: { id: F1, filetype: "folder" } } });
     await c.self.link_files();
     assert.deepStrictEqual(c.out.data.attachments, []);
+  }
+  // Final review C1: a member who may not write is refused outright
+  {
+    canWrite = false;
+    const { self, calls, out } = make({ input: { nid: MEET, file_nids: [F1] },
+      nodes: { [MEET]: meetingNode({ created_by: OWNER }), [F1]: fileNode(F1) } });
+    await self.link_files();
+    canWrite = true;
+    assert.strictEqual(out.error, "FORBIDDEN");
+    assert.ok(!calls.some((c) => c[0] === "mfs_set_metadata"));
+  }
+  // Final review C1: a file the caller cannot download is never attached (nor granted)
+  {
+    const { self, calls, out } = make({ input: { nid: MEET, file_nids: [F1] }, callerPriv: 3, publicPriv: 15,
+      nodes: { [MEET]: meetingNode({ created_by: OWNER }), [F1]: fileNode(F1) } });
+    await self.link_files();
+    assert.deepStrictEqual(out.data.attachments, []);
+    assert.ok(!calls.some((c) => c[0] === "permission_grant"));
+  }
+  // Final review C1: a legacy meeting with no recorded creator has no owner to act for
+  {
+    const { self, out } = make({ input: { nid: MEET, file_nids: [F1] },
+      nodes: { [MEET]: meetingNode({ title: "legacy" }), [F1]: fileNode(F1) } });
+    await self.link_files();
+    assert.strictEqual(out.error, "NOT_MEETING_OWNER");
   }
   // update keeps attachments (Review Focus 1)
   {

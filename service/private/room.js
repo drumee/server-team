@@ -372,13 +372,19 @@ class __private_room extends __public_room {
    * Params: nid (meeting), file_nids (array of media nids in this hub).
    */
   async link_files() {
+    // Same gate as book(): the ACL's fast_check skips its declared `src`.
+    if (!(await memberCan(this, CAN_WRITE))) {
+      return this.exception.forbiden();
+    }
     const nid = this.input.need(Attr.nid);
     const incoming = normalizeNids(this.input.need('file_nids'));
     const node = await this.db.await_proc('mfs_node_attr', nid);
     if (!isMeetingNode(node)) return this.exception.user("MEETING_NOT_FOUND");
     const metadata = this.parseJSON(node.metadata || '{}') || {};
     const content = this.parseJSON(metadata.content || '{}') || {};
-    if (content.created_by && content.created_by !== this.uid) {
+    // Stricter than update(): attaching opens files to the link, so a legacy
+    // meeting with no recorded creator has nobody entitled to do it.
+    if (content.created_by !== this.uid) {
       return this.exception.user("NOT_MEETING_OWNER");
     }
     const files = [];
@@ -386,6 +392,9 @@ class __private_room extends __public_room {
       const a = await this.db.await_proc('mfs_node_attr', f);
       if (!a || !(a.id || a.nid)) continue;
       if (['folder', 'hub', 'root', 'schedule'].includes(a.filetype)) continue;
+      // The link will be able to download it, so the caller must be able to.
+      const mine = await this.db.await_proc('mfs_access_node', this.uid, f);
+      if (!mine || Number(mine.privilege) < Privilege.download) continue;
       files.push(f);
     }
     const { list, added, overflow } = mergeAttachments(attachmentsOf(content), files);
