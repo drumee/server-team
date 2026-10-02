@@ -22,6 +22,7 @@ const {
 } = Constants;
 const { verifyPassword: verifySecureSharePassword } = require('./lib/secure-share-password');
 const { secureShareCapPrivilege } = require('./lib/secure-share-write-guard');
+const { attachmentsOf, isMeetingNode } = require('./lib/meeting-attachments');
 const Jwt = require('jsonwebtoken');
 const { resolve: _resolvePath } = require('path');
 const { existsSync, readFileSync, statSync } = require('fs');
@@ -1472,6 +1473,65 @@ class __dmz extends Mfs {
       hub_id: info.hub_id,
       items,
     });
+  }
+
+  /**
+   * A meeting link's attachments, authorised by the TOKEN alone — the
+   * companion to list_by_token for a `schedule` share. Names only; the bytes
+   * come from file/orig, which room.public_link / room.link_files opened to the
+   * link identity.
+   *
+   * A password-protected (or locked, or email-gated) link answers nothing:
+   * _shareByToken refuses gated shares outright, so the token alone never
+   * leaks the file names the password is meant to protect.
+   *
+   * Every nid comes through attachmentsOf, which only admits /^[0-9a-f]{16}$/,
+   * so interpolating it into the forward_proc argument string is safe.
+   *
+   * Input:  token {String} required
+   * Output: { status, hub_id?, items[] }
+   */
+  async meeting_files() {
+    const token = this.input.need(Attr.token);
+    const deny = (status) => this.output.data({ status, items: [] });
+    const share = await this._shareByToken(token, 'dmz.meeting_files');
+    if (share.status) return deny(share.status);
+    const { info } = share;
+    const nid = info.node_id || info.nid;
+    const attr = async (id) =>
+      toArray(await this.yp.await_proc('forward_proc', info.hub_id, 'mfs_node_attr', `'${id}'`))[0] || {};
+    let node;
+    try {
+      node = await attr(nid);
+    } catch (e) {
+      this.warn('[dmz.meeting_files] meeting lookup failed:', e && e.message);
+      return deny('TICKET_INVALID');
+    }
+    if (!isMeetingNode(node)) return deny('NOT_A_MEETING');
+    let meta = {};
+    try {
+      meta = JSON.parse(node.metadata || '{}') || {};
+    } catch (e) {
+      meta = {};
+    }
+    const items = [];
+    for (const id of attachmentsOf(meta.content)) {
+      let a;
+      try {
+        a = await attr(id);
+      } catch (e) {
+        continue;
+      }
+      if (!a || !(a.id || a.nid)) continue;
+      items.push({
+        nid: a.id || a.nid,
+        filename: a.filename || a.user_filename || '',
+        ext: a.ext || a.extension || '',
+        filetype: a.filetype || a.ftype || '',
+        filesize: a.filesize || 0,
+      });
+    }
+    this.output.data({ status: 'TICKET_OK', hub_id: info.hub_id, items });
   }
 
   /**

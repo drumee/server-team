@@ -241,6 +241,21 @@
         }
       ]
     },
+    "meeting_files": {
+      "doc": "List a meeting share's attachments, authorised by the token alone. Answers names and sizes only; downloads go through file/orig under the link identity's grant. A password-protected link answers REQUIRED_PASSWORD until the session has passed the password.",
+      "scope": "hub",
+      "permission": {
+        "src": "anonymous",
+        "fast_check": "public-api"
+      },
+      "params": {
+        "token": {
+          "type": "string",
+          "required": true,
+          "description": "Meeting share token"
+        }
+      }
+    },
     "list_by_token": {
       "doc": "Read-only listing of a secure share's contents, authorised by the TOKEN alone. Exists because dmz.login refuses to bind a share identity onto a main-domain session (regsid guard), so a page served from the main domain can never obtain the grant media.show_node_by needs. This never touches the caller's session: no cookie_touch, no grant, no identity change. The listing target is derived from the token, never from client input. Refuses any share that is not plainly open — revoked, expired, invalid, locked, password-gated or email-gated all return a status and no items, because this endpoint performs no gate. A file share lists its parent folder hard-filtered to that file. Privileges are the anonymous guest's, clamped to the share's capabilities; sender-only fields are never echoed.",
       "scope": "hub",
