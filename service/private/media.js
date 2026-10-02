@@ -2865,7 +2865,9 @@ class __private_media extends Media {
     let newItems = {};
     let recipients;
 
-    /**  Renaming hubname must not change other's name*/
+    /** A hub row lives on the caller's desk: start with the caller's own
+     *  sockets. A hub admin's rename widens this to every member in
+     *  renameHubForMembers; anyone else renames only their own label. */
     if (node[FILETYPE] == Attr.hub) {
       recipients = await this.yp.await_proc(
         "entity_sockets",
@@ -2917,6 +2919,16 @@ class __private_media extends Media {
           await this.changelog_write({ src: old, dest: attr });
         }
     }
+    if (node[FILETYPE] == Attr.hub) {
+      // The caller's own rename has already landed; a failure here must not
+      // turn it into an error, so it degrades to the personal rename.
+      try {
+        const members = await this.renameHubForMembers(nid, filename, oldItems, newItems);
+        if (members) recipients = members;
+      } catch (e) {
+        this.warn("media.rename: could not rename the workspace for its members", e);
+      }
+    }
     for (let r of toArray(recipients)) {
       let dest;
       if (newItems[r.uid] && newItems[r.uid].filename) {
@@ -2959,6 +2971,52 @@ class __private_media extends Media {
     });
 
     this.output.data(model);
+  }
+
+  /**
+   * A hub admin's rename reaches EVERY member of the workspace.
+   *
+   * Each member's desk holds its own row for the workspace and the desk lists
+   * that row's name, so renaming only the caller's row (above) left everyone
+   * else on the old name. yp.hub_rename_for_members writes yp.hub.name and
+   * every member's row; each member's node is then read back from THEIR own
+   * db, because this.db is the caller's desk and answers the caller's name.
+   *
+   * Anyone below admin keeps the personal rename: only their own label moves.
+   *
+   * @returns the hub's member sockets to push to, or null for a personal rename
+   */
+  async renameHubForMembers(hub_id, filename, oldItems, newItems) {
+    const hub = firstRow(
+      await this.yp.await_query("SELECT db_name FROM entity WHERE id=?", hub_id)
+    );
+    if (!hub || !hub.db_name) return null;
+    const hubDb = hub.db_name;
+    const privilege = await this.yp.await_func(
+      `${hubDb}.user_permission`, this.uid, "*"
+    );
+    if (!(Number(privilege) & Permission.ADMIN)) return null;
+
+    const members = toArray(
+      await this.yp.await_proc("hub_rename_for_members", hub_id, filename)
+    );
+    for (const m of members) {
+      if (!m || !m.uid || !m.db_name) continue;
+      // The caller's row was renamed and read back by the main path.
+      if (m.uid == this.uid && newItems[m.uid]) continue;
+      const dest = await this.yp.await_proc(
+        `${m.db_name}.mfs_access_node`, m.uid, hub_id
+      );
+      if (!dest || !dest.filename) continue;
+      dest.hub_id = dest.actual_hub_id;
+      dest.privilege = dest.permission;
+      dest.home_id = dest.actual_home_id;
+      newItems[m.uid] = dest;
+      if (!oldItems[m.uid]) {
+        oldItems[m.uid] = { ...dest, filename: m.old_filename, fname: m.old_filename };
+      }
+    }
+    return this.yp.await_proc("entity_sockets", hub_id);
   }
 
   /**
