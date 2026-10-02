@@ -20,14 +20,19 @@ const toArray = (v) => (Array.isArray(v) ? v : v == null ? [] : [v]);
 const meeting_files = new Function("toArray", "attachmentsOf", "isMeetingNode", "Attr",
   `return ${slice("async meeting_files()")}`)(toArray, lib.attachmentsOf, lib.isMeetingNode, { token: "token" });
 
+// The real share resolver, so the password gate is the one production runs.
+const shareByToken = new Function("toArray", `return ${slice("async _shareByToken(token, tag)")}`)(toArray);
+
 const MEET = "aaaaaaaaaaaaaaaa", F1 = "1111111111111111";
-function make({ share, nodes = {}, viewerPriv = 0 }) {
+function make({ share, legacy, nodes = {}, viewerPriv = 0 }) {
   const out = {};
   const self = {
     uid: "vvvvvvvvvvvvvvvv",
     input: { need: () => "tok" },
-    _shareByToken: async () => share,
-    yp: { await_proc: async (_p, _hub, proc, args) => {
+    _shareByToken: legacy ? shareByToken : async () => share,
+    yp: { await_proc: async (name, _hub, proc, args) => {
+      if (name === "secure_share_info") return [];
+      if (name === "dmz_info_next") return legacy;
       const id = String(args).replace(/'/g, "");
       return proc === "mfs_node_attr" ? [nodes[id] || {}] : [];
     } },
@@ -60,8 +65,9 @@ const meetingNode = (attachments) => ({ id: MEET, filetype: "schedule",
   }
   // Review Focus 4: password-protected link without access lists nothing
   {
-    const t = make({ share: { info: { hub_id: "h", nid: MEET, require_password: 1 } },
-      nodes: { [MEET]: meetingNode([F1]) }, viewerPriv: 0 });
+    // viewerPriv 15: even a session holding the meeting grant gets nothing.
+    const t = make({ legacy: { hub_id: "h", nid: MEET, validity: "TICKET_OK", require_password: 1 },
+      nodes: { [MEET]: meetingNode([F1]) }, viewerPriv: 15 });
     await t.run();
     assert.deepStrictEqual(t.out.data, { status: "REQUIRED_PASSWORD", items: [] });
   }
