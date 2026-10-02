@@ -18,6 +18,7 @@ const { isEmpty, isArray, difference, map } = require('lodash');
 const __public_room = require("../room");
 const { Attr, Privilege, Cache, sysEnv, RedisStore, toArray } = require("@drumee/server-essentials")
 const { memberCan, CAN_WRITE } = require("../lib/member-capability");
+const { normalizeNids, attachmentsOf, mergeAttachments, isMeetingNode } = require("../lib/meeting-attachments");
 
 //########################################
 class __private_room extends __public_room {
@@ -102,6 +103,16 @@ class __private_room extends __public_room {
     await this.db.await_proc('permission_grant',
       nid, public_id, expiry, permission, 'link', ''
     );
+    // The link opens the meeting; its attachments have to open too, or a guest
+    // sees file names they cannot download. Same identity and expiry as the
+    // meeting grant, download tier only (Privilege.download, never write).
+    const meeting = await this.db.await_proc('mfs_node_attr', nid);
+    const meta = this.parseJSON((meeting && meeting.metadata) || '{}') || {};
+    for (const file_nid of attachmentsOf(meta.content)) {
+      await this.db.await_proc('permission_grant',
+        file_nid, public_id, expiry, Privilege.download, 'link', ''
+      );
+    }
     this.debug("AAAA:104", p)
     let link = this._getShareLink(p.token)
     this.output.data({ link });
@@ -202,6 +213,10 @@ class __private_room extends __public_room {
     let stime = content.stime
     let etime = content.etime
     let recur = content.recur
+    // Not editable through update() — room.link_files owns the list — but it
+    // has to SURVIVE an edit: the Meet tab saves with flag 'all' and the
+    // content object below is rebuilt field by field.
+    const attachments = attachmentsOf(content);
 
     // The start time BEFORE this edit, so a real reschedule can be told apart
     // from a save that left the time alone. The scheduler posts the whole form
@@ -262,7 +277,7 @@ class __private_room extends __public_room {
       nid,
       {
         content: {
-          attendees, title, message, date, stime, etime, recur,
+          attendees, title, message, date, stime, etime, recur, attachments,
           created_by: content.created_by, room_id: nid
         },
         room_status: 'booked'
@@ -339,13 +354,53 @@ class __private_room extends __public_room {
       }
     }
     content = {
-      attendees, title, message, date, stime, etime, recur,
+      attendees, title, message, date, stime, etime, recur, attachments,
       created_by: content.created_by
     };
     // Keep the global reminder index in lockstep with the edited meeting
     // (attendee set, moved time, cleared/added recurrence).
     await this._index_meeting(nid, content);
     await this.output.data((content));
+  }
+
+  /**
+   * Attach already-uploaded files to a meeting. Owner-only, like update().
+   * Appends to metadata.content.attachments (deduped, capped — see
+   * lib/meeting-attachments). When the meeting already has a public link, the
+   * new files get the same download grant public_link gives (public_link
+   * itself grants whatever is attached at the time it runs).
+   * Params: nid (meeting), file_nids (array of media nids in this hub).
+   */
+  async link_files() {
+    const nid = this.input.need(Attr.nid);
+    const incoming = normalizeNids(this.input.need('file_nids'));
+    const node = await this.db.await_proc('mfs_node_attr', nid);
+    if (!isMeetingNode(node)) return this.exception.user("MEETING_NOT_FOUND");
+    const metadata = this.parseJSON(node.metadata || '{}') || {};
+    const content = this.parseJSON(metadata.content || '{}') || {};
+    if (content.created_by && content.created_by !== this.uid) {
+      return this.exception.user("NOT_MEETING_OWNER");
+    }
+    const files = [];
+    for (const f of incoming) {
+      const a = await this.db.await_proc('mfs_node_attr', f);
+      if (!a || !(a.id || a.nid)) continue;
+      if (['folder', 'hub', 'root', 'schedule'].includes(a.filetype)) continue;
+      files.push(f);
+    }
+    const { list, added, overflow } = mergeAttachments(attachmentsOf(content), files);
+    await this.db.await_proc('mfs_set_metadata', nid, {
+      content: { ...content, attachments: list },
+      room_status: metadata.room_status || 'booked',
+    }, 1);
+    const public_id = Cache.getSysConf('public_id');
+    const pub = await this.db.await_proc('mfs_access_node', public_id, nid);
+    if (pub && Number(pub.privilege) > 0) {
+      for (const f of added) {
+        await this.db.await_proc('permission_grant', f, public_id, 0, Privilege.download, 'link', '');
+      }
+    }
+    this.output.data({ nid, attachments: list, overflow });
   }
 
   /**
@@ -587,6 +642,13 @@ class __private_room extends __public_room {
         stime: content.stime || 0,
         folder_name: await this._meeting_folder_name(node && node.parent_id),
       });
+    }
+    // The link identity's download grant on each attachment goes with the
+    // meeting. The files themselves stay in the hidden task folder (no
+    // reference counting for meetings yet).
+    const public_id = Cache.getSysConf('public_id');
+    for (const file_nid of attachmentsOf(content)) {
+      await this.db.await_proc('permission_revoke', file_nid, public_id);
     }
     await this.db.await_proc('permission_revoke', nid, "meeting");
     await this._unindex_meeting(nid);
