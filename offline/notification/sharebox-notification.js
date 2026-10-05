@@ -19,6 +19,7 @@
 const Minimist  = require('minimist');
 const _         = require('lodash');
 const {Cache, Messenger, Mariadb, Offline} = require('@drumee/server-essentials');
+const { sqlString } = require('../../service/lib/sql-literal');
 
 /**
  * 
@@ -91,7 +92,7 @@ class __offline_sharebox_notification_mail extends Offline {
     this.debug("AAAA:63", data);
 
     //Get the members list 
-    let members = await this.yp.await_proc('forward_proc', this.hub_id, 'dmz_notify_list', `'${this.flag}'`);
+    let members = await this.yp.await_proc('forward_proc', this.hub_id, 'dmz_notify_list', `${sqlString(this.flag)}`);
     if (_.isEmpty(members)) { return }
     if (!_.isArray(members)) { members = [members]; }
 

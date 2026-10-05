@@ -21,6 +21,8 @@
  * client into the feed.
  */
 
+const { sqlString } = require('./sql-literal');
+
 const GENERIC_NOTIFICATION = {title: 'Drumee', body: 'You have new activity'};
 const NAME_TTL_MS = 5 * 60 * 1000;
 const NAME_CACHE_LIMIT = 5000;
@@ -175,7 +177,7 @@ function createMobilePushContent(yp) {
       : [event.hub_id, 'channel_get_message'];
     if (!db) return '';
     try {
-      const row = asArray(await yp.await_proc('forward_proc', db, proc, `'${event.key_id}'`))[0];
+      const row = asArray(await yp.await_proc('forward_proc', db, proc, `${sqlString(event.key_id)}`))[0];
       return row ? excerptOf(row.message, row.attachment) : '';
     } catch (_) {
       return '';

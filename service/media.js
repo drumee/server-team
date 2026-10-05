@@ -119,6 +119,7 @@ const {
 const { stringify } = JSON;
 const { join, resolve, dirname, basename } = require("path");
 const Spawn = require("child_process").spawn;
+const { sqlString } = require("./lib/sql-literal");
 const DATA_ROOT = new RegExp(`^${data_dir}`);
 const SPAWN_OPT = { detached: true, stdio: ["ignore", "ignore", "ignore"] };
 const OFFLINE_DIR = resolve(__dirname, "..", "offline", "media");
@@ -388,7 +389,7 @@ class __media extends Mfs {
     let file_nid = null;
     try {
       const attr = toArray(
-        await this.yp.await_proc('forward_proc', info.hub_id, 'mfs_node_attr', `'${info.node_id}'`)
+        await this.yp.await_proc('forward_proc', info.hub_id, 'mfs_node_attr', `${sqlString(info.node_id)}`)
       )[0] || {};
       // A real FILE (not folder / hub / workspace-root) → list its PARENT, hard-filtered
       // to the file itself. Mirrors the node-type remap in dmz.js::_loginSecureShare.

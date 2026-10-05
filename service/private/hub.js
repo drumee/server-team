@@ -89,6 +89,7 @@ function isExternalArea(area) {
 }
 
 const Hub = require("../hub");
+const { sqlString } = require("../lib/sql-literal");
 /**
  * The invite endpoints accept an "entity" that may be an email address OR a
  * bare user id. invite_track is keyed by (hub_id, email) — the same key
@@ -493,7 +494,7 @@ class __private_hub extends Hub {
     // Offline File path
     let cmd = resolve(server_location, 'offline', 'notification', 'sharebox-notification.js');
 
-    let members = await this.yp.await_proc('forward_proc', hub_id, 'dmz_notify_list', `'${flag}'`);
+    let members = await this.yp.await_proc('forward_proc', hub_id, 'dmz_notify_list', `${sqlString(flag)}`);
     if (isEmpty(members)) { return }
     members = toArray(members);
     // initiated the child process
@@ -939,12 +940,12 @@ class __private_hub extends Hub {
       input.author_id = this.uid;
       input.uid = this.uid;
       input.message_id = message_id;
-      message = message.replace(/'/gi, "''");
+      // No manual quote escaping: sqlString() at the forward_proc call does the escaping.
       let data = await this.yp.await_proc(
         "forward_proc",
         this.hub.get(Attr.id),
         "channel_post_message",
-        `'${stringify(input)}','${message}'`
+        `${sqlString(stringify(input))},${sqlString(message)}`
       );
       data.is_attachment = 0;
       let profile = this.user.get("profile") || {};

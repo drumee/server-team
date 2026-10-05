@@ -103,6 +103,7 @@ const toArray = (value) => {
   return Array.isArray(value) ? value : [value];
 };
 const { stringify } = JSON;
+const { sqlString } = require("../../service/lib/sql-literal");
 
 const Attr = {
   entities: "entities",
@@ -126,6 +127,7 @@ function compileMethod(body, RedisStore) {
     "MAX_ELIGIBILITY_HUBS",
     "CAN_CHAT",
     "privilegeAllows",
+    "sqlString",
     `return (${body});`
   );
   return factory(
@@ -139,7 +141,8 @@ function compileMethod(body, RedisStore) {
     DB_NAME_RE,
     MAX_ELIGIBILITY_HUBS,
     CAN_CHAT,
-    privilegeAllows
+    privilegeAllows,
+    sqlString
   );
 }
 

@@ -28,6 +28,7 @@ const { safeExtension } = require("../../service/lib/file-extension");
 const {
   Attr, getFileinfo, RedisStore, Mariadb, Offline, Cache, toArray, sysEnv, uniqueId
 } = require('@drumee/server-essentials');
+const { sqlString } = require('../../service/lib/sql-literal');
 
 class __offline_media_import extends Offline {
   /**
@@ -186,7 +187,7 @@ class __offline_media_import extends Offline {
       "forward_proc",
       this.recipient_id,
       "mfs_access_node",
-      `'${this.uid}', '${this.pid}'`
+      `${sqlString(this.uid)}, ${sqlString(this.pid)}`
     );
     let { import_dir } = sysEnv();
     let folderPath = import_dir || global.myDrumee.exchangesArea.importFolders;
@@ -199,7 +200,7 @@ class __offline_media_import extends Offline {
         "forward_proc",
         this.recipient_id,
         "mfs_unique_filename",
-        `'${dest_attr.id}', '${unique_file}', '${dest_attr.ext}'`
+        `${sqlString(dest_attr.id)}, ${sqlString(unique_file)}, ${sqlString(dest_attr.ext)}`
       );
       node.user_filename = unique_file.user_filename;
       node.id = uniqueId(8, 'hex');
@@ -276,7 +277,7 @@ class __offline_media_import extends Offline {
       "forward_proc",
       this.recipient_id,
       "mfs_import",
-      `'${stringify(this.nodes)}', '${this.uid}'`
+      `${sqlString(stringify(this.nodes))}, ${sqlString(this.uid)}`
     );
     progres = 90;
 
@@ -302,7 +303,7 @@ class __offline_media_import extends Offline {
           "forward_proc",
           this.recipient_id,
           "mfs_access_node",
-          `'${this.uid}', '${node.id}'`
+          `${sqlString(this.uid)}, ${sqlString(node.id)}`
         );
         //await RedisStore.sendData(this.payload(keys, { service: "media.new" }), recipients);
         await RedisStore.sendData(

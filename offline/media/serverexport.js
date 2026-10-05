@@ -23,6 +23,7 @@ const shell = require("shelljs");
 const { join } = require("path");
 
 const { RedisStore, Mariadb, Offline, toArray, sysEnv } = require('@drumee/server-essentials');
+const { sqlString } = require('../../service/lib/sql-literal');
 class __offline_media_export extends Offline {
   /**
    * 
@@ -110,7 +111,7 @@ class __offline_media_export extends Offline {
       "forward_proc",
       this.uid,
       "mfs_export",
-      `'${stringify(this.granted)}', '${this.uid}'`
+      `${sqlString(stringify(this.granted))}, ${sqlString(this.uid)}`
     );
     res = toArray(res);
     let { export_dir } = sysEnv();

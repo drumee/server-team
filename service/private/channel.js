@@ -39,6 +39,7 @@ const Spawn = require("child_process").spawn;
 
 const { DOWNLOAD_FOLDER } = Constants;
 const { FileIo } = require("@drumee/server-core");
+const { sqlLiteral, sqlString } = require("../lib/sql-literal");
 const { tmp_dir, mfs_dir } = sysEnv();
 const SPAWN_OPT = { detached: true, stdio: ["ignore", "ignore", "ignore"] };
 const OFFLINE_DIR = pathResolve(__dirname, "..", "..", "offline", "media");
@@ -195,7 +196,7 @@ class __private_channel extends Entity {
             "forward_proc",
             this.uid,
             "shareroom_contact_get",
-            `'${message.author_id}'`,
+            `${sqlString(message.author_id)}`,
           );
           cache[key] = message.entity;
         }
@@ -304,7 +305,7 @@ class __private_channel extends Entity {
         "forward_proc",
         media.hub_id,
         "mfs_access_node",
-        `'${uid}', '${media.nid}'`,
+        `${sqlString(uid)}, ${sqlString(media.nid)}`,
       );
     } else {
       attr = await this.db.await_proc("mfs_access_node", uid, media);
@@ -695,9 +696,7 @@ class __private_channel extends Entity {
     if (`${hub_id}` === current_hub_id) {
       return this.db.await_proc(proc, ...args);
     }
-    const sql_args = args
-      .map((value) => `'${`${value == null ? "" : value}`.replace(/'/g, "''")}'`)
-      .join(",");
+    const sql_args = args.map(sqlLiteral).join(",");
     return this.yp.await_proc("forward_proc", `${hub_id}`, proc, sql_args);
   }
 
@@ -1032,7 +1031,7 @@ class __private_channel extends Entity {
       "forward_proc",
       uid,
       "channel_get",
-      `'${thread_id}'`,
+      `${sqlString(thread_id)}`,
     );
 
     if (isEmpty(data)) {
@@ -1052,7 +1051,7 @@ class __private_channel extends Entity {
       "forward_proc",
       this.uid,
       "shareroom_contact_get",
-      `'${data.author_id}'`,
+      `${sqlString(data.author_id)}`,
     );
 
     return thread;
@@ -1078,7 +1077,7 @@ class __private_channel extends Entity {
       "forward_proc",
       sbox.hub_id,
       "ticket_list",
-      `'${this.uid}','${stringify(filter)}','${page}'`,
+      `${sqlString(this.uid)},${sqlString(stringify(filter))},${sqlString(page)}`,
     );
 
     data = toArray(data);
@@ -1154,7 +1153,7 @@ class __private_channel extends Entity {
       "forward_proc",
       ticket.uid,
       "mfs_wicket_home",
-      `'${ticket.uid}'`,
+      `${sqlString(ticket.uid)}`,
     );
     if (sbox[5]) {
       /** Created by desk_create_hub */
@@ -1165,7 +1164,7 @@ class __private_channel extends Entity {
       "forward_proc",
       sbox.hub_id,
       "ticket_show",
-      `${ticket_id},'${this.uid}','${page}'`,
+      `${sqlString(ticket_id)},${sqlString(this.uid)},${sqlString(page)}`,
     );
     data = toArray(data);
 
@@ -1196,7 +1195,7 @@ class __private_channel extends Entity {
           "forward_proc",
           this.uid,
           "shareroom_contact_get",
-          `'${message.author_id}'`,
+          `${sqlString(message.author_id)}`,
         );
       }
       message.metadata = this.parseJSON(message.metadata);
@@ -1268,7 +1267,7 @@ class __private_channel extends Entity {
       "forward_proc",
       hub_id,
       "map_ticket_add",
-      `'${message_id}','${ticket_id}'`,
+      `${sqlString(message_id)},${sqlString(ticket_id)}`,
     );
     input.author_id = "autoreply";
     input.uid = "autoreply";
@@ -1280,7 +1279,7 @@ class __private_channel extends Entity {
       "forward_proc",
       hub_id,
       "channel_post_message",
-      `'${stringify(input)}','${message}'`,
+      `${sqlString(stringify(input))},${sqlString(message)}`,
     );
     return this.output.sanitize(data);
   }
@@ -1304,7 +1303,7 @@ class __private_channel extends Entity {
           "forward_proc",
           sbox.hub_id,
           "mfs_make_dir",
-          `'${sbox.ticket_id}','${stringify([message_id])}',1`,
+          `${sqlString(sbox.ticket_id)},${sqlString(stringify([message_id]))},1`,
         );
         attachment = await this.move_attachemnt(
           sbox,
@@ -1326,9 +1325,7 @@ class __private_channel extends Entity {
       if (!isEmpty(where)) {
         metadata.where = where;
       }
-      if (!isEmpty(message)) {
-        message = message.replace(/'/gi, "''");
-      }
+      // No manual quote escaping: sqlString() at the forward_proc call does the escaping.
       metadata.message = message;
 
       let ticket = await this.yp.await_proc(
@@ -1343,7 +1340,7 @@ class __private_channel extends Entity {
         "forward_proc",
         sbox.hub_id,
         "map_ticket_add",
-        `'${message_id}','${ticket.ticket_id}'`,
+        `${sqlString(message_id)},${sqlString(ticket.ticket_id)}`,
       );
       input.author_id = this.uid;
       input.uid = this.uid;
@@ -1358,7 +1355,7 @@ class __private_channel extends Entity {
         "forward_proc",
         sbox.hub_id,
         "channel_post_message",
-        `'${stringify(input)}','${message}'`,
+        `${sqlString(stringify(input))},${sqlString(message)}`,
       );
       data.is_attachment = 0;
       if (!isEmpty(input.attachment)) {
@@ -1366,7 +1363,7 @@ class __private_channel extends Entity {
           "forward_proc",
           sbox.hub_id,
           "channel_post_attachment",
-          `'${message_id}','${sbox.hub_id}','${stringify(input.attachment)}'`,
+          `${sqlString(message_id)},${sqlString(sbox.hub_id)},${sqlString(stringify(input.attachment))}`,
         );
         data.is_attachment = 1;
       }
@@ -1434,7 +1431,7 @@ class __private_channel extends Entity {
           "forward_proc",
           sbox.hub_id,
           "mfs_make_dir",
-          `'${sbox.ticket_id}','${stringify([message_id])}',1`,
+          `${sqlString(sbox.ticket_id)},${sqlString(stringify([message_id]))},1`,
         );
         attachment = await this.move_attachemnt(
           sbox,
@@ -1448,7 +1445,7 @@ class __private_channel extends Entity {
         "forward_proc",
         sbox.hub_id,
         "map_ticket_add",
-        `'${message_id}','${ticket.ticket_id}'`,
+        `${sqlString(message_id)},${sqlString(ticket.ticket_id)}`,
       );
       input.author_id = this.uid;
       input.uid = this.uid;
@@ -1459,9 +1456,7 @@ class __private_channel extends Entity {
       if (!isEmpty(attachment)) {
         input.attachment = attachment;
       }
-      if (!isEmpty(message)) {
-        message = message.replace(/'/gi, "''");
-      }
+      // No manual quote escaping: sqlString() at the forward_proc call does the escaping.
       if (!isEmpty(thread_id)) {
         input.thread_id = thread_id;
       }
@@ -1469,7 +1464,7 @@ class __private_channel extends Entity {
         "forward_proc",
         sbox.hub_id,
         "channel_post_message",
-        `'${stringify(input)}','${message}'`,
+        `${sqlString(stringify(input))},${sqlString(message)}`,
       );
       data.is_attachment = 0;
       if (!isEmpty(input.attachment)) {
@@ -1477,7 +1472,7 @@ class __private_channel extends Entity {
           "forward_proc",
           sbox.hub_id,
           "channel_post_attachment",
-          `'${message_id}','${sbox.hub_id}','${stringify(input.attachment)}'`,
+          `${sqlString(message_id)},${sqlString(sbox.hub_id)},${sqlString(stringify(input.attachment))}`,
         );
         data.is_attachment = 1;
         // data.attachment = await this._getAttachmentsInfo(data.attachment, this.hub.get(Attr.id));
@@ -1678,7 +1673,7 @@ class __private_channel extends Entity {
         "forward_proc",
         sbox.hub_id,
         "mfs_make_dir",
-        `'${sbox.chat_id}','${stringify([message_id])}',1`,
+        `${sqlString(sbox.chat_id)},${sqlString(stringify([message_id]))},1`,
       );
       attachment = await this._attach_to_sbox(
         sbox,
@@ -1696,9 +1691,7 @@ class __private_channel extends Entity {
     if (!isEmpty(attachment)) {
       input.attachment = attachment;
     }
-    if (!isEmpty(message)) {
-      message = message.replace(/'/gi, "''");
-    }
+    // No manual quote escaping: sqlString() at the forward_proc call does the escaping.
     if (!isEmpty(thread_id)) {
       input.thread_id = thread_id;
     }
@@ -1717,7 +1710,7 @@ class __private_channel extends Entity {
       "forward_proc",
       this.hub.get(Attr.id),
       "channel_post_message",
-      `'${stringify(input)}','${message}'`,
+      `${sqlString(stringify(input))},${sqlString(message)}`,
     );
     data.is_attachment = 0;
     if (!isEmpty(input.attachment)) {
@@ -1725,7 +1718,7 @@ class __private_channel extends Entity {
         "forward_proc",
         this.hub.get(Attr.id),
         "channel_post_attachment",
-        `'${message_id}','${this.hub.get(Attr.id)}','${stringify(input.attachment)}'`,
+        `${sqlString(message_id)},${sqlString(this.hub.get(Attr.id))},${sqlString(stringify(input.attachment))}`,
       );
       data.is_attachment = 1;
     }
@@ -1890,7 +1883,7 @@ class __private_channel extends Entity {
             "forward_proc",
             this.uid,
             "shareroom_contact_get",
-            `'${message.author_id}'`,
+            `${sqlString(message.author_id)}`,
           );
           cache[key] = message.entity;
         }
@@ -2150,7 +2143,7 @@ class __private_channel extends Entity {
         "forward_proc",
         sbox.hub_id,
         "mfs_make_dir",
-        `'${sbox.chat_id}','${stringify([message_id])}',1`,
+        `${sqlString(sbox.chat_id)},${sqlString(stringify([message_id]))},1`,
       );
       attachment = await this._attach_to_sbox(
         sbox,
@@ -2167,7 +2160,7 @@ class __private_channel extends Entity {
     input.uid = this.uid;
     input.file_thread_id = file_thread_id;
     if (!isEmpty(attachment)) input.attachment = attachment;
-    if (!isEmpty(message)) message = message.replace(/'/gi, "''");
+    // No manual quote escaping: sqlString() at the forward_proc call does the escaping.
     if (!isEmpty(thread_id)) input.thread_id = thread_id;
     if (!isEmpty(mention_ids)) input.mention_ids = mention_ids;
     input.metadata = {
@@ -2183,7 +2176,7 @@ class __private_channel extends Entity {
         "forward_proc",
         hub_id,
         "channel_post_message",
-        `'${stringify(input)}','${message}'`,
+        `${sqlString(stringify(input))},${sqlString(message)}`,
       );
     } catch (e) {
       // First-child rollback: drop the just-reserved thread + card before any
@@ -2210,7 +2203,7 @@ class __private_channel extends Entity {
         "forward_proc",
         hub_id,
         "channel_post_attachment",
-        `'${message_id}','${hub_id}','${stringify(input.attachment)}'`,
+        `${sqlString(message_id)},${sqlString(hub_id)},${sqlString(stringify(input.attachment))}`,
       );
       data.is_attachment = 1;
     }
@@ -2389,7 +2382,7 @@ class __private_channel extends Entity {
         "forward_proc",
         sbox.hub_id,
         "mfs_make_dir",
-        `'${sbox.chat_id}','${stringify([message_id])}',1`,
+        `${sqlString(sbox.chat_id)},${sqlString(stringify([message_id]))},1`,
       );
       attachment = await this.move_attachemnt(
         sbox,
@@ -2813,7 +2806,7 @@ class __private_channel extends Entity {
         "forward_proc",
         ticket.uid,
         "mfs_wicket_home",
-        `'${ticket.uid}'`,
+        `${sqlString(ticket.uid)}`,
       );
 
       let res = {};
@@ -2821,13 +2814,13 @@ class __private_channel extends Entity {
         "forward_proc",
         sbox.hub_id,
         "acknowledge_message",
-        `'${message_id}','${this.uid}'`,
+        `${sqlString(message_id)},${sqlString(this.uid)}`,
       );
       let message = await this.yp.await_proc(
         "forward_proc",
         sbox.hub_id,
         "channel_get",
-        `'${message_id}'`,
+        `${sqlString(message_id)}`,
       );
 
       let support = await this.yp.call_proc(
@@ -3437,7 +3430,7 @@ class __private_channel extends Entity {
               "forward_proc",
               this.uid,
               "shareroom_contact_get",
-              `'${message.author_id}'`,
+              `${sqlString(message.author_id)}`,
             );
             contactCache[key] = message.entity;
           } catch (e) {

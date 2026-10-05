@@ -32,6 +32,7 @@ const { toArray, sysEnv } = require("@drumee/server-essentials");
 const { MfsTools } = require("@drumee/server-core");
 const { remove_dir } = MfsTools;
 const { isEmpty } = require("lodash");
+const { sqlString } = require("./sql-literal");
 
 const { mfs_dir } = sysEnv();
 
@@ -79,7 +80,7 @@ async function settle_hub(svc, hub, uid) {
   // rather than relying on the procedure to do it.
   const candidates = async (type) => {
     const rows = toArray(await svc.yp.await_proc(
-      "forward_proc", hub.id, "hub_get_members_by_type", `'${uid}','${type}',1`
+      "forward_proc", hub.id, "hub_get_members_by_type", `${sqlString(uid)},${sqlString(type)},1`
     )) || [];
     return rows.filter((r) => r && r.id && r.id != uid);
   };
@@ -91,7 +92,7 @@ async function settle_hub(svc, hub, uid) {
   if (!isEmpty(huber)) {
     await svc.yp.await_proc(
       "forward_proc", hub.id, "permission_grant",
-      `'*','${huber[0].id}',0,63,'system',0`
+      `'*',${sqlString(huber[0].id)},0,63,'system',0`
     );
     return "handed_over";
   }
@@ -127,7 +128,7 @@ async function purge_account(svc, uid) {
   hubs = toArray(hubs) || [];
 
   for (let hub of hubs) {
-    await svc.yp.await_proc("forward_proc", uid, "leave_hub", `'${hub.id}'`);
+    await svc.yp.await_proc("forward_proc", uid, "leave_hub", `${sqlString(hub.id)}`);
     if (hub.owner_id != uid) continue;
     await settle_hub(svc, hub, uid);
     settled.add(hub.id);
