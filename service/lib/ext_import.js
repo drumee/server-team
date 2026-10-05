@@ -6,6 +6,7 @@ const { toArray, sysEnv, Network } = require('@drumee/server-essentials');
 const { existsSync, mkdirSync, cpSync, statSync } = require("fs");
 const { join, extname } = require("path");
 const { createHash } = require("crypto");
+const { safeExtension } = require("./file-extension");
 const { tmp_dir } = sysEnv();
 
 const TMPDIR = `/${tmp_dir}`;
@@ -118,7 +119,9 @@ class ExtImport extends Mfs {
     hash.update(`${host}-${urlPath}`);
     let cacheKey = hash.digest("hex");
     
-    let ext = extname(filename).replace(/^\.+/, '');
+    // Only a plain extension is kept (it becomes part of the path on disk);
+    // otherwise the file is stored under its whole name, without extension.
+    let ext = safeExtension(extname(filename).replace(/^\.+/, ''));
     if (ext) {
       cacheKey = `${cacheKey}.${ext}`;
     }

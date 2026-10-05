@@ -24,6 +24,7 @@ const { readdirSync, statSync, existsSync } = require("fs");
 const { parse, join } = require("path");
 const Jsonfile = require("jsonfile");
 const { childPaths, nodeFolder } = require("../../service/lib/mfs-path");
+const { safeExtension } = require("../../service/lib/file-extension");
 const {
   Attr, getFileinfo, RedisStore, Mariadb, Offline, Cache, toArray, sysEnv, uniqueId
 } = require('@drumee/server-essentials');
@@ -114,7 +115,9 @@ class __offline_media_import extends Offline {
       node.user_filename = parse(absolute).name;
       node.base = parse(absolute).base;
       node.filesize = statSync(absolute).size;
-      node.extension = parse(absolute).ext.substring(1);
+      node.extension = safeExtension(parse(absolute).ext.substring(1));
+      // Extension dropped (not a plain one): keep the whole name.
+      if (!node.extension) node.user_filename = node.base;
       let info = await getFileinfo(node.user_filename + "." + node.extension);
       node.category = info.category;
 
@@ -203,7 +206,7 @@ class __offline_media_import extends Offline {
       node.parent_id = dest_attr.id;
       node.base = parse(absolute).base;
       node.filesize = statSync(absolute).size;
-      node.extension = parse(absolute).ext.substring(1);
+      node.extension = safeExtension(parse(absolute).ext.substring(1));
       let info = getFileinfo(node.user_filename + "." + node.extension);
       node.category = info.category;
       node.mimetype = info.mimetype;
