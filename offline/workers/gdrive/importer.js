@@ -32,6 +32,7 @@ const migrationQueue = require('../../queues/migrationQueue');
 const { isCancelled } = migrationQueue;
 const { withDriveRetry, classifyDriveError } = require('./retry');
 const { googleDriveCredentials, googleDriveServiceAccount } = require('../../../service/lib/google_credentials');
+const { safeExtension } = require('../../../service/lib/file-extension');
 
 const PROGRESS_BATCH = 5;
 const BYTES_PUSH_MS = 1500;   // byte-progress write cadence while downloading
@@ -926,7 +927,9 @@ class GoogleDriveImporter {
     // as `orig.png` — a mismatch on a case-sensitive (Linux) filesystem → the
     // file is "not found" → the image shows no thumbnail and won't open. The
     // filecap lookup is case-insensitive either way.
-    const ext = extname(filename).replace(/^\.+/, '').toLowerCase();
+    // Only a plain extension is kept (it becomes part of the path on disk);
+    // otherwise the file is stored under its whole name, without extension.
+    const ext = safeExtension(extname(filename).replace(/^\.+/, '').toLowerCase());
     // Cache key includes file.id + (optional) export mime so two different
     // Workspace export formats of the same doc don't collide on the URL
     // base. The cache lives in the per-job scratch dir so it's wiped at

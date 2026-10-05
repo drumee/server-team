@@ -27,6 +27,7 @@ const { notifyHubActivity } = require("./lib/activity-mailer");
 const { markFunnelMilestone } = require("./lib/funnel-milestone");
 const { markFeatureUsage } = require("./lib/feature-usage");
 const ChunkedUpload = require("./lib/chunked-upload");
+const { safeExtension } = require("./lib/file-extension");
 const { DENIED } = Events;
 const {
   BATCH_FILE,
@@ -668,7 +669,7 @@ class __media extends Mfs {
    */
   async configure_icon(nid, incoming_file, filename) {
     const c = await getFileinfo(incoming_file, filename);
-    const ext = c.extension;
+    const ext = safeExtension(c.extension);
 
     const filepath = join(this.user.get(Attr.home_dir), "__config__", "icons");
     mkdirSync(filepath, { recursive: true });
@@ -1076,6 +1077,12 @@ class __media extends Mfs {
     if (!(await this.chekcDiskLimit())) return;
 
     const c = await getFileinfo(incoming_file, filename);
+    // The extension ends up in the stored file's path on disk; keep only a
+    // plain one. When it is dropped, keep the whole name as the file name.
+    if (c.extension && !safeExtension(c.extension)) {
+      c.filename = String(filename).replace(/\/+$/, "");
+      c.extension = "";
+    }
     let { ext } = Cache.getFilecap(c.ext)
     if (!ext) {
       /** Update filecap table to ensure proper execution */
