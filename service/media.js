@@ -731,8 +731,9 @@ class __media extends Mfs {
       .need(Attr.image)
       .replace(/^data:image\/\w+;base64,/, "");
     const parent = this.source_granted();
-    const filename = this.randomString() + "-" + this.input.need(Attr.filename);
-    let filepath = resolve(tmp_dir, `${filename}`);
+    // Random temp name only: the user's filename is the stored name, never
+    // part of a path on disk.
+    let filepath = resolve(tmp_dir, this.randomString());
     writeFileSync(filepath, image, { encoding: "base64" });
     await this.store(parent.id, filepath, this.input.need(Attr.filename));
   }
