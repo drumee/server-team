@@ -64,10 +64,31 @@ const { existsSync, readFileSync, writeFileSync, readdirSync, statSync, copyFile
 const { writeFileSync: writeJson } = require("jsonfile");
 const SPAWN_OPT = { detached: true, stdio: ["ignore", "ignore", "ignore"] };
 const Spawn = require("child_process").spawn;
+const { execFile } = require("child_process");
 const { tmp_dir, quota, server_location } = sysEnv();
 const JSON_OPT = { spaces: 2, EOL: "\r\n" };
 const { emptyTrash } = require('../../offline/queues/trashQueue');
 const indexQueue = require('../../offline/queues/indexQueue');
+
+/**
+ * Convert with LibreOffice through Script.soffice (outdir, infile, filter).
+ *
+ * execFile, not a shell: every argument is passed as-is, so no path or name
+ * can be interpreted as a command. Asynchronous, so a conversion no longer
+ * blocks this worker while soffice runs.
+ *
+ * @param {string} outdir
+ * @param {string} infile
+ * @param {string} filter  e.g. "pdf:writer_pdf_Export"
+ * @returns {Promise<boolean>} true when soffice exited cleanly
+ */
+function runSoffice(outdir, infile, filter) {
+  return new Promise((ok) => {
+    execFile(Script.soffice, [outdir, infile, filter], { timeout: 120000 }, (error) => {
+      ok(!error);
+    });
+  });
+}
 
 function firstRow(data) {
   return toArray(data)[0] || null;
@@ -3253,19 +3274,24 @@ class __private_media extends Media {
     }
     switch (convert_to) {
       case Attr.pdf:
-      case 'docx':
-        const outfile = resolve(outdir, user_filename);
-        let re = new RegExp(`.(${convert_to})$`, 'i')
-        const infile = outfile.replace(re, '.html')
+      case 'docx': {
+        // The user's file name never reaches the shell. soffice converts a
+        // FIXED name inside this request's own random directory, and the
+        // result is stored under user_filename. Building the command from
+        // user_filename broke on any space ("source file could not be
+        // loaded") and let a crafted name run shell commands.
+        const infile = resolve(outdir, "export.html");
+        const outfile = resolve(outdir, `export.${convert_to}`);
         writeFileSync(infile, content, { encoding: "utf-8" });
-        let cmd = `${Script.soffice} ${outdir} ${infile} '${filter[convert_to]}'`;
-        if (this.sh_exec(cmd)) {
+        const converted = await runSoffice(outdir, infile, filter[convert_to]);
+        if (converted && existsSync(outfile)) {
           await this._persist_file(outfile, user_filename, pid, nid, metadata);
         } else {
           rmdir(outdir)
           return this.exception.server('PDF_CONVERSION_FAILED');
         }
         break;
+      }
       default:
         writeFileSync(filepath, content, { encoding: "utf-8" });
         await this._persist_file(filepath, user_filename, pid, nid, metadata);
