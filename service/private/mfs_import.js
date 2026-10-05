@@ -6,6 +6,7 @@ const { Attr, toArray, Network, sysEnv } = require('@drumee/server-essentials');
 const { existsSync, mkdirSync, cpSync } = require('fs');
 const { join } = require('path');
 const { createHash } = require('crypto');
+const { safeExtension } = require('../lib/file-extension');
 
 class MfsImport extends Mfs {
 
@@ -44,6 +45,11 @@ class MfsImport extends Mfs {
 
   async _importFile(sourceUrl, hubId, nodeId, token, parentFolder, filename, extension, attr = {}) {
     try {
+      // The extension comes from the remote manifest and ends up in the path
+      // on disk; keep only a plain one, otherwise keep it in the file name.
+      const plainExtension = safeExtension(extension);
+      if (extension && !plainExtension) filename = `${filename}.${extension}`;
+      extension = plainExtension;
       const downloadUrl = `${sourceUrl}/-/svc/media.orig?hub_id=${hubId}&nid=${nodeId}`;
       
       this.debug(`[MFS_IMPORT] Importing file: ${filename}.${extension}`);

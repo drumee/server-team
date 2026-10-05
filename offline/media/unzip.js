@@ -57,6 +57,7 @@ const {
   extract, MAX_ENTRIES, MAX_FILENAME, MAX_FILE_PATH,
 } = require("../../service/lib/archive");
 const { childPaths, nodeFolder } = require("../../service/lib/mfs-path");
+const { safeExtension } = require("../../service/lib/file-extension");
 
 const FOLDER = "folder";
 /** Folders carry no bytes of their own, as media.make_dir writes them. */
@@ -434,10 +435,14 @@ class __offline_media_unzip extends Offline {
         }
       }
 
-      const extension = isDir
+      const rawExtension = isDir
         ? ""
         : String(info.extension || parsed.ext.replace(/^\./, "") || "").toLowerCase();
-      let name = this.safeName(isDir ? entry.name : (info.filename || parsed.name));
+      // The extension ends up in the file's path on disk; keep only a plain
+      // one. When it is dropped, the whole entry name becomes the file name.
+      const extension = safeExtension(rawExtension);
+      const dropped = rawExtension && !extension;
+      let name = this.safeName(isDir || dropped ? entry.name : (info.filename || parsed.name));
       name = this.uniqueSibling(seen, parent.id, name, extension);
 
       const leaf = extension ? `${name}.${extension}` : name;
