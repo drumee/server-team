@@ -40,6 +40,10 @@ const CAN_DOWNLOAD = 0b0000100;
 const CAN_CHAT = 0b0000100;
 const CAN_WRITE = 0b0001000;
 const CAN_ADMIN = 0b0010000;
+// The owner bit. Only change_owner (and hub creation) may write or take it
+// away — see hub.js _holdsOwner, which keeps every member-management path off
+// an owner's row.
+const CAN_OWN = 0b0100000;
 
 /**
  * What a member is granted on the hidden chat staging folder
@@ -174,6 +178,7 @@ module.exports = {
   CAN_CHAT,
   CAN_WRITE,
   CAN_ADMIN,
+  CAN_OWN,
   privilegeAllows,
   memberCan,
 };

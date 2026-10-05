@@ -34,7 +34,7 @@ const { mailFailure } = require("../lib/mail-result");
 const { resolveHubInviteName } = require("../lib/hub-invite-name");
 const { resolveHubDisplayName } = require("../lib/hub-display-name");
 const {
-  CAN_CHAT, CHAT_UPLOAD_GRANT, privilegeAllows
+  CAN_CHAT, CAN_OWN, CHAT_UPLOAD_GRANT, privilegeAllows
 } = require("../lib/member-capability");
 const { MfsTools } = require("@drumee/server-core");
 const { remove_dir } = MfsTools;
@@ -1091,6 +1091,9 @@ class __private_hub extends Hub {
    * buttons on.
    */
   async _grantMembership(uid, privilege, expiry, message, mfs_home, hub_name, from_fullname) {
+    // Already the owner: nothing to grant, and add_member would overwrite the
+    // owner bit (see _holdsOwner).
+    if (await this._holdsOwner(this.hub.get(Attr.db_name), uid)) return null;
     const r = await this.db.await_proc("add_member", uid, privilege, expiry);
     if (!r || !r.db_name) return null;
     await this.db.await_proc(
@@ -1443,6 +1446,22 @@ class __private_hub extends Hub {
     } catch (e) {
       return 0;
     }
+  }
+
+  /**
+   * Does `uid` hold the OWNER bit on this workspace's '*' row?
+   *
+   * Every member-management path below (add_member, permission_grant,
+   * permission_set) writes that row unconditionally, so pointing one of them
+   * at the owner — re-inviting their address, picking a role on their row in
+   * the Access panel — rewrote 63 into 7 or 31. yp.hub.owner_id still named
+   * them, but nobody held the bit any more: the owner was offered "Leave
+   * workspace" and the workspace had no owner left (seen on stage, 2026-10).
+   * Only change_owner may move ownership, so these paths leave an owner's row
+   * alone instead.
+   */
+  async _holdsOwner(db_name, uid) {
+    return privilegeAllows(await this._hubPermission(db_name, uid), CAN_OWN);
   }
 
   async invite() {
@@ -2644,6 +2663,8 @@ class __private_hub extends Hub {
 
       // Add confirmed members
       for (const uid of members) {
+        // Never over the owner's row (see _holdsOwner).
+        if (await this._holdsOwner(hub_db, uid)) continue;
         // Grant membership in hub DB
         const r = await this.yp.await_proc(`${hub_db}.add_member`, uid, privilege, expiry);
         if (!r || !r.db_name) continue;
@@ -3344,7 +3365,20 @@ class __private_hub extends Hub {
 
     let mfs_home = await this.db.await_proc("mfs_home");
 
-    users = toArray(users);
+    // The owner's role is not one of the roles this sets: permission_set would
+    // strip the owner bit (see _holdsOwner). Ownership moves by change_owner.
+    const requested = toArray(users);
+    const db_name = this.hub.get(Attr.db_name);
+    users = [];
+    for (let uid of requested) {
+      if (!(await this._holdsOwner(db_name, uid))) users.push(uid);
+    }
+    if (requested.length && !users.length) {
+      return this.output.data({
+        error: "OWNER_PRIVILEGE_LOCKED",
+        reason: "The owner's role cannot be changed.",
+      });
+    }
     let hub;
 
     for (let uid of users) {
@@ -3401,6 +3435,10 @@ class __private_hub extends Hub {
       this.input.use(Attr.permission) ||
       this.hub.get(Attr.settings).default_privilege ||
       1;
+    // Same rule as set_privilege: never over the owner's row (_holdsOwner).
+    if (await this._holdsOwner(this.hub.get(Attr.db_name), uid)) {
+      return this.output.list(await this._members_by_type("not_owner", 1));
+    }
     await this.db.await_proc(
       "permission_grant",
       '*',
