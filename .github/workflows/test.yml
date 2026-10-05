@@ -53,3 +53,6 @@ jobs:
       # installed.
       - name: Run chat staging grant regression test
         run: node --test offline/test/chat-upload-grant.test.js
+      # Pins that no member-management path can rewrite the owner's row.
+      - name: Run owner row guard regression test
+        run: node --test offline/test/owner-row-guard.test.js
