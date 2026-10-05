@@ -22,6 +22,7 @@ const { isEmpty } = require('lodash');
 const { shouldSendNotification } = require('../lib/email-policy');
 const { hashPassword } = require('../lib/secure-share-password');
 const { memberCan, CAN_WRITE } = require('../lib/member-capability');
+const { sqlString } = require('../lib/sql-literal');
 
 class __secure_share extends Mfs {
 
@@ -205,7 +206,7 @@ class __secure_share extends Mfs {
       if (!r || !r.hub_id || !r.node_id) continue;
       try {
         const a = toArray(
-          await this.yp.await_proc('forward_proc', r.hub_id, 'mfs_node_attr', `'${r.node_id}'`)
+          await this.yp.await_proc('forward_proc', r.hub_id, 'mfs_node_attr', `${sqlString(r.node_id)}`)
         )[0] || {};
         if (a.filename) r.node_name = a.filename;
       } catch (e) { /* keep workspace_name fallback */ }
@@ -225,7 +226,7 @@ class __secure_share extends Mfs {
       if (!r || !r.hub_id || !r.node_id) continue;
       try {
         const a = toArray(
-          await this.yp.await_proc('forward_proc', r.hub_id, 'mfs_node_attr', `'${r.node_id}'`)
+          await this.yp.await_proc('forward_proc', r.hub_id, 'mfs_node_attr', `${sqlString(r.node_id)}`)
         )[0] || {};
         if (a.filename) r.node_name = a.filename;
       } catch (e) { /* keep fallback */ }

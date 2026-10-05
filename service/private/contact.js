@@ -31,6 +31,7 @@ const { butlerFrom } = require("../lib/mail-sender");
 
 /** ==============================================  */
 const Contact = require('../contact');
+const { sqlString } = require('../lib/sql-literal');
 class __private_contact extends Contact {
 
   /**
@@ -779,13 +780,13 @@ class __private_contact extends Contact {
 
     res = await this._show(res.contact_id);
     let entity = await this.yp.await_proc('forward_proc',
-      this.uid, 'shareroom_contact_get', `'${res.uid}'`
+      this.uid, 'shareroom_contact_get', `${sqlString(res.uid)}`
     );
     let sockets = await this.yp.await_proc('user_sockets', this.uid);
     await RedisStore.sendData(this.payload(entity), sockets);
 
     if (!isEmpty(res.uid)) {
-      entity = await this.yp.await_proc('forward_proc', res.uid, 'shareroom_contact_get', `'${this.uid}'`)
+      entity = await this.yp.await_proc('forward_proc', res.uid, 'shareroom_contact_get', `${sqlString(this.uid)}`)
       sockets = await this.yp.await_proc('user_sockets', res.uid);
       await RedisStore.sendData(this.payload(entity), sockets);
     }
@@ -830,12 +831,12 @@ class __private_contact extends Contact {
     let res = {};
     await this.db.await_proc('contact_block_delete', contact_id)
     res = await this._show(contact_id);
-    let entity = await this.yp.await_proc('forward_proc', this.uid, 'shareroom_contact_get', `'${res.uid}'`)
+    let entity = await this.yp.await_proc('forward_proc', this.uid, 'shareroom_contact_get', `${sqlString(res.uid)}`)
     let sockets = await this.yp.await_proc('user_sockets', this.uid);
     await RedisStore.sendData(this.payload(entity), sockets);
 
     if (!isEmpty(res.uid)) {
-      entity = await this.yp.await_proc('forward_proc', res.uid, 'shareroom_contact_get', `'${this.uid}'`)
+      entity = await this.yp.await_proc('forward_proc', res.uid, 'shareroom_contact_get', `${sqlString(this.uid)}`)
       let sockets = await this.yp.await_proc('user_sockets', res.uid);
       await RedisStore.sendData(this.payload(entity), sockets);
     }
@@ -995,17 +996,17 @@ class __private_contact extends Contact {
 
       if (invite == "1") {
         if (!isEmpty(drumate)) {
-          before = await this.yp.await_proc('forward_proc', drumate.id, 'contact_status_get', `'${this.uid}'`)
+          before = await this.yp.await_proc('forward_proc', drumate.id, 'contact_status_get', `${sqlString(this.uid)}`)
           if (isEmpty(before)) { before.status = 'no' }
         }
 
         data = await this.db.await_proc('contact_invite', entity);
 
         if (!isEmpty(drumate)) {
-          after = await this.yp.await_proc('forward_proc', drumate.id, 'contact_status_get', `'${this.uid}'`)
+          after = await this.yp.await_proc('forward_proc', drumate.id, 'contact_status_get', `${sqlString(this.uid)}`)
 
           if ((after.status != before.status) && (after.status == 'invitation' || after.status == 'received' || after.status == 'informed')) {
-            data = await this.yp.await_proc('forward_proc', drumate.id, 'contact_notification_by_entity', `'${this.uid}'`)
+            data = await this.yp.await_proc('forward_proc', drumate.id, 'contact_notification_by_entity', `${sqlString(this.uid)}`)
             //this.notify_user(drumate.id, data);
             data.service = 'invitation.accepted';
             let service = data.service;
@@ -1175,17 +1176,17 @@ class __private_contact extends Contact {
     if (invite == "1") {
 
       if (!isEmpty(drumate)) {
-        before = await this.yp.await_proc('forward_proc', drumate.id, 'contact_status_get', `'${this.uid}'`)
+        before = await this.yp.await_proc('forward_proc', drumate.id, 'contact_status_get', `${sqlString(this.uid)}`)
         if (isEmpty(before)) { before.status = 'no' }
       }
 
       data = await this.db.await_proc('contact_invite', entity);
 
       if (!isEmpty(drumate)) {
-        after = await this.yp.await_proc('forward_proc', drumate.id, 'contact_status_get', `'${this.uid}'`)
+        after = await this.yp.await_proc('forward_proc', drumate.id, 'contact_status_get', `${sqlString(this.uid)}`)
 
         if ((after.status != before.status) && (after.status == 'invitation' || after.status == 'received' || after.status == 'informed')) {
-          data = await this.yp.await_proc('forward_proc', drumate.id, 'contact_notification_by_entity', `'${this.uid}'`)
+          data = await this.yp.await_proc('forward_proc', drumate.id, 'contact_notification_by_entity', `${sqlString(this.uid)}`)
           //this.notify_user(drumate.id, data);
           let sockets = await this.yp.await_proc('user_sockets', drumate.id);
           await RedisStore.sendData(this.payload(data), sockets);
@@ -1358,14 +1359,14 @@ class __private_contact extends Contact {
       }
 
       if (!isEmpty(drumate)) {
-        before = await this.yp.await_proc('forward_proc', drumate.id, 'contact_status_get', `'${this.uid}'`)
+        before = await this.yp.await_proc('forward_proc', drumate.id, 'contact_status_get', `${sqlString(this.uid)}`)
         if (isEmpty(before)) { before.status = 'no' }
 
         await contactDb.await_proc('contact_invite', entity);
-        after = await this.yp.await_proc('forward_proc', drumate.id, 'contact_status_get', `'${this.uid}'`)
+        after = await this.yp.await_proc('forward_proc', drumate.id, 'contact_status_get', `${sqlString(this.uid)}`)
 
         if ((after.status != before.status) && (after.status == 'invitation' || after.status == 'received' || after.status == 'informed')) {
-          data = await this.yp.await_proc('forward_proc', drumate.id, 'contact_notification_by_entity', `'${this.uid}'`)
+          data = await this.yp.await_proc('forward_proc', drumate.id, 'contact_notification_by_entity', `${sqlString(this.uid)}`)
           let sockets = await this.yp.await_proc('user_sockets', drumate.id);
           const service = this.input.get(Attr.service);
           await RedisStore.sendData(this.payload(data, { service }), sockets);
@@ -1503,7 +1504,7 @@ class __private_contact extends Contact {
     res = { ...res, ...data };
 
     try {
-      await this.yp.await_proc('forward_proc', drumate.id, 'contact_invite_refused_peer', `'${this.uid}'`);
+      await this.yp.await_proc('forward_proc', drumate.id, 'contact_invite_refused_peer', `${sqlString(this.uid)}`);
     } catch (error) {
       this.warn('[CONTACT] contact_invite_refused_peer failed:', error.message);
     }
@@ -1557,9 +1558,7 @@ class __private_contact extends Contact {
   async handshake(message, uid, entity_id) {
     let message_id = await this.db.await_proc('message_id');
     message_id = message_id.id;
-    if (!isEmpty(message)) {
-      message = message.replace(/'/gi, "''");
-    }
+    // No manual quote escaping: sqlString() at the forward_proc call does the escaping.
     const input = {
       author_id: uid,
       uid,
@@ -1568,7 +1567,7 @@ class __private_contact extends Contact {
     };
     const data = await this.yp.await_proc(
       'forward_proc', uid, 'p2p_post_message',
-      `'${stringify(input)}','${message}'`
+      `${sqlString(stringify(input))},${sqlString(message)}`
     );
     // A failing SP answers {SUCCESS:0, ERROR:{...}} rather than a row, so the
     // absence of message_id — not emptiness — is the failure signal.
@@ -1584,7 +1583,7 @@ class __private_contact extends Contact {
     const service = "chat.post";
     // Author's own sessions: the peer of this conversation is the recipient.
     const mycount = await this.yp.await_proc(
-      'forward_proc', uid, 'count_yet_read_next', `'${uid}','${entity_id}'`
+      'forward_proc', uid, 'count_yet_read_next', `${sqlString(uid)},${sqlString(entity_id)}`
     ) || {};
     const mydata = {
       ...data, to_id: uid, peer_id: entity_id,
@@ -1596,7 +1595,7 @@ class __private_contact extends Contact {
     // chat.messages and chat.post both hand it one — without it a bubble that
     // lands while the conversation is already open renders with no name.
     const hiscount = await this.yp.await_proc(
-      'forward_proc', entity_id, 'count_yet_read_next', `'${entity_id}','${uid}'`
+      'forward_proc', entity_id, 'count_yet_read_next', `${sqlString(entity_id)},${sqlString(uid)}`
     ) || {};
     const hisdata = {
       ...data, to_id: entity_id, peer_id: uid,
@@ -1604,7 +1603,7 @@ class __private_contact extends Contact {
     };
     try {
       hisdata.entity = await this.yp.await_proc(
-        'forward_proc', entity_id, 'shareroom_contact_get', `'${uid}'`
+        'forward_proc', entity_id, 'shareroom_contact_get', `${sqlString(uid)}`
       );
     } catch (error) {
       this.warn('[CONTACT] handshake author lookup failed:', error.message);
@@ -1646,7 +1645,7 @@ class __private_contact extends Contact {
     await this.db.await_proc('my_contact_mail_add', data.contact_id, stringify([node]))
 
     res = { ...res, ...data };
-    data = await this.yp.await_proc('forward_proc', peer.id, 'contact_notification_by_entity', `'${this.uid}'`)
+    data = await this.yp.await_proc('forward_proc', peer.id, 'contact_notification_by_entity', `${sqlString(this.uid)}`)
 
     const lang = this.user.language() || this.input.app_language();
     let msg_from = Cache.message('_contact_invite_chat_msg', lang)
@@ -1660,7 +1659,7 @@ class __private_contact extends Contact {
     // direct `${peer.db_name}.proc` pattern which silently fails with
     // "undefined.contact_invite_informed" when db_name is missing.
     try {
-      await this.yp.await_proc('forward_proc', peer.id, 'contact_invite_informed', `'${this.uid}'`);
+      await this.yp.await_proc('forward_proc', peer.id, 'contact_invite_informed', `${sqlString(this.uid)}`);
       await this.db.await_proc(`contact_invite_informed`, peer.id);
     } catch (error) {
       this.warn('[CONTACT] auto-informed failed:', error.message);
@@ -1894,7 +1893,7 @@ class __private_contact extends Contact {
       'forward_proc',
       hubId,
       'mfs_access_node',
-      `'${this.uid}', '${nid}'`
+      `${sqlString(this.uid)}, ${sqlString(nid)}`
     );
 
     const nodeData = toArray(node)[0];

@@ -291,11 +291,11 @@ const invariants = [
     assert.ok(callIdx > 0, 'permission_get_direct call not found');
     const args = dmz.slice(callIdx, callIdx + 200);
     assert.ok(
-      /'permission_get_direct',\s*`'\$\{resource_id\}','\$\{user\.id\}'`/.test(args),
+      /'permission_get_direct',\s*`\$\{sqlString\(resource_id\)\},\$\{sqlString\(user\.id\)\}`/.test(args),
       'permission_get_direct must receive (resource_id, user.id) in that order'
     );
     assert.ok(
-      !/`'\$\{user\.id\}','\$\{info\./.test(args),
+      !/`\$\{sqlString\(user\.id\)\},\$\{sqlString\(info\./.test(args),
       'arguments are reversed — permission_get_direct would match nothing'
     );
   }],

@@ -21,6 +21,7 @@ const { toArray } = utils;
 const { stringify } = JSON;
 
 const { Entity } = require('@drumee/server-core');
+const { sqlString } = require('./lib/sql-literal');
 class __service_signaling extends Entity {
 
   /**
@@ -173,9 +174,9 @@ class __service_signaling extends Entity {
   async entityInfo(uid, entity_id) {
     const self = this;
     let entity = {}
-    entity = await self.yp.await_proc('forward_proc', uid, 'shareroom_contact_get', `'${entity_id}'`)
+    entity = await self.yp.await_proc('forward_proc', uid, 'shareroom_contact_get', `${sqlString(entity_id)}`)
     if (!isEmpty(entity.contact_id)) {
-      let tag = await self.yp.await_proc('forward_proc', uid, 'my_tag_get', `'${entity.contact_id}'`)
+      let tag = await self.yp.await_proc('forward_proc', uid, 'my_tag_get', `${sqlString(entity.contact_id)}`)
       if (!isArray(tag)) {
         tag = [tag]
       }
@@ -238,13 +239,13 @@ class __service_signaling extends Entity {
 
     let mydata = await this.yp.await_proc('forward_proc', my,
       'p2p_post_message',
-      `'${stringify(myinput)}','${msg_type}'`
+      `${sqlString(stringify(myinput))},${sqlString(msg_type)}`
     );
 
     if (!isEmpty(mydata)) {
       mydata.entity = await this.entityInfo(my, entity_id);
       let mycount = await this.yp.await_proc('forward_proc', my,
-        'count_yet_read_next', `'${my}','${his}'`
+        'count_yet_read_next', `${sqlString(my)},${sqlString(his)}`
       );
       mydata.room = mycount.room
       mydata.total = mycount.total
@@ -261,7 +262,7 @@ class __service_signaling extends Entity {
       // peer_id names the OTHER party per recipient — see conference.writeLog.
       let hisdata = { ...mydata, peer_id: my };
       let hiscount = await this.yp.await_proc('forward_proc',
-        his, 'count_yet_read_next', `'${his}','${my}'`
+        his, 'count_yet_read_next', `${sqlString(his)},${sqlString(my)}`
       );
       hisdata.entity = await this.entityInfo(entity_id, my);
       hisdata.service = "chat.post";

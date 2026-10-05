@@ -23,6 +23,7 @@ const {
 const {
   createMobilePushContent,
 } = require('../../service/lib/mobile-push-content');
+const { sqlString } = require('../../service/lib/sql-literal');
 
 const runtimeEnv = sysEnv();
 const PROJECT_ID = runtimeEnv.firebase_project_id || 'drumee-7ffcc';
@@ -77,7 +78,7 @@ async function eligibleUids(event) {
         'forward_proc',
         event.hub_id,
         'mfs_access_node',
-        `'${uid}','${event.scope_nid}'`,
+        `${sqlString(uid)},${sqlString(event.scope_nid)}`,
       ));
       const node = rows[0] || {};
       if (privilegeAllows(node.privilege ?? node.permission, 0b0000100)) {

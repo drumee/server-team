@@ -20,6 +20,7 @@ const { isEmpty } = require('lodash');
 const Support       = require('../support');
 
 const { stringify } = JSON;
+const { sqlLiteral } = require('../lib/sql-literal');
 
 /** Schema names are interpolated, never bound — this is what keeps that safe. */
 const DB_NAME_RE = /^[A-Za-z0-9_]+$/;
@@ -42,26 +43,6 @@ const DEFAULT_GREETING =
 
 /** Longest first name interpolated into the greeting. */
 const NAME_MAX = 64;
-
-/**
- * A value as a MySQL string literal, quotes included.
- *
- * `forward_proc` CONCATs its argument into a statement it PREPAREs, so what
- * goes in there is SQL, not a bound parameter \u2014 the escaping below is the only
- * thing standing between a value and the parser. Doubling `'` is not enough on
- * its own: a trailing backslash escapes the quote that follows it, so `x\''`
- * closes the literal and everything after it parses as SQL. Backslashes are
- * doubled first, for that reason.
- *
- * @param {String} value
- * @returns {String} the literal, e.g. `'it''s'`
- */
-function sqlLiteral(value) {
-  const s = `${value == null ? '' : value}`
-    .replace(/\\/g, '\\\\')
-    .replace(/'/g, "''");
-  return `'${s}'`;
-}
 
 //########################################
 class __private_support extends Support {

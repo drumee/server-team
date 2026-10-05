@@ -79,8 +79,9 @@ const { countMeetingsInWindow, meetingContent } = new Function(
 // exactly how the first run of this test failed — and, because the catch was
 // then wide enough to swallow it, the failure surfaced as a quiet "0 meetings"
 // rather than an error. The catch has since been narrowed to the round trip.
+const { sqlString } = require('../../service/lib/sql-literal');
 const Holder = new Function(
-  'toArray', 'countMeetingsInWindow',
+  'toArray', 'countMeetingsInWindow', 'sqlString',
   `class Holder {
      constructor(opt) {
        opt = opt || {};
@@ -108,7 +109,7 @@ const Holder = new Function(
      ${sliceMethod('daily_digest')}
    }
    return Holder;`,
-)(toArray, countMeetingsInWindow);
+)(toArray, countMeetingsInWindow, sqlString);
 
 // 2026-08-27 UTC
 const DAY = '2026-08-27';
