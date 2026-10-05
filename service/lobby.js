@@ -197,17 +197,23 @@ class __butler extends Mfs {
     }
 
     drumate = await this.yp.await_proc("drumate_exists", pass.email);
-    if (_.isEmpty(drumate)) {
+    if (_.isEmpty(drumate) || !drumate.id) {
       return this.output.data({ status: "DRUMATE_NOT_EXISTS" });
     }
-    drumate = await this.yp.await_proc("set_password", id, pw);
+    // The account is the one the reset link was sent to. The id sent by the
+    // client must be that account, and only that account is updated below.
+    const uid = drumate.id;
+    if (String(uid) !== String(id)) {
+      return this.output.data({ status: "INVALID_SECRET" });
+    }
+    drumate = await this.yp.await_proc("set_password", uid, pw);
     // Forgot-password recovery is a real password set — flag the
     // account as password-backed even if it was previously OAuth-only.
-    await this.yp.call_proc("drumate_update_profile", id, { password_set: 1 });
+    await this.yp.call_proc("drumate_update_profile", uid, { password_set: 1 });
     let connection = "offline";
     if ([1, "1", "sms"].includes(drumate.otp)) {
       metadata.step = "otpverify";
-      metadata.uid = id;
+      metadata.uid = uid;
       metadata.mobile = drumate.mobile;
       metadata.areacode = drumate.areacode;
 
@@ -226,11 +232,11 @@ class __butler extends Mfs {
       let profile = {};
       profile.email_verified = "yes";
       profile.connected = "1";
-      await this.yp.call_proc("drumate_update_profile", id, stringify(profile));
+      await this.yp.call_proc("drumate_update_profile", uid, stringify(profile));
       //let domain = await this.yp.await_func("domain_name", sid);
       await this.yp.await_proc(
         "session_login_next",
-        id,
+        uid,
         pw,
         this.input.sid(),
         drumate.domain
