@@ -26,6 +26,7 @@ const { isString } = require("lodash");
 const { resolve } = require("path");
 const SPAWN_OPT = { detached: true, stdio: ["ignore", "ignore", "ignore"] };
 const Spawn = require("child_process").spawn;
+const { sqlString } = require("./lib/sql-literal");
 
 
 class mfs extends Mfs {
@@ -149,7 +150,7 @@ class mfs extends Mfs {
       'forward_proc',
       hubId,
       'mfs_node_summary',
-      `'${hubId}', '${nid}'`
+      `${sqlString(hubId)}, ${sqlString(nid)}`
     );
     
     const { toArray } = require('@drumee/server-essentials').utils;

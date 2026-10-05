@@ -20,6 +20,7 @@ const { stringify } = JSON;
 const {isArray, isEmpty, after} = require('lodash');
 
 const {Entity} = require('@drumee/server-core');
+const { sqlString } = require('../lib/sql-literal');
 
 class __private_tagcontact extends Entity {
 
@@ -81,7 +82,7 @@ class __private_tagcontact extends Entity {
    */
   async entity_assign_get() {
     let entity_id = this.input.need(Attr.entity_id);
-    let tag = await this.yp.await_proc('forward_proc', this.uid, 'my_tag_get', `'${entity_id}'`)
+    let tag = await this.yp.await_proc('forward_proc', this.uid, 'my_tag_get', `${sqlString(entity_id)}`)
     this.output.list(tag);
   }
 

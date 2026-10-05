@@ -51,8 +51,9 @@ function sliceMethod(name) {
 
 const toArray = (v) => (Array.isArray(v) ? v : v == null ? [] : [v]);
 
+const { sqlString } = require('../../service/lib/sql-literal');
 const Holder = new Function(
-  'toArray',
+  'toArray', 'sqlString',
   `class Holder {
      constructor(nodes) {
        this.calls = [];
@@ -73,7 +74,7 @@ const Holder = new Function(
      ${sliceMethod('_stampFolderNames')}
    }
    return Holder;`,
-)(toArray);
+)(toArray, sqlString);
 
 const upload = (over = {}) => ({
   event: 'media.new',

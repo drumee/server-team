@@ -19,6 +19,7 @@ const Socket = require('./index');
 const { Data, MfsTools } = require('@drumee/server-core');
 const { copy_node } = MfsTools;
 const { toArray } = require('@drumee/server-essentials');
+const { sqlString } = require('../lib/sql-literal');
 
 //########################################
 class __push_chat extends Socket {
@@ -146,14 +147,14 @@ class __push_chat extends Socket {
     }
     const ident = self.user.uid();
     async function f() {
-      let group = await self.yp.await_proc('forward_proc', self.user.uid(), 'contact_get_group', `'${group_id}', '${ident}'`)
+      let group = await self.yp.await_proc('forward_proc', self.user.uid(), 'contact_get_group', `${sqlString(group_id)}, ${sqlString(ident)}`)
       if (isEmpty(group)) {
         self.echo({ error: `${group_id} not found` });
         return;
       }
       let data = await self.yp.await_proc('forward_proc',
         self.user.uid(), 'send_group_message',
-        `'${ident}', '${group_id}','${message}', '${is_forward}'`);
+        `${sqlString(ident)}, ${sqlString(group_id)},${sqlString(message)}, ${sqlString(is_forward)}`);
       return data;
     }
     f().then(function (data) {

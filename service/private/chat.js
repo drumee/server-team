@@ -29,6 +29,7 @@ const { isEmpty, isArray, map, includes } = require("lodash");
 const { CAN_CHAT, privilegeAllows } = require("../lib/member-capability");
 const {admit: admitMobilePush} = require('../lib/mobile-push');
 const { markFeatureUsage } = require("../lib/feature-usage");
+const { sqlString } = require("../lib/sql-literal");
 
 const ENTITY_ID_RE = /^[0-9a-zA-Z_-]{1,32}$/;
 const DB_NAME_RE = /^[A-Za-z0-9_]+$/;
@@ -83,7 +84,7 @@ class privateChat extends Entity {
 
     // Cross-DB fallback for receiver: message is in the sender's (peer's) DB
     if (isEmpty(data) && peer_id) {
-      data = await this.yp.await_proc("forward_proc", peer_id, "p2p_get_message", `'${message_id}'`);
+      data = await this.yp.await_proc("forward_proc", peer_id, "p2p_get_message", `${sqlString(message_id)}`);
     }
 
     if (!isEmpty(data) && !isEmpty(data.attachment)) {
@@ -305,7 +306,7 @@ class privateChat extends Entity {
       "forward_proc",
       uid,
       "channel_get",
-      `'${thread_id}'`
+      `${sqlString(thread_id)}`
     );
 
     if (isEmpty(data)) {
@@ -314,7 +315,7 @@ class privateChat extends Entity {
         "forward_proc",
         uid,
         "p2p_get_message",
-        `'${thread_id}'`
+        `${sqlString(thread_id)}`
       );
     }
 
@@ -324,7 +325,7 @@ class privateChat extends Entity {
         "forward_proc",
         peer_id,
         "p2p_get_message",
-        `'${thread_id}'`
+        `${sqlString(thread_id)}`
       );
     }
 
@@ -346,7 +347,7 @@ class privateChat extends Entity {
       "forward_proc",
       uid,
       "shareroom_contact_get",
-      `'${data.author_id}'`
+      `${sqlString(data.author_id)}`
     );
     return thread;
   }
@@ -363,14 +364,14 @@ class privateChat extends Entity {
       "forward_proc",
       uid,
       "shareroom_contact_get",
-      `'${entity_id}'`
+      `${sqlString(entity_id)}`
     );
     if (!isEmpty(entity.contact_id)) {
       let tag = await this.yp.await_proc(
         "forward_proc",
         uid,
         "my_tag_get",
-        `'${entity.contact_id}'`
+        `${sqlString(entity.contact_id)}`
       );
       if (!isArray(tag)) {
         tag = [tag];
@@ -427,7 +428,7 @@ class privateChat extends Entity {
           "forward_proc",
           entity_id,
           "p2p_get_message",
-          `'${thread_id}'`
+          `${sqlString(thread_id)}`
         );
       }
       if (isEmpty(data_thread)) {
@@ -665,7 +666,7 @@ class privateChat extends Entity {
           "forward_proc",
           this.uid,
           "p2p_post_message",
-          `'${stringify(entityInput)}','${message}'`
+          `${sqlString(stringify(entityInput))},${sqlString(message)}`
         );
         // mention_ids is returned as a JSON string from the DB; normalise to array
         if (mydata && mydata.mention_ids && !isArray(mydata.mention_ids)) {
@@ -677,7 +678,7 @@ class privateChat extends Entity {
             "forward_proc",
             this.uid,
             "channel_post_attachment",
-            `'${message_id}','${entity_id}','${stringify(input.attachment)}'`
+            `${sqlString(message_id)},${sqlString(entity_id)},${sqlString(stringify(input.attachment))}`
           );
           mydata.is_attachment = 1;
         }
@@ -690,7 +691,7 @@ class privateChat extends Entity {
           "forward_proc",
           this.uid,
           "count_yet_read_next",
-          `'${this.uid}','${entity_id}'`
+          `${sqlString(this.uid)},${sqlString(entity_id)}`
         );
         mydata.room = mycount.room;
         mydata.total = mycount.total;
@@ -717,7 +718,7 @@ class privateChat extends Entity {
           "forward_proc",
           entity_id,
           "count_yet_read_next",
-          `'${entity_id}','${this.uid}'`
+          `${sqlString(entity_id)},${sqlString(this.uid)}`
         );
         hisdata.room = hiscount.room;
         hisdata.total = hiscount.total;
@@ -753,7 +754,7 @@ class privateChat extends Entity {
           "forward_proc",
           entity_id,
           "channel_post_message",
-          `'${stringify(entityInput)}','${message}'`
+          `${sqlString(stringify(entityInput))},${sqlString(message)}`
         );
         data.is_attachment = 0;
         if (!isEmpty(input.attachment)) {
@@ -761,7 +762,7 @@ class privateChat extends Entity {
             "forward_proc",
             entity_id,
             "channel_post_attachment",
-            `'${message_id}','${entity_id}','${stringify(input.attachment)}'`
+            `${sqlString(message_id)},${sqlString(entity_id)},${sqlString(stringify(input.attachment))}`
           );
           data.is_attachment = 1;
         }
@@ -810,7 +811,7 @@ class privateChat extends Entity {
           "forward_proc",
           sbox.hub_id,
           "mfs_make_dir",
-          `'${sbox.chat_id}','${stringify([message_id])}',1`
+          `${sqlString(sbox.chat_id)},${sqlString(stringify([message_id]))},1`
         );
         this.debug("chat.post desdir", desdir, "sbox", sbox);
         if (!desdir || desdir.failed || !desdir.id) {
@@ -832,7 +833,7 @@ class privateChat extends Entity {
               "forward_proc",
               sbox.hub_id,
               "add_member",
-              `'${entity_id}', 3, 0`
+              `${sqlString(entity_id)}, 3, 0`
             );
             // Allow anonymous (src:anonymous) media endpoints to serve sbox files.
             // Files are protected by unguessable UUID nids — same security model as
@@ -863,9 +864,7 @@ class privateChat extends Entity {
     if (!isEmpty(attachment)) {
       input.attachment = attachment;
     }
-    if (!isEmpty(message)) {
-      message = message.replace(/'/gi, "''");
-    }
+    // No manual quote escaping: sqlString() at the forward_proc call does the escaping.
     if (!isEmpty(thread_id)) {
       input.thread_id = thread_id;
     }
@@ -922,7 +921,7 @@ class privateChat extends Entity {
         "forward_proc",
         peer_id,
         "p2p_message_reaction_toggle",
-        `'${message_id}','${this.uid}','${emoji}'`
+        `${sqlString(message_id)},${sqlString(this.uid)},${sqlString(emoji)}`
       );
       row = Array.isArray(res) ? res[0] : res;
     }
@@ -1024,7 +1023,7 @@ class privateChat extends Entity {
             "forward_proc",
             peer_id,
             "p2p_get_message",
-            `'${message_id}'`
+            `${sqlString(message_id)}`
           );
         }
         if (isEmpty(data)) continue;
@@ -1065,9 +1064,7 @@ class privateChat extends Entity {
       if (!isEmpty(msg.forward_message_id)) {
         input.forward_message_id = msg.forward_message_id;
       }
-      if (!isEmpty(msg.message)) {
-        msg.message = msg.message.replace(/'/gi, "''");
-      }
+      // No manual quote escaping: sqlString() at the forward_proc call does the escaping.
 
       const r = await this._distributeMessage(
         input,
@@ -1456,14 +1453,14 @@ class privateChat extends Entity {
         "forward_proc",
         media.hub_id,
         "mfs_access_node",
-        `'${uid}', '${media.nid}'`
+        `${sqlString(uid)}, ${sqlString(media.nid)}`
       );
     } else {
       attr = await this.yp.await_proc(
         "forward_proc",
         uid,
         "mfs_access_node",
-        `'${uid}', '${media}'`
+        `${sqlString(uid)}, ${sqlString(media)}`
       );
     }
     if (!attr || isEmpty(attr)) return {};

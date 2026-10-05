@@ -6,6 +6,7 @@ const { RedisStore, Attr, toArray } = require('@drumee/server-essentials');
 const { createHash } = require('node:crypto');
 const { resolveHubInviteName } = require('../lib/hub-invite-name');
 const { hubInviteStatus } = require('../lib/hub-invite-status');
+const { sqlString } = require('../lib/sql-literal');
 const CONTACT_ACTIVITY_CATEGORIES = new Set([
   'contact_refused',
   'hub_invite',
@@ -1108,7 +1109,7 @@ class MfsActivity extends Entity {
           if (r.hub_id && r.node_id) {
             try {
               const a = toArray(
-                await this.yp.await_proc('forward_proc', r.hub_id, 'mfs_node_attr', `'${r.node_id}'`)
+                await this.yp.await_proc('forward_proc', r.hub_id, 'mfs_node_attr', `${sqlString(r.node_id)}`)
               )[0] || {};
               if (a.filename) nodeName = a.filename;
               if (a.filetype || a.ftype) nodeFiletype = a.filetype || a.ftype;
@@ -1605,7 +1606,7 @@ class MfsActivity extends Entity {
     for (const [key, { hub_id, parent_id }] of wanted) {
       try {
         const a = toArray(
-          await this.yp.await_proc('forward_proc', hub_id, 'mfs_node_attr', `'${parent_id}'`)
+          await this.yp.await_proc('forward_proc', hub_id, 'mfs_node_attr', `${sqlString(parent_id)}`)
         )[0] || {};
         if (a.filename && !internal(a.filename)) names.set(key, a.filename);
       } catch (e) {
@@ -1670,7 +1671,7 @@ class MfsActivity extends Entity {
     for (const [key, { hub_id, nid }] of wanted) {
       try {
         const a = toArray(
-          await this.yp.await_proc('forward_proc', hub_id, 'mfs_node_attr', `'${nid}'`)
+          await this.yp.await_proc('forward_proc', hub_id, 'mfs_node_attr', `${sqlString(nid)}`)
         )[0] || {};
         if (a.filename && !internal(a.filename)) names.set(key, a.filename);
       } catch (e) {
@@ -1979,7 +1980,7 @@ class MfsActivity extends Entity {
         const list = toArray(
           await this.yp.await_proc(
             'forward_proc', hubId, 'channel_list_notifications',
-            `'${this.uid}','mention',1,1`
+            `${sqlString(this.uid)},'mention',1,1`
           )
         );
         for (const m of list) {
@@ -3154,7 +3155,7 @@ class MfsActivity extends Entity {
       try {
         row = toArray(
           await this.yp.await_proc(
-            'forward_proc', hubId, 'hub_daily_counts', `'${this.uid}','${day}'`
+            'forward_proc', hubId, 'hub_daily_counts', `${sqlString(this.uid)},${sqlString(day)}`
           )
         )[0];
       } catch (e) {

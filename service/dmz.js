@@ -27,6 +27,7 @@ const Jwt = require('jsonwebtoken');
 const { resolve: _resolvePath } = require('path');
 const { existsSync, readFileSync, statSync } = require('fs');
 const { get_node_content } = require('@drumee/server-core/lib/utils/mfs');
+const { sqlString } = require('./lib/sql-literal');
 const { PERM_READ } = Constants;
 // Shared `drumee` secret, loaded ONCE at module load, used to sign a short-lived
 // owner-edit assertion (see _loginSecureShare). The euroffice editor verifies it with
@@ -544,7 +545,7 @@ class __dmz extends Mfs {
     // empty because files have no children. Use the parent folder instead so the file
     // appears in the listing. Keep node_id as-is for reference.
     try {
-      const nodeRows = await this.yp.await_proc('forward_proc', info.hub_id, 'mfs_node_attr', `'${info.nid}'`);
+      const nodeRows = await this.yp.await_proc('forward_proc', info.hub_id, 'mfs_node_attr', `${sqlString(info.nid)}`);
       const nodeAttr = toArray(nodeRows)[0] || {};
       // Title must reflect the SHARED node (e.g. subfolder "vb"), not the workspace
       // root. secure_share_info returns the hub name as title; override it with the
@@ -669,7 +670,7 @@ class __dmz extends Mfs {
     if (isAuthenticated && user.id) {
       try {
         const accessRows = await this.yp.await_proc(
-          'forward_proc', info.hub_id, 'mfs_access_node', `'${user.id}','${info.nid}'`
+          'forward_proc', info.hub_id, 'mfs_access_node', `${sqlString(user.id)},${sqlString(info.nid)}`
         );
         memberPriv = parseInt((toArray(accessRows)[0] || {}).privilege, 10) || 0;
         if (memberPriv > 0) is_member = 1;
@@ -705,7 +706,7 @@ class __dmz extends Mfs {
       const readDirectGrant = async (resource_id) => {
         try {
           return toArray(await this.yp.await_proc(
-            'forward_proc', info.hub_id, 'permission_get_direct', `'${resource_id}','${user.id}'`
+            'forward_proc', info.hub_id, 'permission_get_direct', `${sqlString(resource_id)},${sqlString(user.id)}`
           ))[0] || null;
         } catch (e) {
           this.warn('[dmz.login] secure_share permission_get_direct failed:', e && e.message);
@@ -1111,7 +1112,7 @@ class __dmz extends Mfs {
     const NID_RE = /^[0-9a-f]{16}$/;
     if (NID_RE.test(req_file_nid) && out.validity === 'TICKET_OK') {
       try {
-        const nodeRows = await this.yp.await_proc('forward_proc', info.hub_id, 'mfs_node_attr', `'${req_file_nid}'`);
+        const nodeRows = await this.yp.await_proc('forward_proc', info.hub_id, 'mfs_node_attr', `${sqlString(req_file_nid)}`);
         const nodeAttr = toArray(nodeRows)[0] || {};
         if (nodeAttr.pid && nodeAttr.filetype !== 'folder' && nodeAttr.filetype !== 'hub') {
           // Set file_nid so show_node_by filters to just this file (fast,
@@ -1399,7 +1400,7 @@ class __dmz extends Mfs {
     let mfs_root = null;
     try {
       const attr = toArray(
-        await this.yp.await_proc('forward_proc', info.hub_id, 'mfs_node_attr', `'${nid}'`)
+        await this.yp.await_proc('forward_proc', info.hub_id, 'mfs_node_attr', `${sqlString(nid)}`)
       )[0] || {};
       mfs_root = attr.mfs_root || null;
       if (attr.filetype && !['folder', 'hub', 'root'].includes(attr.filetype) && attr.pid) {
@@ -1419,7 +1420,7 @@ class __dmz extends Mfs {
     try {
       rows = toArray(await this.yp.await_proc(
         'forward_proc', info.hub_id, 'mfs_show_node_by',
-        `'${nid}', '${guest_id}', '${params}'`
+        `${sqlString(nid)}, ${sqlString(guest_id)}, ${sqlString(params)}`
       ));
     } catch (e) {
       this.warn('[dmz.list_by_token] listing failed:', e && e.message);
@@ -1574,7 +1575,7 @@ class __dmz extends Mfs {
     let nid = info.node_id || info.nid;
     try {
       const attr = toArray(
-        await this.yp.await_proc('forward_proc', info.hub_id, 'mfs_node_attr', `'${nid}'`)
+        await this.yp.await_proc('forward_proc', info.hub_id, 'mfs_node_attr', `${sqlString(nid)}`)
       )[0] || {};
       if (attr.filetype && !['folder', 'hub', 'root'].includes(attr.filetype) && attr.pid) {
         nid = attr.pid;
@@ -1588,7 +1589,7 @@ class __dmz extends Mfs {
     try {
       rows = toArray(await this.yp.await_proc(
         'forward_proc', info.hub_id, 'channel_list_messages',
-        `'${guest_id}', 'date', 'asc', ${page}`
+        `${sqlString(guest_id)}, 'date', 'asc', ${page}`
       ));
     } catch (e) {
       this.warn('[dmz.chat_by_token] channel_list_messages failed:', e && e.message);
@@ -1620,7 +1621,7 @@ class __dmz extends Mfs {
       authors[id] = '';
       try {
         const row = toArray(await this.yp.await_proc(
-          'forward_proc', id, 'shareroom_contact_get', `'${id}'`
+          'forward_proc', id, 'shareroom_contact_get', `${sqlString(id)}`
         ))[0] || {};
         // A real name when the account has one. Otherwise the LOCAL PART of
         // the address the proc returns in `surname` — enough to tell two

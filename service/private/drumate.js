@@ -33,6 +33,7 @@ const { Entity, Generator, MfsTools } = require("@drumee/server-core");
 const { get_node_content } = MfsTools;
 const { purge_account } = require("../lib/account-purge");
 const { missingPasswordRules } = require("../lib/password-policy");
+const { sqlString } = require("../lib/sql-literal");
 
 // Contextual tutorial tour ids. See tutorial_seen() below for why this list is
 // duplicated in acl/drumate.json and in ui-team's tours.js, and what a
@@ -1219,7 +1220,7 @@ class __private_drumate extends Entity {
 
     switch (entity) {
       case 'hub':
-        message = await this.yp.await_proc('forward_proc', entity_id, 'channel_get_last', `'${this.uid}'`);
+        message = await this.yp.await_proc('forward_proc', entity_id, 'channel_get_last', `${sqlString(this.uid)}`);
         break;
       case 'drumate':
         message = await this.db.await_proc("channel_get_last", entity_id);

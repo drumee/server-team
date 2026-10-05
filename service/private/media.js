@@ -69,6 +69,7 @@ const { tmp_dir, quota, server_location } = sysEnv();
 const JSON_OPT = { spaces: 2, EOL: "\r\n" };
 const { emptyTrash } = require('../../offline/queues/trashQueue');
 const indexQueue = require('../../offline/queues/indexQueue');
+const { sqlString } = require('../lib/sql-literal');
 
 /**
  * Convert with LibreOffice through Script.soffice (outdir, infile, filter).
@@ -536,7 +537,7 @@ class __private_media extends Media {
       "forward_proc",
       rid,
       "mfs_access_node",
-      `"${uid}", "${data.id}"`
+      `${sqlString(uid)}, ${sqlString(data.id)}`
     );
     m.position = this.input.get(Attr.position) || 0;
     let recipients = await this.yp.await_proc("entity_sockets", m.hub_id);
@@ -699,7 +700,7 @@ class __private_media extends Media {
         "forward_proc",
         rid,
         "mfs_access_node",
-        `'${this.uid}', '${pid}'`
+        `${sqlString(this.uid)}, ${sqlString(pid)}`
       );
     } else {
       dest = await this.db.await_proc("mfs_access_node", this.uid, pid);
@@ -1864,7 +1865,7 @@ class __private_media extends Media {
         "forward_proc",
         dmz_id,
         "mfs_access_node",
-        `'${dmz.uid}', '${dmz.nid}'`
+        `${sqlString(dmz.uid)}, ${sqlString(dmz.nid)}`
       );
 
       let tempnode = {

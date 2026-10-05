@@ -1,4 +1,5 @@
 const {privilegeAllows} = require('./mobile-push-recipients');
+const { sqlString } = require('./sql-literal');
 
 const DB_NAME = /^[0-9a-zA-Z_]+$/;
 const CAN_READ = 0b0000010;
@@ -54,7 +55,7 @@ function createMobilePushAuthorization(yp) {
       'forward_proc',
       hubId,
       'mfs_access_node',
-      `'${uid}','${event.scope_nid}'`,
+      `${sqlString(uid)},${sqlString(event.scope_nid)}`,
     ))[0];
     return !!node && privilegeAllows(
       node.privilege ?? node.permission,
