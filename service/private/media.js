@@ -3264,7 +3264,9 @@ class __private_media extends Media {
     const user_filename = this.input.need(Attr.filename);
     const outdir = resolve(tmp_dir, this.randomString());
     mkdirSync(outdir, { recursive: true });
-    const filepath = resolve(outdir, user_filename);
+    // Fixed temp name inside this request's own directory: user_filename is
+    // only the stored name, never part of a path on disk.
+    const filepath = resolve(outdir, "content");
     const nid = this.input.get(Attr.id);
     const pid = this.input.get(Attr.pid) || parent.id;
     const metadata = this.input.get(Attr.metadata) || {};
