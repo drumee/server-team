@@ -262,17 +262,23 @@ class __butler extends Mfs {
     }
 
     drumate = await this.yp.await_proc("drumate_exists", pass.email);
-    if (isEmpty(drumate)) {
+    if (isEmpty(drumate) || !drumate.id) {
       return this.output.data({ status: "DRUMATE_NOT_EXISTS" });
     }
-    drumate = await this.yp.await_proc("set_password", id, pw);
+    // The account is the one the reset link was sent to. The id sent by the
+    // client must be that account, and only that account is updated below.
+    const uid = drumate.id;
+    if (String(uid) !== String(id)) {
+      return this.output.data({ status: "INVALID_SECRET" });
+    }
+    drumate = await this.yp.await_proc("set_password", uid, pw);
     // Forgot-password flow is a real password set — flag the account
     // as password-backed even if it was previously OAuth-only.
-    await this.yp.call_proc("drumate_update_profile", id, { password_set: 1 });
+    await this.yp.call_proc("drumate_update_profile", uid, { password_set: 1 });
     let connection = "offline";
     if ([1, "1", "sms"].includes(drumate.otp)) {
       metadata.step = "otpverify";
-      metadata.uid = id;
+      metadata.uid = uid;
       metadata.mobile = drumate.mobile;
       metadata.areacode = drumate.areacode;
 
@@ -291,10 +297,10 @@ class __butler extends Mfs {
       let profile = {};
       profile.email_verified = "yes";
       profile.connected = "1";
-      await this.yp.call_proc("drumate_update_profile", id, stringify(profile));
+      await this.yp.call_proc("drumate_update_profile", uid, stringify(profile));
       //let domain = await this.yp.await_func("domain_name", sid);
       let opt = {
-        uid: id,
+        uid,
         password: pw,
         sid: this.input.sid(),
         host: drumate.domain
@@ -553,7 +559,8 @@ class __butler extends Mfs {
       });
       return;
     }
-    if (data.age / 3600 > 12) {
+    // Same lifetime as the main reset flow (check_token / set_password).
+    if (Number(data.age) > RESET_TOKEN_TTL) {
       await this.yp.await_proc("token_delete", secret);
       this.output.data({
         rejected: 1,

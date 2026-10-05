@@ -145,7 +145,7 @@
     },
 
     "get_reset_token": {
-      "doc": "Generate and send a password reset token via email. Creates a secret token and emails it to the user for password reset flow. Token is valid for 12 hours.",
+      "doc": "Generate and send a password reset token via email. Creates a secret token and emails it to the user for password reset flow. Token is valid for 1 hour.",
       "scope": "hub",
       "permission": {
         "src": "anonymous"
@@ -291,7 +291,7 @@
     },
 
     "set_pass_phrase": {
-      "doc": "Set new password through reset link. Validates the reset token and updates user password. Token must be used within 12 hours and is deleted after successful password change.",
+      "doc": "Set new password through reset link. Validates the reset token and updates user password. Token must be used within 1 hour and is deleted after successful password change.",
       "scope": "hub",
       "permission": {
         "src": "anonymous"
@@ -355,7 +355,7 @@
         },
         {
           "code": "TOKEN_EXPIRED",
-          "message": "Reset token expired (older than 12 hours)",
+          "message": "Reset token expired (older than 1 hour)",
           "returns": {
             "rejected": 1,
             "reason": "expired"
