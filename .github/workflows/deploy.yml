@@ -100,9 +100,11 @@ jobs:
           # Offline workers run as separate pm2 apps and keep old code in
           # memory until restarted. Their names vary per host (indexWorker,
           # gdrive-worker, ...), so discover every running app whose name
-          # contains "worker" instead of hardcoding a list. /usr/sbin/drumee
-          # always exits 0, so echoes are informational only.
-          WORKERS=$(sudo /usr/sbin/drumee jlist | grep -oiE '"name":"[^"]*worker[^"]*"' | cut -d'"' -f4 | sort -u || true)
+          # contains "worker" instead of hardcoding a list. The mobile push
+          # worker is named <endpoint>/mobile-push; restart only this
+          # endpoint's one, never another developer's endpoint on the host.
+          # /usr/sbin/drumee always exits 0, so echoes are informational only.
+          WORKERS=$(sudo /usr/sbin/drumee jlist | grep -oiE '"name":"([^"]*worker[^"]*|main/mobile-push)"' | cut -d'"' -f4 | sort -u || true)
           [ -n "$WORKERS" ] || echo "no offline workers running"
           for W in $WORKERS; do
             sudo /usr/sbin/drumee restart "$W" > /dev/null
@@ -132,7 +134,7 @@ jobs:
           sudo bash -c "cd '$REPO_DIR' && npm run deploy -- deploy" || true
           sudo /usr/sbin/drumee start main || true
           sudo /usr/sbin/drumee start main/service || true
-          WORKERS=$(sudo /usr/sbin/drumee jlist | grep -oiE '"name":"[^"]*worker[^"]*"' | cut -d'"' -f4 | sort -u || true)
+          WORKERS=$(sudo /usr/sbin/drumee jlist | grep -oiE '"name":"([^"]*worker[^"]*|main/mobile-push)"' | cut -d'"' -f4 | sort -u || true)
           for W in $WORKERS; do
             sudo /usr/sbin/drumee restart "$W" || true
           done
@@ -222,8 +224,9 @@ jobs:
           # Offline workers (indexing, gdrive migration, trash/expiry/...) are
           # separate pm2 apps shared by the container; restart them so they
           # pick up the deployed code instead of keeping the old build in RAM.
-          # Names vary per host, so discover running apps matching "worker".
-          WORKERS=\$(/usr/sbin/drumee jlist | grep -oiE '"name":"[^"]*worker[^"]*"' | cut -d'"' -f4 | sort -u || true)
+          # Names vary per host, so discover running apps matching "worker",
+          # plus this endpoint's mobile push worker (<endpoint>/mobile-push).
+          WORKERS=\$(/usr/sbin/drumee jlist | grep -oiE '"name":"([^"]*worker[^"]*|$EP/mobile-push)"' | cut -d'"' -f4 | sort -u || true)
           [ -n "\$WORKERS" ] || echo "no offline workers running"
           for W in \$WORKERS; do
             /usr/sbin/drumee restart "\$W" >> $LOG_FILE 2>&1
