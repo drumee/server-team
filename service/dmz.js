@@ -1500,7 +1500,7 @@ class __dmz extends Mfs {
     const { info } = share;
     const nid = info.node_id || info.nid;
     const attr = async (id) =>
-      toArray(await this.yp.await_proc('forward_proc', info.hub_id, 'mfs_node_attr', `'${id}'`))[0] || {};
+      toArray(await this.yp.await_proc('forward_proc', info.hub_id, 'mfs_node_attr', `${sqlString(id)}`))[0] || {};
     let node;
     try {
       node = await attr(nid);

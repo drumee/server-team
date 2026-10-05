@@ -17,8 +17,9 @@ function slice(sig) {
 }
 const lib = require("../service/lib/meeting-attachments");
 const toArray = (v) => (Array.isArray(v) ? v : v == null ? [] : [v]);
-const meeting_files = new Function("toArray", "attachmentsOf", "isMeetingNode", "Attr",
-  `return ${slice("async meeting_files()")}`)(toArray, lib.attachmentsOf, lib.isMeetingNode, { token: "token" });
+const { sqlString } = require("../service/lib/sql-literal");
+const meeting_files = new Function("toArray", "attachmentsOf", "isMeetingNode", "Attr", "sqlString",
+  `return ${slice("async meeting_files()")}`)(toArray, lib.attachmentsOf, lib.isMeetingNode, { token: "token" }, sqlString);
 
 // The real share resolver, so the password gate is the one production runs.
 const shareByToken = new Function("toArray", `return ${slice("async _shareByToken(token, tag)")}`)(toArray);
