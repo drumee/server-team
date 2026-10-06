@@ -22,6 +22,7 @@ const { holdsHubOwner } = require('../lib/hub-owner');
 const { pushReferralLive } = require('./_referral_live');
 const { markFeatureUsage } = require("../lib/feature-usage");
 const { ctaFeature } = require("../lib/cta-click");
+const { buildSeedInsert } = require("../lib/example-tasks");
 
 const {
   Attr, Privilege, toArray,
@@ -489,20 +490,22 @@ class __private_desk extends Media {
   }
 
   /**
-   * The two example tasks a workspace made from "New workspace" opens with
-   * (Figma Board 922:159854), via schemas' task_seed_examples in the NEW hub's
-   * db. Best effort and silent: answers how many tasks it seeded (0 or 2) and
+   * The two example tasks a new workspace opens with (Figma Board 922:159854),
+   * inserted straight into the NEW hub's `task` table (lib/example-tasks.js).
+   * No stored procedure: it works on every workspace created after a deploy,
+   * pool hubs included, with nothing to patch in hub DBs or the factory's
+   * hub template.
+   *
+   * Best effort and silent: answers how many tasks it inserted (0 or 2) and
    * never throws, so workspace creation behaves exactly as before when it is
-   * skipped.
+   * skipped — no task table in that hub, a table missing a needed column, or
+   * a workspace that already has tasks (the single INSERT … WHERE NOT EXISTS
+   * then inserts nothing).
    *
-   * The procedure's existence is checked first, in that hub's db. Pool hubs
-   * built before the patch (and any hub dumped from a stale factory template)
-   * do not have it, and a CALL to a missing procedure (ERROR 1305) leaves the
-   * connection desynchronised so a concurrent request hangs.
-   *
-   * A failed CALL closes this request's db connection (see below), so do not
-   * add db work after this call in create_hub assuming the connection is the
-   * same one; it reconnects transparently.
+   * The driver does not reject on an SQL error: it logs "SQL failure", closes
+   * this request's db connection (the next query reconnects) and resolves
+   * undefined. So an undefined answer is the failure signal, and nothing after
+   * this call in create_hub should assume the same connection.
    *
    * @param {string} hub_db the new hub's database
    * @param {string} nid    the hub's root node — root-level tasks' scope
@@ -511,27 +514,28 @@ class __private_desk extends Media {
   async _seedExampleTasks(hub_db, nid) {
     if (!hub_db || !nid) return 0;
     try {
-      const row = await this.db.await_query(
-        "SELECT COUNT(*) n FROM information_schema.routines WHERE routine_schema=? AND routine_name='task_seed_examples'",
+      const rows = await this.db.await_query(
+        "SELECT column_name AS c FROM information_schema.columns WHERE table_schema=? AND table_name='task'",
         hub_db,
       );
-      if (!row || !Number(row.n)) return 0;
-      const res = await this.db.await_proc(
-        `${hub_db}.task_seed_examples`,
-        this.uid,
-        nid,
-        "Task 1",
-        "Task 2",
-        "Enter the description for task",
-      );
-      // The driver does not reject on an SQL error: _handleError logs
-      // "SQL failure", closes this.db (the next query reconnects) and
-      // resolves undefined. So a missing `seeded` is the failure signal.
-      if (!res || res.seeded == null) {
-        this.warn("[desk.create_hub] example tasks not seeded: task_seed_examples failed in", hub_db);
+      // The driver unwraps a single-row answer to an object.
+      const columns = toArray(rows).map((r) => r && r.c).filter(Boolean);
+      if (!columns.length) return 0;
+      const ids = [
+        await this.yp.await_func("uniqueId"),
+        await this.yp.await_func("uniqueId"),
+      ];
+      const insert = buildSeedInsert(hub_db, columns, ids, this.uid, nid);
+      if (!insert) {
+        this.warn("[desk.create_hub] example tasks not seeded: unusable task table in", hub_db);
         return 0;
       }
-      return Number(res.seeded);
+      const res = await this.db.await_query(insert.sql, ...insert.params);
+      if (!res) {
+        this.warn("[desk.create_hub] example tasks not seeded: insert failed in", hub_db);
+        return 0;
+      }
+      return Number(res.affectedRows || 0);
     } catch (e) {
       this.warn("[desk.create_hub] example tasks not seeded:", e && e.message);
       return 0;
