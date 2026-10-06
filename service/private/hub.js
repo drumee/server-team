@@ -34,8 +34,9 @@ const { mailFailure } = require("../lib/mail-result");
 const { resolveHubInviteName } = require("../lib/hub-invite-name");
 const { resolveHubDisplayName } = require("../lib/hub-display-name");
 const {
-  CAN_CHAT, CAN_OWN, CHAT_UPLOAD_GRANT, privilegeAllows
+  CAN_CHAT, CHAT_UPLOAD_GRANT, privilegeAllows
 } = require("../lib/member-capability");
+const { hubWildcardPermission, holdsHubOwner } = require("../lib/hub-owner");
 const { MfsTools } = require("@drumee/server-core");
 const { remove_dir } = MfsTools;
 const { toArray } = utils;
@@ -1434,18 +1435,7 @@ class __private_hub extends Hub {
    * the safe direction for a lookup that could not answer.
    */
   async _hubPermission(db_name, uid) {
-    try {
-      if (!/^[A-Za-z0-9_]+$/.test(String(db_name || ''))) return 0;
-      let row = await this.yp.await_query(
-        `SELECT permission FROM \`${db_name}\`.permission
-          WHERE resource_id='*' AND entity_id=? LIMIT 1`,
-        uid
-      );
-      if (isArray(row)) row = row[0];
-      return ~~(row && row.permission);
-    } catch (e) {
-      return 0;
-    }
+    return hubWildcardPermission(this.yp, db_name, uid);
   }
 
   /**
@@ -1461,7 +1451,7 @@ class __private_hub extends Hub {
    * alone instead.
    */
   async _holdsOwner(db_name, uid) {
-    return privilegeAllows(await this._hubPermission(db_name, uid), CAN_OWN);
+    return holdsHubOwner(this.yp, db_name, uid);
   }
 
   async invite() {
@@ -3185,16 +3175,28 @@ class __private_hub extends Hub {
   async delete_contributor() {
     let users = this.input.need(Attr.users);
     users = toArray(users);
+    const hub_db = this.hub.get(Attr.db_name);
+    // The owner is never removed: leave_hub drops their row and the workspace
+    // is left with no owner (see _holdsOwner). Ownership moves by change_owner.
     let members = [];
+    let owners = 0;
     for (let uid of users) {
-      if (uid != this.uid) {
-        members.push(uid);
+      if (uid == this.uid) continue;
+      if (await this._holdsOwner(hub_db, uid)) {
+        owners++;
+        continue;
       }
+      members.push(uid);
+    }
+    if (owners && !members.length) {
+      return this.output.data({
+        error: "OWNER_CANNOT_BE_REMOVED",
+        reason: "The workspace owner cannot be removed.",
+      });
     }
 
     let service = "media.remove";
     let hub_id = this.hub.get(Attr.id);
-    const hub_db = this.hub.get(Attr.db_name);
     // A workspace's display name lives in its profile (same source as
     // conference.hubDisplayName). `Attr.name` is often unset, and falling back
     // to the id put a raw id in front of the user — the removal notice named
@@ -3464,8 +3466,22 @@ class __private_hub extends Hub {
   /**
    * 
    */
-  change_owner() {
+  async change_owner() {
     const new_owner = this.input.need(Attr.id);
+    // The SP demotes every current owner before it promotes `new_owner`, and
+    // takes any id it is given: an id that is not an active member here
+    // handed ownership to nobody and left the real owner on 31. Only an
+    // active account already in this workspace may receive it.
+    let row = await this.yp.await_query(
+      "SELECT status FROM entity WHERE id=? AND type='drumate' LIMIT 1",
+      new_owner
+    );
+    if (isArray(row)) row = row[0];
+    const active = row && row.status === "active";
+    const member = await this._hubPermission(this.hub.get(Attr.db_name), new_owner);
+    if (!active || !member) {
+      return this.exception.user("NEW_OWNER_MUST_BE_ACTIVE_MEMBER");
+    }
     this.db.call_proc("change_owner", new_owner, this.output.data);
   }
 

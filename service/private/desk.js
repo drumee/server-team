@@ -18,6 +18,7 @@
 const { after, union, filter, isEmpty } = require('lodash');
 const Media = require('../media');
 const { writeAudit } = require('./_audit');
+const { holdsHubOwner } = require('../lib/hub-owner');
 const { pushReferralLive } = require('./_referral_live');
 const { markFeatureUsage } = require("../lib/feature-usage");
 const { ctaFeature } = require("../lib/cta-click");
@@ -556,6 +557,18 @@ class __private_desk extends Media {
    */
   async leave_hub() {
     const hub_id = this.input.use(Attr.nid);
+    // The owner does not walk out: leave_hub drops their row and the workspace
+    // is left with no owner. They delete it, or hand it over by change_owner.
+    // Checked before anything is pushed, so a refused leave touches nothing.
+    if (hub_id && hub_id != this.uid) {
+      const hub_db = await this.yp.await_func('get_db_name', hub_id);
+      if (hub_db && await holdsHubOwner(this.yp, hub_db, this.uid)) {
+        return this.output.data({
+          error: "OWNER_CANNOT_LEAVE",
+          reason: "The workspace owner cannot leave it.",
+        });
+      }
+    }
     let sockets = await this.yp.await_proc('user_sockets', this.uid);
     let payload = { ...this.granted_node(), reason: 'leave', uid: this.uid };
     await this.changelog_write({ src: payload, event: "media.remove" });

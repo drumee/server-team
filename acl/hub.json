@@ -357,7 +357,7 @@
       }
     },
     "delete_contributor": {
-      "doc": "Remove members from hub (broadcasts removal notification)",
+      "doc": "Remove members from hub (broadcasts removal notification). The workspace owner is never removed; when the owner is the only one asked for, the answer is error OWNER_CANNOT_BE_REMOVED in the response body and nothing is changed.",
       "scope": "hub",
       "permission": {
         "src": "admin"
@@ -605,6 +605,14 @@
       }
     },
     "change_owner": {
+      "doc": "Hand the workspace over to another member. The new owner must be an active account that is already a member of this workspace.",
+      "errors": [
+        {
+          "code": "NEW_OWNER_MUST_BE_ACTIVE_MEMBER",
+          "message": "The new owner must be an active member of this workspace",
+          "http_status": 400
+        }
+      ],
       "scope": "hub",
       "permission": {
         "src": "admin"
