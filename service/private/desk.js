@@ -480,7 +480,51 @@ class __private_desk extends Media {
       log: `Workspace '${actual_filename}' created (area=${area})`,
     });
 
+    // A new workspace opens with two example tasks in To Do (best effort —
+    // see _seedExampleTasks). Before answering, so the Task tab's first
+    // task.list already sees them.
+    await this._seedExampleTasks(hub_db, media.actual_home_id);
+
     this.output.data(media);
+  }
+
+  /**
+   * The two example tasks a workspace made from "New workspace" opens with
+   * (Figma Board 922:159854), via schemas' task_seed_examples in the NEW hub's
+   * db. Best effort and silent: answers how many tasks it seeded (0 or 2) and
+   * never throws, so workspace creation behaves exactly as before when it is
+   * skipped.
+   *
+   * The procedure's existence is checked first, in that hub's db. Pool hubs
+   * built before the patch (and any hub dumped from a stale factory template)
+   * do not have it, and a CALL to a missing procedure (ERROR 1305) leaves the
+   * connection desynchronised so a concurrent request hangs.
+   *
+   * @param {string} hub_db the new hub's database
+   * @param {string} nid    the hub's root node — root-level tasks' scope
+   * @returns {Promise<number>}
+   */
+  async _seedExampleTasks(hub_db, nid) {
+    if (!hub_db || !nid) return 0;
+    try {
+      const row = await this.db.await_query(
+        "SELECT COUNT(*) n FROM information_schema.routines WHERE routine_schema=? AND routine_name='task_seed_examples'",
+        hub_db,
+      );
+      if (!row || !Number(row.n)) return 0;
+      const res = await this.db.await_proc(
+        `${hub_db}.task_seed_examples`,
+        this.uid,
+        nid,
+        "Task 1",
+        "Task 2",
+        "Enter the description for task",
+      );
+      return Number((res && res.seeded) || 0);
+    } catch (e) {
+      this.warn("[desk.create_hub] example tasks not seeded:", e && e.message);
+      return 0;
+    }
   }
 
   /**
