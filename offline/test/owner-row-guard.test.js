@@ -58,8 +58,50 @@ test("each member write asks _holdsOwner before writing", () => {
   }
 });
 
-test("_holdsOwner reads the owner bit off the '*' row", () => {
-  const src = body("_holdsOwner");
+test("_holdsOwner reads the owner bit off the '*' row (lib/hub-owner)", async () => {
+  assert.match(body("_holdsOwner"), /holdsHubOwner\(/);
+  const { hubWildcardPermission, holdsHubOwner } = require("../../service/lib/hub-owner");
+  const yp = (perm) => ({ await_query: async () => [{ permission: perm }] });
+  assert.equal(await holdsHubOwner(yp(63), "hub_db", "u"), true);
+  for (const p of [31, 15, 7, 3, 0]) {
+    assert.equal(await holdsHubOwner(yp(p), "hub_db", "u"), false, `perm ${p}`);
+  }
+  // An odd db name is never interpolated, and any failure reads as 0.
+  let asked = false;
+  const spy = { await_query: async () => { asked = true; return [{ permission: 63 }]; } };
+  assert.equal(await hubWildcardPermission(spy, "x`; DROP", "u"), 0);
+  assert.equal(asked, false);
+  const broken = { await_query: async () => { throw new Error("down"); } };
+  assert.equal(await hubWildcardPermission(broken, "hub_db", "u"), 0);
+});
+
+test("delete_contributor never removes the owner", () => {
+  const src = body("delete_contributor");
+  const guard = src.indexOf("this._holdsOwner(");
+  const leave = src.indexOf(".leave_hub`");
+  assert.ok(guard > 0 && leave > 0 && guard < leave);
+  assert.match(src, /OWNER_CANNOT_BE_REMOVED/);
+});
+
+test("change_owner only hands over to an active member", () => {
+  const src = body("change_owner");
+  const check = src.indexOf("NEW_OWNER_MUST_BE_ACTIVE_MEMBER");
+  const call = src.indexOf('"change_owner"');
+  assert.ok(check > 0 && call > 0 && check < call);
+  assert.match(src, /status === "active"/);
   assert.match(src, /_hubPermission\(/);
-  assert.match(src, /CAN_OWN/);
+});
+
+test("desk.leave_hub refuses the owner before anything is pushed", () => {
+  const DESK = readFileSync(join(__dirname, "../../service/private/desk.js"), "utf8");
+  const start = DESK.indexOf("\n  async leave_hub(");
+  assert.ok(start > 0);
+  const src = DESK.slice(start, DESK.indexOf("\n  }\n", start));
+  const guard = src.indexOf("holdsHubOwner(");
+  for (const effect of ["user_sockets", "changelog_write", "sendData", "'leave_hub'"]) {
+    const at = src.indexOf(effect);
+    assert.ok(at > 0, `${effect} not found`);
+    assert.ok(guard > 0 && guard < at, `guard must come before ${effect}`);
+  }
+  assert.match(src, /OWNER_CANNOT_LEAVE/);
 });

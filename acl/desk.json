@@ -448,7 +448,7 @@
       ]
     },
     "leave_hub": {
-      "doc": "Leave a shared hub (remove user membership from hub)",
+      "doc": "Leave a shared hub (remove user membership from hub). The workspace owner cannot leave - answered with error OWNER_CANNOT_LEAVE in the response body and nothing is changed; the owner deletes the workspace or hands it over by hub.change_owner.",
       "scope": "hub",
       "permission": {
         "src": "anonymous"
