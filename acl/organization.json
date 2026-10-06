@@ -34,6 +34,24 @@
         }
       }
     },
+    "my_departments": {
+      "doc": "The departments the CALLER can see, each with its workspaces - what the topbar's department crumb, its 'Switch Departments' list and the department-scoped workspace switcher draw. A caller at dom_admin_security or above gets every department of the organisation (empty ones included) and every workspace in them, the same inventory overview hands them. Anyone below that gets only the departments they have a workspace in, and only those workspaces, read from their OWN membership (yp.my_departments) - never a workspace name they could not open. Ungrouped workspaces are not listed: they have no department to draw. Outside an organisation the list is empty, not an error.",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "params": {},
+      "returns": {
+        "departments": {
+          "type": "array",
+          "doc": "[{id, name, rank, workspaces:[desk.home-shaped rows]}] in rank order"
+        },
+        "can_manage": {
+          "type": "number",
+          "doc": "1 when the caller may add / rename / delete departments (>= dom_admin)"
+        }
+      }
+    },
     "rename": {
       "doc": "Rename the organisation - the pencil beside its name in the org dropdown. Changes the DISPLAY NAME only. Deliberately not organization.update, which also calls domain_update and would rewrite yp.domain.name to '<ident>.<main_domain>' - a no-op on a healthy row but a corrupted address on one whose ident is NULL. Org-admin only, same gate as the department mutations.",
       "scope": "hub",

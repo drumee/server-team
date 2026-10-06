@@ -40,6 +40,7 @@ class __private_adminpanel extends Entity {
     this.update_dir_info = this.update_dir_info.bind(this);
 
     this.overview = this.overview.bind(this);
+    this.my_departments = this.my_departments.bind(this);
     this.rename = this.rename.bind(this);
     this.department_add = this.department_add.bind(this);
     this.department_rename = this.department_rename.bind(this);
@@ -371,6 +372,64 @@ class __private_adminpanel extends Entity {
       // inferred from an empty list: "no departments yet" and "not allowed to
       // see the departments" are different states and must not render alike.
       can_browse: org.browse ? 1 : 0,
+    });
+  }
+
+  /**
+   * The departments the caller can see, each carrying its workspaces — what
+   * the topbar's "Department-name v" crumb and the department-scoped
+   * workspace switcher draw.
+   *
+   * TWO SOURCES, ONE SHAPE. An admin (browse) gets the organisation's whole
+   * inventory, exactly what overview already hands them, regrouped. Anyone
+   * else gets yp.my_departments: only the departments they have a workspace
+   * in, and only those workspaces, read from their OWN membership. The crumb
+   * is shown to every member, so it cannot use the inventory -- that is the
+   * disclosure overview's header describes -- and it cannot leave members
+   * without a crumb either.
+   *
+   * Ungrouped workspaces are dropped: they have no department to draw.
+   */
+  async my_departments() {
+    const org = await this._org();
+    if (!org) return this.output.data({ departments: [], can_manage: 0 });
+
+    let departments = [];
+    let workspaces = [];
+    if (org.browse) {
+      const [d, w] = await Promise.all([
+        this.yp.await_proc('org_departments', org.domain_id),
+        this.yp.await_proc('org_workspaces', org.domain_id),
+      ]);
+      departments = this._rows(d);
+      workspaces = this._rows(w);
+    } else {
+      workspaces = this._rows(
+        await this.yp.await_proc('my_departments', this.uid, org.domain_id),
+      );
+      // Departments in the order the proc returned their workspaces, which is
+      // rank order -- the same order org_departments uses.
+      const seen = new Map();
+      for (const w of workspaces) {
+        if (!seen.has(w.department_id)) {
+          seen.set(w.department_id, {
+            id: w.department_id,
+            name: w.department_name,
+            rank: w.department_rank,
+          });
+        }
+      }
+      departments = [...seen.values()];
+    }
+
+    const byDept = new Map(departments.map((d) => [d.id, { ...d, workspaces: [] }]));
+    for (const w of workspaces) {
+      const d = w.department_id && byDept.get(w.department_id);
+      if (d) d.workspaces.push(w);
+    }
+    this.output.data({
+      departments: [...byDept.values()],
+      can_manage: org.write ? 1 : 0,
     });
   }
 
