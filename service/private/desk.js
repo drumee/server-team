@@ -500,6 +500,10 @@ class __private_desk extends Media {
    * do not have it, and a CALL to a missing procedure (ERROR 1305) leaves the
    * connection desynchronised so a concurrent request hangs.
    *
+   * A failed CALL closes this request's db connection (see below), so do not
+   * add db work after this call in create_hub assuming the connection is the
+   * same one; it reconnects transparently.
+   *
    * @param {string} hub_db the new hub's database
    * @param {string} nid    the hub's root node — root-level tasks' scope
    * @returns {Promise<number>}
@@ -520,7 +524,14 @@ class __private_desk extends Media {
         "Task 2",
         "Enter the description for task",
       );
-      return Number((res && res.seeded) || 0);
+      // The driver does not reject on an SQL error: _handleError logs
+      // "SQL failure", closes this.db (the next query reconnects) and
+      // resolves undefined. So a missing `seeded` is the failure signal.
+      if (!res || res.seeded == null) {
+        this.warn("[desk.create_hub] example tasks not seeded: task_seed_examples failed in", hub_db);
+        return 0;
+      }
+      return Number(res.seeded);
     } catch (e) {
       this.warn("[desk.create_hub] example tasks not seeded:", e && e.message);
       return 0;

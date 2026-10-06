@@ -66,6 +66,27 @@ test("CALL throws: warned, creation unaffected", async () => {
   assert.equal(f.warns.length, 1);
 });
 
+// What production actually does on an SQL error: server-essentials'
+// mariadb _handleError logs "SQL failure", closes the connection and
+// RESOLVES undefined — it does not reject (verified against the real driver
+// in the final review). The helper must still answer 0 and say why.
+test("CALL fails in the driver (resolves undefined): 0, and warned", async () => {
+  const f = fake();
+  f.db.await_proc = async (name, ...args) => {
+    f.calls.push({ name, args });
+    return undefined;
+  };
+  assert.equal(await seed.call(f, "hub_db_1", "home1"), 0);
+  assert.equal(f.warns.length, 1);
+  assert.match(f.warns[0], /example tasks not seeded/);
+});
+
+test("a no-op seed (workspace already has tasks) is not a warning", async () => {
+  const f = fake({ seeded: 0 });
+  assert.equal(await seed.call(f, "hub_db_1", "home1"), 0);
+  assert.equal(f.warns.length, 0);
+});
+
 test("no hub db or no root nid: nothing is attempted", async () => {
   for (const [db, nid] of [[null, "home1"], ["hub_db_1", null]]) {
     const f = fake();
