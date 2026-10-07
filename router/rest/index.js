@@ -103,6 +103,17 @@ const OVER_LIMIT_MUTATING_ALLOWLIST = new Set([
   // hub.invite itself stays clamped, so nothing here can grow the overage.
   // Measured on the dev endpoint: 401 OVER_LIMIT_READ_ONLY:hub.invitations.
   "hub.invitations",
+  // 🚨 The same trap, module-wide: acl/chat.json declares EVERY direct-chat
+  // method src:'write', the pure reads included, so a locked org's owner lost
+  // the conversation list, the unread counts and the messages themselves —
+  // "read-only" that could not read (measured on the aaron endpoint, 401
+  // OVER_LIMIT_READ_ONLY:chat.chat_rooms). These only read: their procs write
+  // nothing but temporary tables, and chat.messages adds a read-receipt push
+  // to the author's sockets. chat.post / forward / react / delete /
+  // acknowledge / upload_remove / change_status stay clamped.
+  "chat.chat_rooms", "chat.contact_rooms", "chat.share_rooms",
+  "chat.chat_room_info", "chat.tag_chat_count", "chat.count_all",
+  "chat.messages",
 ]);
 // Once hard-locked, NON-admin members are denied entirely — not even read
 // (Owner/Admin keep view + resolution access). The FE still needs enough to
