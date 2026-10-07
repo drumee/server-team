@@ -185,6 +185,7 @@ class __private_room extends __public_room {
     // Register in the global reminder index (creator only for now — attendees
     // are added by a subsequent update() with flag 'member').
     await this._index_meeting(node && (node.id || node.nid), metadata.content);
+    await this._broadcast('room.book', node && (node.id || node.nid));
     this.output.data(node);
   }
 
@@ -360,6 +361,7 @@ class __private_room extends __public_room {
     // Keep the global reminder index in lockstep with the edited meeting
     // (attendee set, moved time, cleared/added recurrence).
     await this._index_meeting(nid, content);
+    await this._broadcast('room.update', nid);
     await this.output.data((content));
   }
 
@@ -506,6 +508,33 @@ class __private_room extends __public_room {
       await RedisStore.sendData(this.payload(data, { service: 'room.scheduled' }), recipients);
     } catch (e) {
       this.warn && this.warn('room._notify_invitees failed', e);
+    }
+  }
+
+  /**
+   * Tell every socket on this hub that its meeting schedule changed, so an
+   * open calendar (web Meet tab, mobile Meet tab) refetches instead of
+   * waiting for a reload. `room.scheduled` cannot carry this: web shows an
+   * invitation toast for every frame of it.
+   *
+   * Unlike task._broadcast, the caller's sockets are dropped only when the
+   * request names its socket_id. The Meet tab is used by one person on a
+   * phone and in a browser at once, and neither client sends socket_id on
+   * every call — dropping every socket of the caller would hide the meeting
+   * from that person's other device. The caller refetching once more is the
+   * cheaper mistake. Best-effort: the change is already saved.
+   */
+  async _broadcast(service, nid) {
+    try {
+      const hub_id = this.hub && this.hub.get(Attr.id);
+      if (!hub_id || !nid) return;
+      const socket_id = this.input.get(Attr.socket_id);
+      let dest = toArray(await this.yp.await_proc('entity_sockets', hub_id));
+      if (socket_id) dest = dest.filter((e) => e && e.socket_id != socket_id);
+      if (isEmpty(dest)) return;
+      await RedisStore.sendData(this.payload({ nid, hub_id }, { service }), dest);
+    } catch (e) {
+      this.warn && this.warn('room._broadcast failed', e);
     }
   }
 
@@ -661,6 +690,7 @@ class __private_room extends __public_room {
     }
     await this.db.await_proc('permission_revoke', nid, "meeting");
     await this._unindex_meeting(nid);
+    await this._broadcast('room.remove', nid);
     this.output.data({ nid });
   }
 
