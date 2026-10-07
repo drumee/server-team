@@ -866,6 +866,10 @@ class MfsActivity extends Entity {
     // The changelog read pointer and the share-open seen flag both back the Files
     // tab, so they are skipped when the user is clearing a different tab. Without
     // this, clearing "Chat" would silently mark every file notification read too.
+    // mfs_mark_all_read does more than move that pointer — it also marks every
+    // contact_activity row read and advances every p2p chat pointer — so only
+    // the unscoped call uses it; clearing Files alone goes through
+    // _markChangelogRead, or it would clear Task, Meeting, Other and Chat too.
     const clearFiles = !bucket || bucket === BUCKET.files;
 
     this.debug(`[MFS_ACTIVITY] Marking all read for user ${this.uid}, last_id: ${lastId}, bucket: ${bucket || 'all'}`);
@@ -923,7 +927,9 @@ class MfsActivity extends Entity {
     // undefined last_read_id.
     let data = { status: 'ok', last_read_id: 0 };
     if (clearFiles) {
-      const result = await this._callUserProc('mfs_mark_all_read', this.uid, lastId);
+      const result = bucket === BUCKET.files
+        ? await this._markChangelogRead(lastId)
+        : await this._callUserProc('mfs_mark_all_read', this.uid, lastId);
       data = toArray(result)[0];
     }
 
@@ -2251,6 +2257,20 @@ class MfsActivity extends Entity {
     const { ok, rows } = await this._optionalYpProcResult('contact_activity_mark_read', this.uid, activityId);
     if (ok) return rows;
     return this._callUserProc('contact_activity_dismiss', this.uid, activityId);
+  }
+
+  /**
+   * Move only the changelog read pointer — the Files tab's own state. Until
+   * mfs_mark_changelog_read is applied to the user's database, falls back to
+   * mfs_mark_all_read, the previous and broader clear, so marking Files read
+   * still works during a rollout. The fallback also clears the other tabs
+   * again, and `undefined` cannot tell a missing routine from a transient
+   * failure, so drop it once every user database has the routine.
+   */
+  async _markChangelogRead(lastId) {
+    const rows = await this._callUserProc('mfs_mark_changelog_read', this.uid, lastId);
+    if (rows !== undefined) return rows;
+    return this._callUserProc('mfs_mark_all_read', this.uid, lastId);
   }
 
   /**

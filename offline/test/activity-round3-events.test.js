@@ -737,8 +737,9 @@ const bucketHelpers = new Function(
   const Klass = new Function(
     'toArray', 'validBucket', 'bucketOf', 'BUCKET', 'lookup', 'GUARD',
     `class R {
-       constructor(bucket, rollups) {
+       constructor(bucket, rollups, changelogProcDeployed = true) {
          this.uid = 'u1';
+         this.changelogProcDeployed = changelogProcDeployed;
          this.userProcs = [];
          this.ypProcs = [];
          this.dismissed = [];
@@ -754,6 +755,11 @@ const bucketHelpers = new Function(
          if (name === 'notification_center_next') return this._rollups;
          if (name === 'contact_activity_dismiss') { this.dismissed.push(args[1]); return {}; }
          if (name === 'mfs_mark_all_read') return [{ status: 'ok', last_read_id: 42 }];
+         // await_proc answers undefined, not an error, for a routine the
+         // database does not have yet.
+         if (name === 'mfs_mark_changelog_read') {
+           return this.changelogProcDeployed ? [{ status: 'ok', last_read_id: 41 }] : undefined;
+         }
          return [];
        }
        get yp() {
@@ -766,6 +772,7 @@ const bucketHelpers = new Function(
        }
        _optionalYpProc = GUARD;
        ${sliceMethod('mark_all_read')}
+       ${sliceMethod('_markChangelogRead')}
      }
      return R;`,
   )(toArray, bucketHelpers.validBucket, bucketHelpers.bucketOf,
@@ -800,10 +807,37 @@ const bucketHelpers = new Function(
     const r = new Klass(undefined);
     return_await(r.mark_all_read(), () => {
       ok(r.userProcs.includes('mfs_mark_all_read'), 'unscoped still clears the changelog');
+      ok(!r.userProcs.includes('mfs_mark_changelog_read'),
+        'unscoped keeps its broader clear');
       ok(!r.ypProcs.some((p) => /_unread$/.test(p)),
         'unscoped touches no contact_activity rows, exactly as before');
       eq(r.captured.bucket, null, 'and reports no bucket');
       eq(r.captured.message, 'All notifications marked as read', 'with the unchanged wording');
+    });
+  }
+  {
+    // mfs_mark_all_read also marks every contact_activity row read and advances
+    // every p2p chat pointer, so clearing Files through it cleared the Task,
+    // Meeting, Other and Chat tabs as well. Files moves the changelog pointer only.
+    const r = new Klass('files');
+    return_await(r.mark_all_read(), () => {
+      ok(r.userProcs.includes('mfs_mark_changelog_read'),
+        'clearing Files moves the changelog read pointer');
+      ok(!r.userProcs.includes('mfs_mark_all_read'),
+        'clearing Files must not mark the other tabs read');
+      eq(r.captured.status, 'ok', 'and reports success');
+      eq(r.captured.last_read_id, 41, 'with the pointer it moved to');
+    });
+  }
+  {
+    // A database without mfs_mark_changelog_read yet: Files still gets cleared,
+    // through the previous broader proc, rather than failing.
+    const r = new Klass('files', [], false);
+    return_await(r.mark_all_read(), () => {
+      ok(r.userProcs.includes('mfs_mark_all_read'),
+        'falls back to mfs_mark_all_read while the routine is not deployed');
+      eq(r.captured.status, 'ok', 'and still reports success');
+      eq(r.captured.last_read_id, 42, 'from the fallback proc');
     });
   }
   {
