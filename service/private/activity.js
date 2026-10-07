@@ -461,6 +461,21 @@ function stampBuckets(rows) {
   return rows;
 }
 
+// A stored rollup is a snapshot, so a row at a workspace ROOT (parent_id '0')
+// keeps the workspace name it had when captured. Name it with the viewer's
+// current desk label (notification_rollup_list's hub_label) instead. Only the
+// fields that carried that old name are replaced: a folder below the root, or
+// a single-file upload's own name, is never touched.
+function relabelWorkspaceRoot(row, label) {
+  if (!row || !label || String(row.parent_id) !== '0') return row;
+  const old = row.filename;
+  if (!old || old === label) return row;
+  for (const k of ['filename', 'folder_name', 'link_label']) {
+    if (row[k] === old) row[k] = label;
+  }
+  return row;
+}
+
 // The key notification_dismiss / notification_read act on for a rollup row.
 // It is NOT the rollup's display `key_id`: notification_center_next coalesces
 // key_id from the contact / drumate first, so a media rollup's key_id is the
@@ -2537,14 +2552,14 @@ class MfsActivity extends Entity {
         try { payload = JSON.parse(payload); } catch (e) { payload = null; }
       }
       if (!payload || typeof payload !== 'object') continue;
-      out.push({
+      out.push(relabelWorkspaceRoot({
         ...payload,
         category: r.category,
         key_id: r.key_id,
         hub_id: payload.hub_id != null ? payload.hub_id : r.hub_id,
         ctime: r.ctime,
         timestamp: r.ctime,
-      });
+      }, r.hub_label));
     }
     return stampBuckets(out);
   }
