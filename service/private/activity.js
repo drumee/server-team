@@ -1618,15 +1618,35 @@ class MfsActivity extends Entity {
     if (!wanted.size) return;
 
     const names = new Map();
+    const rootKeys = new Map(); // key -> hub_id, for parents that are the workspace root
     for (const [key, { hub_id, parent_id }] of wanted) {
       try {
         const a = toArray(
           await this.yp.await_proc('forward_proc', hub_id, 'mfs_node_attr', `${sqlString(parent_id)}`)
         )[0] || {};
         if (a.filename && !internal(a.filename)) names.set(key, a.filename);
+        if (a.filename && `${a.parent_id}` === '0') rootKeys.set(key, hub_id);
       } catch (e) {
         this.debug('[ACTIVITY] folder name lookup failed', key, e && e.message);
       }
+    }
+    // At the workspace root mfs_node_attr answers with the workspace's shared
+    // name (yp.hub.name), which a desk rename never writes. Name it the way the
+    // viewer's desk does: mfs_access_node on the viewer's own db returns the
+    // hub node's own label. One lookup per distinct workspace; on any failure
+    // the shared name stays.
+    const labels = new Map();
+    for (const hub_id of new Set(rootKeys.values())) {
+      try {
+        const node = toArray(await this._callUserProc('mfs_access_node', this.uid, hub_id))[0] || {};
+        if (node.filetype === 'hub' && node.filename) labels.set(hub_id, node.filename);
+      } catch (e) {
+        this.debug('[ACTIVITY] workspace label lookup failed', hub_id, e && e.message);
+      }
+    }
+    for (const [key, hub_id] of rootKeys) {
+      const label = labels.get(hub_id);
+      if (label) names.set(key, label);
     }
     for (const [row, key] of targets) {
       const name = names.get(key);

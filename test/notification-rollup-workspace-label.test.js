@@ -99,3 +99,65 @@ test('a p2p chat row is untouched', async () => {
   ])._storedRollups();
   assert.equal(row.filename, 'Lexis Hoang');
 });
+
+// Raw mfs_changelog rows ("created folder Customers") get their chip from
+// _stampFolderNames, whose mfs_node_attr lookup names the workspace ROOT by
+// its shared name. The chip must name it the way the viewer's desk does.
+function stampWith({ attrs, label, labelThrows }) {
+  const activity = Object.create(Activity.prototype);
+  activity.uid = 'me';
+  activity.debug = () => undefined;
+  const userCalls = [];
+  activity.yp = {
+    await_proc: async (proc, hubId, inner, parent) => {
+      assert.equal(proc, 'forward_proc');
+      assert.equal(inner, 'mfs_node_attr');
+      return [attrs[parent.replace(/'/g, '')] || {}];
+    },
+  };
+  activity._callUserProc = async (proc, uid, hubId) => {
+    userCalls.push([proc, uid, hubId]);
+    if (labelThrows) throw new Error('boom');
+    return [label == null ? {} : { filetype: 'hub', filename: label }];
+  };
+  return { activity, userCalls };
+}
+
+function changelogRow(parent) {
+  return { event: 'media.new', hub_id: 'hub-1', dest: JSON.stringify({ parent_id: parent }) };
+}
+
+test('a file at the workspace root names the workspace as the desk does', async () => {
+  const { activity, userCalls } = stampWith({
+    attrs: { root: { filename: 'Old name', parent_id: '0' } },
+    label: 'New name',
+  });
+  const rows = [changelogRow('root'), changelogRow('root')];
+  await activity._stampFolderNames(rows);
+  assert.equal(rows[0].folder_name, 'New name');
+  assert.equal(rows[1].folder_name, 'New name');
+  assert.deepEqual(userCalls, [['mfs_access_node', 'me', 'hub-1']]); // one lookup per workspace
+});
+
+test('a file in a sub-folder keeps the folder name, with no label lookup', async () => {
+  const { activity, userCalls } = stampWith({
+    attrs: { sub: { filename: 'Specs', parent_id: 'root' } },
+    label: 'New name',
+  });
+  const rows = [changelogRow('sub')];
+  await activity._stampFolderNames(rows);
+  assert.equal(rows[0].folder_name, 'Specs');
+  assert.equal(userCalls.length, 0);
+});
+
+test('no desk label, or a failing lookup, keeps the shared name', async () => {
+  for (const opts of [{ label: null }, { labelThrows: true }]) {
+    const { activity } = stampWith({
+      attrs: { root: { filename: 'Old name', parent_id: '0' } },
+      ...opts,
+    });
+    const rows = [changelogRow('root')];
+    await activity._stampFolderNames(rows);
+    assert.equal(rows[0].folder_name, 'Old name');
+  }
+});
