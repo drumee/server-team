@@ -55,7 +55,10 @@ function fakeService({ privilege }) {
     randomString: () => "tag",
     source_granted: () => ({ node: { ...node(CALLER.uid, "Old"), hub_id: CALLER.uid } }),
     input: { need: () => "New Name", get: () => undefined, use: () => undefined },
-    exception: { user: (code) => calls.push(["exception", code]) },
+    exception: {
+      user: (code) => calls.push(["exception", code]),
+      forbiden: () => calls.push(["forbiden"]),
+    },
     hub: { get: (k) => (k === Attr.id ? CALLER.uid : k === Attr.db_name ? CALLER.db : undefined) },
     changelog_write: async () => {},
     payload: (model) => ({ model }),
@@ -122,13 +125,29 @@ test("hub admin: every member's row is renamed and every member is told", async 
   assert.equal(svc.result.args.dest.filename, "New Name");
 });
 
-test("member below admin: personal rename only, nobody else touched", async () => {
+// Duy 2026-10-07: renaming a workspace is for admins and the owner only. A
+// member below admin used to get a personal rename; now nothing is written.
+for (const [role, privilege] of [["view", 3], ["chat", 7], ["edit", 15]]) {
+  test(`member below admin (${role}): refused, nothing renamed, nobody told`, async () => {
+    sent.length = 0;
+    const svc = fakeService({ privilege });
+    await svc.rename();
+
+    assert.ok(svc.calls.some((c) => c[0] === "forbiden"));
+    assert.ok(!svc.calls.some((c) => c[1] === "mfs_rename"));
+    assert.ok(!svc.calls.some((c) => c[1] === "hub_rename_for_members"));
+    assert.deepEqual(sent, []);
+    assert.equal(svc.result, undefined);
+  });
+}
+
+test("admin (31) renames for everyone, like the owner", async () => {
   sent.length = 0;
-  const svc = fakeService({ privilege: 3 });
+  const svc = fakeService({ privilege: 31 });
   await svc.rename();
 
-  assert.ok(!svc.calls.some((c) => c[1] === "hub_rename_for_members"));
-  assert.deepEqual(sent.map((s) => s.dest.socket_id), ["s1"]);
+  assert.ok(!svc.calls.some((c) => c[0] === "forbiden"));
+  assert.ok(svc.calls.some((c) => c[1] === "hub_rename_for_members"));
   assert.equal(svc.result.args.dest.filename, "New Name");
 });
 
