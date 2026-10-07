@@ -541,6 +541,49 @@
         }
       }
     },
+    "pinned_workspaces": {
+      "doc": "Read or change the user's pinned workspaces, stored as pinned_workspaces in the user settings: switcher keys hub:<hub_id> or folder:<nid>, newest pin first. The first one is the workspace the desk opens when the user enters Drumee. Takes ONE operation and applies it to the list as stored now, read fresh from the database and serialised per user, so a device holding an old copy cannot overwrite pins made elsewhere. After a change the new list is pushed to every open session of the user as drumate.pinned_workspaces. Rules live in service/lib/workspace-pins.js.",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "log": false,
+      "params": {
+        "op": {
+          "type": "string",
+          "required": false,
+          "doc": "get (default), pin, unpin or move"
+        },
+        "key": {
+          "type": "string",
+          "required": false,
+          "doc": "The workspace key, hub:<hub_id> or folder:<nid>. Required unless op is get."
+        },
+        "before": {
+          "type": "string",
+          "required": false,
+          "doc": "move only: the pinned key to place it before. Empty puts it last."
+        }
+      },
+      "returns": {
+        "pinned_workspaces": {
+          "type": "array",
+          "doc": "The whole list after the operation, newest pin first"
+        }
+      },
+      "errors": [
+        {
+          "code": "INVALID_OP",
+          "message": "op is not one of get, pin, unpin, move",
+          "http_status": 400
+        },
+        {
+          "code": "INVALID_KEY",
+          "message": "key or before is not a workspace key",
+          "http_status": 400
+        }
+      ]
+    },
     "notification_remove": {
       "doc": "Mark notifications as read/acknowledged for a specific entity (hub or user)",
       "scope": "hub",

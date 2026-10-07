@@ -34,6 +34,9 @@ const { get_node_content } = MfsTools;
 const { purge_account } = require("../lib/account-purge");
 const { missingPasswordRules } = require("../lib/password-policy");
 const { sqlString } = require("../lib/sql-literal");
+const pins = require("../lib/workspace-pins");
+// drumate.pinned_workspaces: one in-flight change per user in this process.
+const __pinQueue = new Map();
 
 // Contextual tutorial tour ids. See tutorial_seen() below for why this list is
 // duplicated in acl/drumate.json and in ui-team's tours.js, and what a
@@ -576,6 +579,73 @@ class __private_drumate extends Entity {
     this.debug(`:::::${settings_str}:::::::: update_settings`);
     let res = await this.yp.await_proc('entity_update_settings', this.uid, settings_str);
     this.output.data(res);
+  }
+
+  /**
+   * Read or change the user's pinned workspaces -- see service/lib/workspace-pins.
+   *
+   * Takes ONE operation (get | pin | unpin | move), never a whole list, and
+   * applies it to the list as stored NOW: read fresh from yp.entity.settings
+   * just before the write, not from the session snapshot, and queued per user
+   * in this process so two of the same user's requests cannot interleave.
+   * A device that signed in long ago can therefore never write an old list
+   * back over pins made elsewhere.
+   *
+   * After a change the new list is pushed to every open session of the user
+   * (drumate.pinned_workspaces), so other tabs and devices redraw at once. One
+   * message per change, nothing when nothing changed.
+   */
+  async pinned_workspaces() {
+    const op = this.input.use('op') || 'get';
+    const key = this.input.use('key');
+    const before = this.input.use('before');
+    const error = pins.checkOp(op, key, before);
+    if (error) {
+      return this.exception.bad_request(error);
+    }
+    const uid = this.uid;
+    const run = async () => {
+      const row = toArray(await this.yp.await_proc('get_entity_settings', uid))[0] || {};
+      const settings = (typeof row.settings === 'string'
+        ? this.parseJSON(row.settings)
+        : row.settings) || {};
+      const current = pins.readPins(settings);
+      if (op === 'get') return { list: current, changed: false };
+      const list = pins.applyOp(current, op, key, before);
+      if (pins.samePins(list, current)) return { list, changed: false };
+      await this.yp.await_proc(
+        'entity_update_settings',
+        uid,
+        JSON.stringify({ ...settings, [pins.SETTINGS_KEY]: list })
+      );
+      return { list, changed: true };
+    };
+    const prev = __pinQueue.get(uid) || Promise.resolve();
+    const job = prev.then(run, run);
+    __pinQueue.set(uid, job);
+    let res;
+    try {
+      res = await job;
+    } finally {
+      if (__pinQueue.get(uid) === job) __pinQueue.delete(uid);
+    }
+    if (res.changed) {
+      try {
+        const recipients = await this.yp.await_proc('user_sockets', uid);
+        await RedisStore.sendData(
+          this.payload(
+            { [pins.SETTINGS_KEY]: res.list },
+            { service: 'drumate.pinned_workspaces' }
+          ),
+          recipients
+        );
+      } catch (e) {
+        // The write stands; a session that missed the push catches up on its
+        // next read of the list.
+        this.warn('[drumate.pinned_workspaces] push failed', e && e.message);
+      }
+    }
+    this.output.data({ [pins.SETTINGS_KEY]: res.list });
   }
 
   /**
