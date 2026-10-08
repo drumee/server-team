@@ -485,6 +485,7 @@ class Acl {
         worker.stop();
       }
     }
+    return worker;
   }
 
   /**

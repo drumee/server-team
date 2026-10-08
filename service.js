@@ -2,7 +2,7 @@
 const { Cache, RedisStore, Events } = require("@drumee/server-essentials");
 const { Session, Input, Output } = require("@drumee/server-core");
 
-const { ERROR, START } = Events;
+const { ERROR, START, READY } = Events;
 const configs = require("./configs");
 const env = configs.env();
 configs.load();
@@ -35,9 +35,19 @@ function handler(request, response) {
   session.once(START, async function () {
     // Multi-org: act in the host's organisation when the person belongs to
     // it (service/lib/active-org.js). Never throws.
+    //
+    // The worker Acl.run creates starts on the session's READY. That used to
+    // be guaranteed to come after, because Acl.run ran synchronously inside
+    // START; the lookup can now take a DB round trip, during which READY may
+    // fire. So note it, and start the worker by hand if it was missed.
+    let ready = false;
+    session.once(READY, () => { ready = true; });
     await ActiveOrg.apply(session);
     try {
-      Acl.run(session);
+      const worker = Acl.run(session);
+      if (ready && worker && !worker._isStopped && typeof worker._start === "function") {
+        worker._start();
+      }
     } catch (e) {
       console.error("Failed to run service", e);
       if (session.exception)
