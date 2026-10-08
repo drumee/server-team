@@ -3,7 +3,8 @@
 // One call per address or per selection. Each address goes through
 // token_hub_invite_cancel (tokens + pending row); an address that had
 // something withdrawn gets its notification dismissed (when it has an account),
-// and the workspace's open panels are told once. An
+// the workspace's open panels are told once, and an audit line is written
+// last. An
 // address with nothing left to withdraw is reported, not treated as an error.
 //
 // Run: node --test test/hub-cancel-invite.test.js
@@ -87,14 +88,20 @@ test("dismisses the invitee's notification only when they have an account", asyn
   ]);
 });
 
-test("wakes open panels once and writes no audit line (enum lacks it)", async () => {
+test("audits each withdrawal LAST, after every cancel and the push", async () => {
   sent.length = 0;
   const svc = fakeService({
     emails: ["a@x.io", "b@x.io"],
     cancelled: { "a@x.io": 1, "b@x.io": 1 },
   });
   await svc.cancel_invite();
-  assert.equal(svc.calls.filter((c) => /hub_add_action_log$/.test(c[0])).length, 0);
+  const names = svc.calls.map((c) => c[0]);
+  const audits = svc.calls.filter((c) => c[0] === "hub_db.hub_add_action_log");
+  assert.deepEqual(audits.map((c) => c[2]), ["invite_cancelled", "invite_cancelled"]);
+  const firstAudit = names.indexOf("hub_db.hub_add_action_log");
+  const lastCancel = names.lastIndexOf("token_hub_invite_cancel");
+  const push = names.indexOf("entity_sockets");
+  assert.ok(firstAudit > lastCancel && firstAudit > push, "audits come after the work");
   assert.equal(sent.length, 1);
   assert.equal(sent[0].payload.opt.service, "hub.invitations_changed");
   assert.deepEqual(sent[0].payload.model, { hub_id: HUB_ID });

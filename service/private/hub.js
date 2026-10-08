@@ -2272,13 +2272,14 @@ class __private_hub extends Hub {
    * Per-address and best-effort after the withdrawal itself: a dismissal
    * that fails must not report a cancelled invitation as failed.
    *
-   * 🚨 NO AUDIT LINE (hub_add_action_log), on purpose. action_log.action is an
-   * ENUM without 'invite_cancelled', and stage/prod run STRICT_TRANS_TABLES, so
-   * the insert raises — and the mariadb wrapper answers an SQL error by
-   * ending the request's shared yp connection while swallowing the error.
-   * Every later address in the same call would then "cancel" nothing and be
-   * reported not_found. Recording it needs the enum widened on every hub db
-   * first (decline_invite's 'invite_declined' has the same gap).
+   * 🚨 THE AUDIT LINES ARE WRITTEN LAST, after every withdrawal and the push.
+   * 'invite_cancelled' needs the action_log enum widened on every hub db
+   * (schemas common/patches/alter_action_log_add_invite_answer_actions.sql).
+   * On a db that has not had it, the insert raises under
+   * STRICT_TRANS_TABLES, and the mariadb wrapper answers an SQL error by
+   * ending the request's shared yp connection while swallowing the error —
+   * interleaved with the withdrawals, every later address would silently
+   * "cancel" nothing. Last, the worst case is a missing log line.
    */
   async cancel_invite() {
     const hub_id = this.hub.get(Attr.id);
@@ -2293,6 +2294,7 @@ class __private_hub extends Hub {
       })
       .slice(0, CANCEL_INVITE_MAX);
     const results = [];
+    const withdrawn = [];
     let changed = false;
     for (const email of emails) {
       try {
@@ -2304,6 +2306,7 @@ class __private_hub extends Hub {
           continue;
         }
         changed = true;
+        withdrawn.push(email);
         results.push({ email, status: "cancelled" });
       } catch (err) {
         this.warn("[hub] cancel_invite failed for", email, err && err.message);
@@ -2324,6 +2327,18 @@ class __private_hub extends Hub {
     }
     // Other admins with the panel open re-read their Pending Invitations.
     if (changed) await notifyInvitationsChanged(this, hub_id);
+    const db_name = this.hub.get(Attr.db_name);
+    for (const email of withdrawn) {
+      await writeAudit(this, {
+        db: db_name,
+        uid: this.uid,
+        action: "invite_cancelled",
+        category: "member",
+        notify_to: "admin",
+        entity_id: hub_id,
+        log: `Invite cancelled — the invitation to ${email} was withdrawn`,
+      });
+    }
     this.output.data({ results });
   }
 
