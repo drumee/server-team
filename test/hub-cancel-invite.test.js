@@ -2,8 +2,8 @@
 //
 // One call per address or per selection. Each address goes through
 // token_hub_invite_cancel (tokens + pending row); an address that had
-// something withdrawn gets its notification dismissed (when it has an account)
-// and an audit line, and the workspace's open panels are told once. An
+// something withdrawn gets its notification dismissed (when it has an account),
+// and the workspace's open panels are told once. An
 // address with nothing left to withdraw is reported, not treated as an error.
 //
 // Run: node --test test/hub-cancel-invite.test.js
@@ -87,15 +87,14 @@ test("dismisses the invitee's notification only when they have an account", asyn
   ]);
 });
 
-test("audits each withdrawal on the workspace and wakes open panels once", async () => {
+test("wakes open panels once and writes no audit line (enum lacks it)", async () => {
   sent.length = 0;
   const svc = fakeService({
     emails: ["a@x.io", "b@x.io"],
     cancelled: { "a@x.io": 1, "b@x.io": 1 },
   });
   await svc.cancel_invite();
-  const audits = named(svc.calls, "hub_db.hub_add_action_log");
-  assert.deepEqual(audits.map((c) => c[2]), ["invite_cancelled", "invite_cancelled"]);
+  assert.equal(svc.calls.filter((c) => /hub_add_action_log$/.test(c[0])).length, 0);
   assert.equal(sent.length, 1);
   assert.equal(sent[0].payload.opt.service, "hub.invitations_changed");
   assert.deepEqual(sent[0].payload.model, { hub_id: HUB_ID });
