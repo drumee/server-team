@@ -523,6 +523,83 @@
           "description": "expired or revoked"
         }
       ]
+    },
+    "ident_check": {
+      "doc": "Whether an address label is free for the caller's organisation (no write): {ident, link, available, changed:0}. The setup wizard's Custom domain field checks here before moving on. Org owner only, like change_ident.",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "params": {
+        "ident": {
+          "type": "string",
+          "required": true,
+          "minLength": 2,
+          "maxLength": 40,
+          "doc": "The organisation's new address label: <ident>.<main_domain>. Lowercase letters, digits and inner dashes."
+        }
+      },
+      "errors": [
+        {
+          "code": "NOT_IN_ORGANISATION",
+          "description": "caller is still on the default public domain"
+        },
+        {
+          "code": "NOT_ENOUGH_PRIVILEGE",
+          "description": "caller is not the organisation owner"
+        },
+        {
+          "code": "INVALID_IDENT",
+          "description": "not 2-40 lowercase letters, digits or inner dashes"
+        },
+        {
+          "code": "IDENT_RESERVED",
+          "description": "a name the platform keeps for its own services"
+        },
+        {
+          "code": "IDENT_NOT_AVAILABLE",
+          "description": "another organisation, user or workspace already uses it"
+        }
+      ]
+    },
+    "change_ident": {
+      "doc": "Move the caller's organisation to <ident>.<main_domain> (setup wizard Custom domain, Figma 900:149766): rewrites domain.name, organisation.ident/link and every vhost of the domain in one transaction (organisation_change_ident). The old address stops resolving; the session cookie is on main_domain so nobody is signed out. Returns {ident, link, old_link, changed}. Org OWNER only.",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "log": true,
+      "params": {
+        "ident": {
+          "type": "string",
+          "required": true,
+          "minLength": 2,
+          "maxLength": 40,
+          "doc": "The organisation's new address label: <ident>.<main_domain>. Lowercase letters, digits and inner dashes."
+        }
+      },
+      "errors": [
+        {
+          "code": "NOT_IN_ORGANISATION",
+          "description": "caller is still on the default public domain"
+        },
+        {
+          "code": "NOT_ENOUGH_PRIVILEGE",
+          "description": "caller is not the organisation owner"
+        },
+        {
+          "code": "INVALID_IDENT",
+          "description": "not 2-40 lowercase letters, digits or inner dashes"
+        },
+        {
+          "code": "IDENT_RESERVED",
+          "description": "a name the platform keeps for its own services"
+        },
+        {
+          "code": "IDENT_NOT_AVAILABLE",
+          "description": "another organisation, user or workspace already uses it"
+        }
+      ]
     }
   },
   "modules": {

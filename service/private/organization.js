@@ -21,6 +21,20 @@ const {isEmpty } = require('lodash');
 
 const {Entity} = require('@drumee/server-core');
 const access = require('../lib/department-access');
+
+// Organisation address labels: one DNS label, 2-40 chars, no edge dash.
+const IDENT_RE = /^[a-z0-9][a-z0-9-]{0,38}[a-z0-9]$/;
+// Subdomains the platform serves itself (nginx server blocks, mail, office,
+// conference) or may: an organisation there would be shadowed or confusing.
+const RESERVED_IDENTS = new Set([
+  'www', 'app', 'api', 'admin', 'auth', 'login', 'signin', 'signup', 'billing',
+  'mail', 'dmail', 'webmail', 'smtp', 'imap', 'pop', 'mx', 'ns1', 'ns2',
+  'jit', 'meet', 'jitsi', 'turn', 'stun', 'xmpp', 'prosody',
+  'oo', 'office', 'euroffice', 'docs', 'cdn', 'static', 'assets',
+  'kpi', 'metrics', 'grafana', 'prometheus', 'status', 'monitoring',
+  'news', 'blog', 'help', 'support', 'drumee',
+  'dev', 'stage', 'staging', 'test', 'uat', 'preview', 'prod', 'demo',
+]);
 class __private_adminpanel extends Entity {
 
   // ========================
@@ -762,6 +776,38 @@ class __private_adminpanel extends Entity {
       'organisation_update', this.uid, row.id, name, row.link, row.ident,
     );
     this.output.data(res);
+  }
+
+  // ── Organisation address (setup wizard "Custom domain") ──────────────
+
+  /**
+   * Validate an address label and run organisation_change_ident, dry or not.
+   * Owner only: moving the address changes every member's URL.
+   */
+  async _changeIdent(dry) {
+    const org = await this._org();
+    if (!org) return this.output.status('NOT_IN_ORGANISATION');
+    if (org.role !== 'owner') return this.output.status('NOT_ENOUGH_PRIVILEGE');
+    const ident = String(this.input.need(Attr.ident) || '').trim().toLowerCase();
+    if (!IDENT_RE.test(ident)) return this.output.status('INVALID_IDENT');
+    if (RESERVED_IDENTS.has(ident)) return this.output.status('IDENT_RESERVED');
+    const res = await this.yp.await_proc('organisation_change_ident', org.domain_id, ident, dry ? 1 : 0);
+    if (this._refused(res)) return;
+    this.output.data(res || {});
+  }
+
+  /**
+   * Is this address label free for my organisation? No write.
+   */
+  async ident_check() {
+    return this._changeIdent(true);
+  }
+
+  /**
+   * Move my organisation to <ident>.<main_domain>.
+   */
+  async change_ident() {
+    return this._changeIdent(false);
   }
 
   /**
