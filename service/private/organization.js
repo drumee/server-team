@@ -806,7 +806,9 @@ class __private_adminpanel extends Entity {
    */
   async my_orgs() {
     const uid = this.uid;
-    const hostDom = ~~this.hub.get('org_id');
+    // The organisation being worked in (service/lib/active-org.js), which on
+    // another organisation's address is that one, not the primary.
+    const hostDom = ~~this.user.domain_id();
     const list = this._rows(await this.yp.await_proc('my_orgs', uid));
     const seen = new Set(list.map((o) => ~~o.domain_id));
 
@@ -946,6 +948,7 @@ class __private_adminpanel extends Entity {
     if (RESERVED_IDENTS.has(ident)) return this.output.status('IDENT_RESERVED');
     const res = await this.yp.await_proc('organisation_change_ident', org.domain_id, ident, dry ? 1 : 0);
     if (this._refused(res)) return;
+    if (!dry) ActiveOrg.forgetHosts();
     this.output.data(res || {});
   }
 

@@ -9,6 +9,11 @@
  * org dropdown, the departments, the Admin Console and every domain-scoped
  * ACL check all read `user.domain_id()`.
  *
+ * THE HOST, NOT THE REQUEST'S HUB. Most calls carry hub_id = the person's
+ * own home hub, which sits in their primary organisation; the organisation
+ * being worked in is the one whose ADDRESS the browser is on. So the host is
+ * resolved through yp.vhost (cached: an address rarely changes owner).
+ *
  * So, once per request and BEFORE the ACL runs (service.js), when the host's
  * organisation differs from the person's own:
  *   - a membership row  -> act in the host organisation with that privilege;
@@ -27,7 +32,10 @@
  * it was (primary organisation).
  */
 const CACHE_TTL = 30 * 1000;
+const HOST_TTL = 5 * 60 * 1000;
 const cache = new Map();
+const hosts = new Map();
+const HOST_RE = /^[a-z0-9.-]+$/i;
 const DB_RE = /^[0-9a-zA-Z_]+$/;
 
 const rows = (v) => (Array.isArray(v) ? v : v ? [v] : []);
@@ -42,6 +50,23 @@ function cached(key) {
 function remember(key, value) {
   if (cache.size > 5000) cache.clear();
   cache.set(key, { t: Date.now(), value });
+}
+
+/**
+ * The organisation (domain id) an address belongs to, 0 when none.
+ */
+async function hostDomain(yp, host) {
+  host = String(host || "").toLowerCase().split(":")[0];
+  if (!host || !HOST_RE.test(host)) return 0;
+  const hit = hosts.get(host);
+  if (hit && hit.t > Date.now() - HOST_TTL) return hit.dom;
+  const row = rows(await yp.await_query(
+    "SELECT dom_id FROM vhost WHERE fqdn = ? LIMIT 1", host,
+  ))[0];
+  const dom = ~~(row && row.dom_id);
+  if (hosts.size > 5000) hosts.clear();
+  hosts.set(host, { t: Date.now(), dom });
+  return dom;
 }
 
 /** Drop a person's cached standing (after a membership change). */
@@ -88,10 +113,10 @@ async function standing(yp, user, domain_id) {
 async function apply(session) {
   try {
     const user = session.user;
-    const hub = session.hub;
-    if (!user || !hub || !user.get("signed_in")) return;
-    const hostDom = ~~hub.get("org_id");
+    if (!user || !user.get("signed_in")) return;
     const own = ~~(user.get("domain_id") || user.get("dom_id"));
+    const host = session.input && session.input.host && session.input.host();
+    const hostDom = await hostDomain(session.yp, host);
     if (hostDom <= 1 || hostDom === own) return;
     const s = await standing(session.yp, user, hostDom);
     if (!s) return;
@@ -105,4 +130,9 @@ async function apply(session) {
   }
 }
 
-module.exports = { apply, standing, forget };
+/** Forget cached addresses (after an organisation changes its address). */
+function forgetHosts() {
+  hosts.clear();
+}
+
+module.exports = { apply, standing, forget, hostDomain, forgetHosts };
