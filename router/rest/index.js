@@ -438,6 +438,19 @@ class Acl {
         } catch (e) {
           console.warn("[over-limit] clamp failed (fail-open):", e && e.message);
         }
+        // B2B access rules: "Sharing outside dept. = Not allowed" for the
+        // caller's title (service/lib/dept-sharing.js). Looks anything up only
+        // for the share/invite services it lists; fail-open.
+        {
+          const DeptSharing = require("../../service/lib/dept-sharing");
+          if (DeptSharing.watched(service)) {
+            const denied = await DeptSharing.check(session, service, ADMIN_LEVEL);
+            if (denied) {
+              worker.stop();
+              return session.exception.unauthorized(`${denied}:${service}`);
+            }
+          }
+        }
         const need = worker.before_granting;
         if (isFunction(worker[need])) {
           try {
