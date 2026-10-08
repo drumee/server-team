@@ -299,6 +299,230 @@
           "description": "caller is not an organisation admin"
         }
       ]
+    },
+    "department_members": {
+      "doc": "Who belongs to which department of the caller's organisation: {members:[{department_id, uid}]}. Org admins (>= dom_admin_security).",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "params": {},
+      "errors": [
+        {
+          "code": "NOT_IN_ORGANISATION",
+          "description": "caller is still on the default public domain"
+        },
+        {
+          "code": "NOT_ENOUGH_PRIVILEGE",
+          "description": "caller is not an organisation admin"
+        }
+      ]
+    },
+    "department_member_add": {
+      "doc": "Put a person in a department, then apply department access: on every workspace of the department they get the access their title's rule gives (View when none), written as a normal workspace membership and remembered in yp.department_grant so it can be taken back. Org admins (>= dom_admin).",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "log": true,
+      "params": {
+        "department_id": {
+          "type": "string",
+          "required": true
+        },
+        "uid": {
+          "type": "string",
+          "required": true
+        }
+      },
+      "errors": [
+        {
+          "code": "NOT_IN_ORGANISATION",
+          "description": "caller is still on the default public domain"
+        },
+        {
+          "code": "NOT_ENOUGH_PRIVILEGE",
+          "description": "caller is not an organisation admin"
+        },
+        {
+          "code": "DEPARTMENT_NOT_FOUND",
+          "description": "not a department of this organisation"
+        },
+        {
+          "code": "NOT_VALID_DRUMATE",
+          "description": "uid malformed"
+        }
+      ]
+    },
+    "department_member_remove": {
+      "doc": "Take a person out of a department and take back the workspace access it gave them (restoring what they had before; access changed by hand since is kept). Org admins.",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "log": true,
+      "params": {
+        "department_id": {
+          "type": "string",
+          "required": true
+        },
+        "uid": {
+          "type": "string",
+          "required": true
+        }
+      },
+      "errors": [
+        {
+          "code": "NOT_IN_ORGANISATION",
+          "description": "caller is still on the default public domain"
+        },
+        {
+          "code": "NOT_ENOUGH_PRIVILEGE",
+          "description": "caller is not an organisation admin"
+        }
+      ]
+    },
+    "department_reconcile": {
+      "doc": "Re-apply department access for the whole organisation after a title, an access rule or a workspace's department changed. Idempotent; returns {granted, updated, revoked, failed}. Org admins.",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "log": true,
+      "params": {},
+      "errors": [
+        {
+          "code": "NOT_IN_ORGANISATION",
+          "description": "caller is still on the default public domain"
+        },
+        {
+          "code": "NOT_ENOUGH_PRIVILEGE",
+          "description": "caller is not an organisation admin"
+        }
+      ]
+    },
+    "reporting_set": {
+      "doc": "Org Structure 'Reporting To': set who a person reports to (manager_uid) or clear it (''), which puts them back under the owner. Refuses a line that would make someone their own manager (REPORTING_CYCLE). Org admins.",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "log": true,
+      "params": {
+        "uid": {
+          "type": "string",
+          "required": true
+        },
+        "manager_uid": {
+          "type": "string",
+          "required": false
+        }
+      },
+      "errors": [
+        {
+          "code": "NOT_IN_ORGANISATION",
+          "description": "caller is still on the default public domain"
+        },
+        {
+          "code": "NOT_ENOUGH_PRIVILEGE",
+          "description": "caller is not an organisation admin"
+        },
+        {
+          "code": "REPORTING_CYCLE",
+          "description": "the line would make someone their own manager"
+        },
+        {
+          "code": "NOT_VALID_DRUMATE",
+          "description": "uid malformed"
+        }
+      ]
+    },
+    "join_link_create": {
+      "doc": "Setup wizard 'Public link': mint a link that gives whoever opens it (signed in) access to the workspaces of the given departments, as a department member. expires_in in seconds, 0 = never. Returns {token, expires_at}. Org admins.",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "log": true,
+      "params": {
+        "departments": {
+          "type": "array",
+          "required": true,
+          "items": {
+            "type": "string"
+          }
+        },
+        "expires_in": {
+          "type": "number",
+          "required": false
+        }
+      },
+      "errors": [
+        {
+          "code": "NOT_IN_ORGANISATION",
+          "description": "caller is still on the default public domain"
+        },
+        {
+          "code": "NOT_ENOUGH_PRIVILEGE",
+          "description": "caller is not an organisation admin"
+        },
+        {
+          "code": "INVALID_DEPARTMENTS",
+          "description": "empty list"
+        },
+        {
+          "code": "DEPARTMENT_NOT_FOUND",
+          "description": "not a department of this organisation"
+        }
+      ]
+    },
+    "join_link_revoke": {
+      "doc": "Revoke a join link of the caller's organisation. Org admins.",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "log": true,
+      "params": {
+        "token": {
+          "type": "string",
+          "required": true
+        }
+      },
+      "errors": [
+        {
+          "code": "NOT_IN_ORGANISATION",
+          "description": "caller is still on the default public domain"
+        },
+        {
+          "code": "NOT_ENOUGH_PRIVILEGE",
+          "description": "caller is not an organisation admin"
+        }
+      ]
+    },
+    "join_link_accept": {
+      "doc": "Open a join link: the signed-in caller becomes a member of its departments and gets department access to their workspaces (workspace access, not organisation membership).",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "log": true,
+      "params": {
+        "token": {
+          "type": "string",
+          "required": true
+        }
+      },
+      "errors": [
+        {
+          "code": "LINK_NOT_FOUND",
+          "description": "no such link"
+        },
+        {
+          "code": "LINK_EXPIRED",
+          "description": "expired or revoked"
+        }
+      ]
     }
   },
   "modules": {

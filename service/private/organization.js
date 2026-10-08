@@ -20,6 +20,7 @@ const { stringify } = JSON;
 const {isEmpty } = require('lodash');
 
 const {Entity} = require('@drumee/server-core');
+const access = require('../lib/department-access');
 class __private_adminpanel extends Entity {
 
   // ========================
@@ -42,6 +43,14 @@ class __private_adminpanel extends Entity {
     this.overview = this.overview.bind(this);
     this.my_departments = this.my_departments.bind(this);
     this.setup_state = this.setup_state.bind(this);
+    this.department_members = this.department_members.bind(this);
+    this.department_member_add = this.department_member_add.bind(this);
+    this.department_member_remove = this.department_member_remove.bind(this);
+    this.department_reconcile = this.department_reconcile.bind(this);
+    this.reporting_set = this.reporting_set.bind(this);
+    this.join_link_create = this.join_link_create.bind(this);
+    this.join_link_revoke = this.join_link_revoke.bind(this);
+    this.join_link_accept = this.join_link_accept.bind(this);
     this.setup_done = this.setup_done.bind(this);
     this.rename = this.rename.bind(this);
     this.department_add = this.department_add.bind(this);
@@ -467,6 +476,224 @@ class __private_adminpanel extends Entity {
     if (!org.write) return this.output.status('NOT_ENOUGH_PRIVILEGE');
     const res = await this.yp.await_proc('org_setup_mark', org.domain_id);
     this.output.data(res || {});
+  }
+
+  // ── Department members + department access (B2B Org Structure) ────────
+
+  /**
+   * Who belongs to which department: {members: [{department_id, uid}]}.
+   * Org admins only (the same browse bar as the org view's inventory).
+   */
+  async department_members() {
+    const org = await this._org();
+    if (!org) return this.output.status('NOT_IN_ORGANISATION');
+    if (!org.browse) return this.output.status('NOT_ENOUGH_PRIVILEGE');
+    const rows = this._rows(await this.yp.await_proc('department_member_list', org.domain_id));
+    this.output.data({ members: rows });
+  }
+
+  /**
+   * Put a person in a department, then apply department access.
+   */
+  async department_member_add() {
+    const org = await this._org();
+    if (!org) return this.output.status('NOT_IN_ORGANISATION');
+    if (!org.write) return this.output.status('NOT_ENOUGH_PRIVILEGE');
+    const dept = String(this.input.need('department_id') || '').trim();
+    const uid = String(this.input.need(Attr.uid) || '').trim();
+    if (!/^[0-9a-f]{16}$/i.test(uid)) return this.output.status('NOT_VALID_DRUMATE');
+    const res = await this.yp.await_proc('department_member_add', org.domain_id, dept, uid, this.uid);
+    if (this._refused(res)) return;
+    const summary = await this._reconcile(org.domain_id);
+    this.output.data({ department_id: dept, uid, ...summary });
+  }
+
+  /**
+   * Take a person out of a department, then take back what it granted.
+   */
+  async department_member_remove() {
+    const org = await this._org();
+    if (!org) return this.output.status('NOT_IN_ORGANISATION');
+    if (!org.write) return this.output.status('NOT_ENOUGH_PRIVILEGE');
+    const dept = String(this.input.need('department_id') || '').trim();
+    const uid = String(this.input.need(Attr.uid) || '').trim();
+    await this.yp.await_proc('department_member_remove', org.domain_id, dept, uid);
+    const summary = await this._reconcile(org.domain_id);
+    this.output.data({ department_id: dept, uid, ...summary });
+  }
+
+  /**
+   * Re-apply department access for the whole organisation — after a title,
+   * an access rule or a workspace's department changed. Idempotent.
+   */
+  async department_reconcile() {
+    const org = await this._org();
+    if (!org) return this.output.status('NOT_IN_ORGANISATION');
+    if (!org.write) return this.output.status('NOT_ENOUGH_PRIVILEGE');
+    this.output.data(await this._reconcile(org.domain_id));
+  }
+
+  /**
+   * A person's privilege in a workspace, read from the hub's own database
+   * (the '*' row every access check reads). 0 when not a member.
+   */
+  async _hubPrivilege(hubDb, uid) {
+    if (!hubDb || !/^[A-Za-z0-9_]+$/.test(String(hubDb))) return 0;
+    const rows = this._rows(await this.yp.await_query(
+      `SELECT permission FROM \`${hubDb}\`.permission WHERE resource_id = '*' AND entity_id = ? LIMIT 1`,
+      uid,
+    ));
+    return rows.length ? ~~rows[0].permission : 0;
+  }
+
+  /**
+   * Make department access match department membership, titles and rules:
+   * grant what is missing, take back what is no longer given (see
+   * service/lib/department-access.js for the rules). Never throws: a
+   * workspace that cannot be written is counted, not fatal.
+   */
+  async _reconcile(domain_id) {
+    const summary = { granted: 0, updated: 0, revoked: 0, failed: 0 };
+    const stored = this._rows(await this.yp.await_proc('organisation_get_access_rules', domain_id))[0];
+    const rules = access.rulesByTitle(stored && stored.access_rules);
+    const desired = access.desiredGrants(
+      await this.yp.await_proc('department_desired_grants', domain_id), rules,
+    );
+    const existing = new Map();
+    for (const g of this._rows(await this.yp.await_proc('department_grant_list', domain_id))) {
+      existing.set(`${g.hub_id}|${g.uid}`, g);
+    }
+    const grant = (uid, hub_id, privilege) => this.yp.await_proc(
+      'member_save_workspace_roles', uid, JSON.stringify([{ hub_id, privilege }]),
+    );
+    const touched = new Set();
+
+    for (const [key, d] of desired) {
+      try {
+        const cur = await this._hubPrivilege(d.hub_db, d.uid);
+        const ex = existing.get(key);
+        const plan = access.planGrant(d, cur, ex);
+        if (plan.write) {
+          await grant(d.uid, d.hub_id, plan.write);
+          touched.add(d.hub_id);
+          ex ? summary.updated++ : summary.granted++;
+        }
+        if (plan.save) {
+          await this.yp.await_proc(
+            'department_grant_save', domain_id, d.hub_id, d.uid, plan.save.privilege, plan.save.prev,
+          );
+        }
+      } catch (e) {
+        summary.failed++;
+      }
+    }
+
+    for (const [key, ex] of existing) {
+      if (desired.has(key)) continue;
+      try {
+        const cur = await this._hubPrivilege(ex.hub_db, ex.uid);
+        const what = access.planRevoke(ex, cur);
+        if (what === 'remove') {
+          await this.yp.await_proc(`${ex.hub_db}.hub_member_remove`, ex.uid, this.uid);
+          touched.add(ex.hub_id);
+          summary.revoked++;
+        } else if (what === 'restore') {
+          await grant(ex.uid, ex.hub_id, ~~ex.prev_privilege);
+          summary.revoked++;
+        }
+        await this.yp.await_proc('department_grant_delete', ex.hub_id, ex.uid);
+      } catch (e) {
+        summary.failed++;
+      }
+    }
+
+    // The member-count rollup the org view reads; never fatal.
+    for (const hub_id of touched) {
+      await this.yp.await_proc('workspace_members_set', hub_id).catch(() => null);
+    }
+    return summary;
+  }
+
+  // ── Org chart reporting lines ──────────────────────────────────────────
+
+  /**
+   * Set who a person reports to (manager_uid), or clear it (''). Refuses a
+   * line that would make someone their own manager.
+   */
+  async reporting_set() {
+    const org = await this._org();
+    if (!org) return this.output.status('NOT_IN_ORGANISATION');
+    if (!org.write) return this.output.status('NOT_ENOUGH_PRIVILEGE');
+    const uid = String(this.input.need(Attr.uid) || '').trim();
+    const manager = String(this.input.use('manager_uid', '') || '').trim();
+    if (!/^[0-9a-f]{16}$/i.test(uid)) return this.output.status('NOT_VALID_DRUMATE');
+    if (manager && !/^[0-9a-f]{16}$/i.test(manager)) return this.output.status('NOT_VALID_DRUMATE');
+    const lines = this._rows(await this.yp.await_proc('org_reporting_list', org.domain_id));
+    if (access.makesCycle(lines, uid, manager)) return this.output.status('REPORTING_CYCLE');
+    const res = await this.yp.await_proc('org_reporting_set', org.domain_id, uid, manager || null);
+    this.output.data(res || {});
+  }
+
+  // ── Department join links (setup wizard "Public link") ─────────────────
+
+  /**
+   * Mint a link that puts whoever opens it into the workspaces of the given
+   * departments. expires_in is seconds (0 = never).
+   */
+  async join_link_create() {
+    const org = await this._org();
+    if (!org) return this.output.status('NOT_IN_ORGANISATION');
+    if (!org.write) return this.output.status('NOT_ENOUGH_PRIVILEGE');
+    let departments = this.input.need('departments');
+    if (typeof departments === 'string') {
+      try { departments = JSON.parse(departments); } catch (e) { departments = [departments]; }
+    }
+    departments = this._rows(departments).map(String).filter(Boolean);
+    if (!departments.length) return this.output.status('INVALID_DEPARTMENTS');
+    const known = new Set(this._rows(await this.yp.await_proc('org_departments', org.domain_id)).map((d) => String(d.id)));
+    if (departments.some((d) => !known.has(d))) return this.output.status('DEPARTMENT_NOT_FOUND');
+    const seconds = Math.max(0, ~~this.input.use('expires_in', 0));
+    const expires_at = seconds ? Math.floor(Date.now() / 1000) + seconds : 0;
+    const res = await this.yp.await_proc(
+      'org_join_link_add', org.domain_id, JSON.stringify(departments), access.PRIVILEGE.view, expires_at, this.uid,
+    );
+    if (this._refused(res)) return;
+    this.output.data({ token: res.id, expires_at });
+  }
+
+  async join_link_revoke() {
+    const org = await this._org();
+    if (!org) return this.output.status('NOT_IN_ORGANISATION');
+    if (!org.write) return this.output.status('NOT_ENOUGH_PRIVILEGE');
+    const token = String(this.input.need('token') || '').trim();
+    const res = await this.yp.await_proc('org_join_link_revoke', org.domain_id, token);
+    this.output.data(res || {});
+  }
+
+  /**
+   * Open a join link: the signed-in caller joins the link's departments and
+   * gets department access to their workspaces — the link's whole purpose is
+   * to reach people the owner has no email for.
+   *
+   * WORKSPACE ACCESS, NOT ORGANISATION MEMBERSHIP. Someone from outside the
+   * organisation becomes a collaborator of its workspaces, the way an
+   * accepted workspace invitation makes them one; moving them INTO the
+   * organisation is multi-org, which this does not do.
+   */
+  async join_link_accept() {
+    const token = String(this.input.need('token') || '').trim();
+    const link = this._rows(await this.yp.await_proc('org_join_link_get', token))[0];
+    if (!link) return this.output.status('LINK_NOT_FOUND');
+    if (!~~link.usable) return this.output.status('LINK_EXPIRED');
+    const domain_id = ~~link.domain_id;
+    let departments = [];
+    try { departments = JSON.parse(link.departments); } catch (e) { departments = []; }
+    for (const d of this._rows(departments)) {
+      await this.yp.await_proc('department_member_add', domain_id, String(d), this.uid, link.by_id || this.uid);
+    }
+    await this.yp.await_proc('org_join_link_use', token);
+    const summary = await this._reconcile(domain_id);
+    this.output.data({ joined: departments.length, ...summary });
   }
 
   /**
