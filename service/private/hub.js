@@ -2269,8 +2269,16 @@ class __private_hub extends Hub {
    * keep counting as unread. `hub.invite_received` is deliberately NOT sent —
    * the desk treats it as "you were invited" (sound, sidebar refresh).
    *
-   * Per-address and best-effort after the withdrawal itself: an audit or
-   * dismissal that fails must not report a cancelled invitation as failed.
+   * Per-address and best-effort after the withdrawal itself: a dismissal
+   * that fails must not report a cancelled invitation as failed.
+   *
+   * 🚨 NO AUDIT LINE (hub_add_action_log), on purpose. action_log.action is an
+   * ENUM without 'invite_cancelled', and stage/prod run STRICT_TRANS_TABLES, so
+   * the insert raises — and the mariadb wrapper answers an SQL error by
+   * ending the request's shared yp connection while swallowing the error.
+   * Every later address in the same call would then "cancel" nothing and be
+   * reported not_found. Recording it needs the enum widened on every hub db
+   * first (decline_invite's 'invite_declined' has the same gap).
    */
   async cancel_invite() {
     const hub_id = this.hub.get(Attr.id);
@@ -2284,7 +2292,6 @@ class __private_hub extends Hub {
         return true;
       })
       .slice(0, CANCEL_INVITE_MAX);
-    const db_name = this.hub.get(Attr.db_name);
     const results = [];
     let changed = false;
     for (const email of emails) {
@@ -2313,19 +2320,6 @@ class __private_hub extends Hub {
         }
       } catch (err) {
         this.warn("[hub] cancel_invite: notification", err && err.message);
-      }
-      try {
-        await writeAudit(this, {
-          db: db_name,
-          uid: this.uid,
-          action: "invite_cancelled",
-          category: "member",
-          notify_to: "admin",
-          entity_id: hub_id,
-          log: `Invite cancelled — the invitation to ${email} was withdrawn`,
-        });
-      } catch (err) {
-        this.warn("[hub] cancel_invite: audit", err && err.message);
       }
     }
     // Other admins with the panel open re-read their Pending Invitations.
