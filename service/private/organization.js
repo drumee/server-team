@@ -41,6 +41,8 @@ class __private_adminpanel extends Entity {
 
     this.overview = this.overview.bind(this);
     this.my_departments = this.my_departments.bind(this);
+    this.setup_state = this.setup_state.bind(this);
+    this.setup_done = this.setup_done.bind(this);
     this.rename = this.rename.bind(this);
     this.department_add = this.department_add.bind(this);
     this.department_rename = this.department_rename.bind(this);
@@ -431,6 +433,40 @@ class __private_adminpanel extends Entity {
       departments: [...byDept.values()],
       can_manage: org.write ? 1 : 0,
     });
+  }
+
+  /**
+   * Setup wizard state — B2B Org Structure "Set up your organization".
+   *
+   * Read by the desk on every home settle, so it is one cheap proc and open
+   * to any member; whether to OFFER the wizard (owner only, no departments,
+   * never finished) is decided client-side from what this returns. Outside an
+   * organisation there is nothing to set up, reported as done.
+   */
+  async setup_state() {
+    const org = await this._org();
+    if (!org) {
+      return this.output.data({ setup_done: 1, department_count: 0, role: null, can_manage: 0 });
+    }
+    const row = (await this.yp.await_proc('org_setup_state', org.domain_id)) || {};
+    this.output.data({
+      setup_done: ~~row.setup_done,
+      department_count: ~~row.department_count,
+      role: org.role,
+      can_manage: org.write ? 1 : 0,
+    });
+  }
+
+  /**
+   * The wizard was finished or skipped: stop offering it. Admin-only, like
+   * every other write here.
+   */
+  async setup_done() {
+    const org = await this._org();
+    if (!org) return this.output.status('NOT_IN_ORGANISATION');
+    if (!org.write) return this.output.status('NOT_ENOUGH_PRIVILEGE');
+    const res = await this.yp.await_proc('org_setup_mark', org.domain_id);
+    this.output.data(res || {});
   }
 
   /**

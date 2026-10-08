@@ -256,6 +256,49 @@
           "description": "no such department in this organisation"
         }
       ]
+    },
+    "setup_state": {
+      "doc": "Whether the caller's organisation has been through the 'Set up your organization' wizard (organisation.metadata.$.org_setup_done), its department count and the caller's role / can_manage - what the desk weighs before offering the wizard. Outside an organisation: setup_done 1 (nothing to set up).",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "params": {},
+      "returns": {
+        "setup_done": {
+          "type": "number",
+          "doc": "unix time it was finished or skipped, 0 if never"
+        },
+        "department_count": {
+          "type": "number"
+        },
+        "role": {
+          "type": "string",
+          "doc": "owner | admin | member"
+        },
+        "can_manage": {
+          "type": "number"
+        }
+      }
+    },
+    "setup_done": {
+      "doc": "Record that the organisation's setup wizard was finished or skipped, so it is not offered again. Org-admin only (>= dom_admin), same gate as the department mutations.",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "log": true,
+      "params": {},
+      "errors": [
+        {
+          "code": "NOT_IN_ORGANISATION",
+          "description": "caller is still on the default public domain"
+        },
+        {
+          "code": "NOT_ENOUGH_PRIVILEGE",
+          "description": "caller is not an organisation admin"
+        }
+      ]
     }
   },
   "modules": {
