@@ -9,6 +9,7 @@ configs.load();
 
 const HttpServer = require("http");
 const Acl = require("./router/rest");
+const ActiveOrg = require("./service/lib/active-org");
 
 console.log(`Starting service server with verbosity = ${global.verbosity}`);
 
@@ -31,7 +32,10 @@ function handler(request, response) {
   });
 
 
-  session.once(START, function () {
+  session.once(START, async function () {
+    // Multi-org: act in the host's organisation when the person belongs to
+    // it (service/lib/active-org.js). Never throws.
+    await ActiveOrg.apply(session);
     try {
       Acl.run(session);
     } catch (e) {

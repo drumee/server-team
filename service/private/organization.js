@@ -21,6 +21,9 @@ const {isEmpty } = require('lodash');
 
 const {Entity} = require('@drumee/server-core');
 const access = require('../lib/department-access');
+const ActiveOrg = require('../lib/active-org');
+// Extra organisations one person may create (multi-org, Business plan).
+const MAX_EXTRA_ORGS = 10;
 
 // Organisation address labels: one DNS label, 2-40 chars, no edge dash.
 const IDENT_RE = /^[a-z0-9][a-z0-9-]{0,38}[a-z0-9]$/;
@@ -705,9 +708,21 @@ class __private_adminpanel extends Entity {
     for (const d of this._rows(departments)) {
       await this.yp.await_proc('department_member_add', domain_id, String(d), this.uid, link.by_id || this.uid);
     }
+    // Multi-org: someone from another organisation (or none) joins this one
+    // as a secondary organisation. The primary one is never touched.
+    let org_link = null;
+    const home = ~~(this.user.get('home_domain_id') || this.user.domain_id());
+    if (home !== domain_id) {
+      const m = await this.yp.await_proc('org_membership_set', domain_id, this.uid, Remit.dom_member, link.by_id || null);
+      if (m && !m.error) {
+        ActiveOrg.forget(this.uid, domain_id);
+        const org = this._rows(await this.yp.await_proc('organisation_get', domain_id))[0];
+        org_link = org ? org.link : null;
+      }
+    }
     await this.yp.await_proc('org_join_link_use', token);
     const summary = await this._reconcile(domain_id);
-    this.output.data({ joined: departments.length, ...summary });
+    this.output.data({ joined: departments.length, org_link, ...summary });
   }
 
   /**
@@ -776,6 +791,144 @@ class __private_adminpanel extends Entity {
       'organisation_update', this.uid, row.id, name, row.link, row.ident,
     );
     this.output.data(res);
+  }
+
+  // ── Multi-org (Figma 900:150849 / 900:150993) ────────────────────────
+
+  /**
+   * Every organisation the person belongs to, for the org dropdown:
+   *   owned:   privilege 63 (their first organisation, extra ones);
+   *   invited: anything else -- member/admin of another organisation, or a
+   *            guest holding workspaces there.
+   * Each row: {domain_id, org_id, name, link, plan, role, privilege, source,
+   * department_count, member_count, current}. Plus can_create_org (Business
+   * plan) and the primary plan for the Free/Team upsell.
+   */
+  async my_orgs() {
+    const uid = this.uid;
+    const hostDom = ~~this.hub.get('org_id');
+    const list = this._rows(await this.yp.await_proc('my_orgs', uid));
+    const seen = new Set(list.map((o) => ~~o.domain_id));
+
+    // Guests: organisations where the person holds workspaces but no seat.
+    const db = this.user.get('db_name');
+    if (db && /^[0-9a-zA-Z_]+$/.test(db)) {
+      const guest = this._rows(await this.yp.await_query(
+        `SELECT DISTINCT o.id AS org_id, o.domain_id, o.name, o.link, o.ident, ` +
+        `(SELECT q.plan FROM quota q WHERE q.domain_id = o.domain_id AND q.payer_id = o.id LIMIT 1) AS plan ` +
+        `FROM \`${db}\`.media m INNER JOIN yp.entity e ON e.id = m.id ` +
+        `INNER JOIN yp.organisation o ON o.domain_id = e.dom_id ` +
+        `WHERE m.category = 'hub' AND m.extension <> 'dmz' AND e.dom_id > 1`,
+      ));
+      for (const g of guest) {
+        if (seen.has(~~g.domain_id)) continue;
+        seen.add(~~g.domain_id);
+        list.push({ ...g, privilege: 0, source: 'guest', department_count: null, member_count: null });
+      }
+    }
+
+    const quota = this._rows(await this.yp.await_query(
+      "SELECT JSON_VALUE(get_quota(?), '$.plan') AS plan", uid,
+    ))[0] || {};
+    const primary_plan = String(quota.plan || 'free');
+    const orgs = list.map((o) => {
+      const privilege = ~~o.privilege;
+      const role = o.source === 'guest' ? 'guest' : this._role(privilege);
+      return {
+        domain_id: ~~o.domain_id,
+        org_id: o.org_id,
+        name: o.name,
+        link: o.link,
+        plan: o.plan || null,
+        privilege,
+        role,
+        source: o.source,
+        owned: privilege >= Remit.dom_owner ? 1 : 0,
+        department_count: o.department_count == null ? null : ~~o.department_count,
+        member_count: o.member_count == null ? null : ~~o.member_count,
+        current: ~~o.domain_id === hostDom ? 1 : 0,
+      };
+    });
+    this.output.data({
+      orgs,
+      primary_plan,
+      can_create_org: /^business/i.test(primary_plan) ? 1 : 0,
+    });
+  }
+
+  /**
+   * "+ New organization" (Business plan): one more organisation owned by the
+   * caller, who stays in their first one (org_extra_create). Returns the new
+   * organisation with its link, for the client to open.
+   */
+  async create_org() {
+    const quota = this._rows(await this.yp.await_query(
+      "SELECT JSON_VALUE(get_quota(?), '$.plan') AS plan", this.uid,
+    ))[0] || {};
+    if (!/^business/i.test(String(quota.plan || ''))) return this.output.status('PLAN_UPGRADE_REQUIRED');
+    const owned = this._rows(await this.yp.await_query(
+      'SELECT COUNT(*) AS n FROM org_extra WHERE owner_uid = ?', this.uid,
+    ))[0] || {};
+    if (~~owned.n >= MAX_EXTRA_ORGS) return this.output.status('TOO_MANY_ORGANISATIONS');
+
+    const name = String(this.input.need(Attr.name) || '').trim();
+    if (!name || name.length > 512) return this.output.status('INVALID_NAME');
+    const ident = String(this.input.need(Attr.ident) || '').trim().toLowerCase();
+    if (!IDENT_RE.test(ident)) return this.output.status('INVALID_IDENT');
+    if (RESERVED_IDENTS.has(ident)) return this.output.status('IDENT_RESERVED');
+
+    const res = await this.yp.await_proc('org_extra_create', this.uid, name, ident);
+    if (this._refused(res)) return;
+    ActiveOrg.forget(this.uid);
+    this.output.data(res || {});
+  }
+
+  /**
+   * Add someone who already has a Drumee account elsewhere to MY current
+   * organisation as a secondary organisation (by email). Org admins only.
+   */
+  async member_add_existing() {
+    const org = await this._org();
+    if (!org) return this.output.status('NOT_IN_ORGANISATION');
+    if (!org.write) return this.output.status('NOT_ENOUGH_PRIVILEGE');
+    const email = String(this.input.need('email') || '').trim().toLowerCase();
+    const person = this._rows(await this.yp.await_query(
+      'SELECT id FROM drumate WHERE email = ? LIMIT 1', email,
+    ))[0];
+    if (!person) return this.output.status('USER_NOT_FOUND');
+    let privilege = ~~this.input.get('privilege') || Remit.dom_member;
+    if (privilege >= Remit.dom_owner && org.role !== 'owner') privilege = Remit.dom_admin;
+    const res = await this.yp.await_proc('org_membership_set', org.domain_id, person.id, privilege, this.uid);
+    if (this._refused(res)) return;
+    ActiveOrg.forget(person.id, org.domain_id);
+    this.output.data(res || {});
+  }
+
+  /**
+   * Take someone out of MY current organisation when it is their secondary
+   * one. Org admins only; nobody can remove the organisation's owner.
+   */
+  async member_remove_existing() {
+    const org = await this._org();
+    if (!org) return this.output.status('NOT_IN_ORGANISATION');
+    if (!org.write) return this.output.status('NOT_ENOUGH_PRIVILEGE');
+    const uid = String(this.input.need(Attr.uid) || '').trim();
+    const cur = this._rows(await this.yp.await_proc('org_membership_get', uid, org.domain_id))[0];
+    if (!cur) return this.output.status('NOT_A_MEMBER');
+    if (~~cur.privilege >= Remit.dom_owner && org.role !== 'owner') return this.output.status('NOT_ENOUGH_PRIVILEGE');
+    const res = await this.yp.await_proc('org_membership_remove', org.domain_id, uid);
+    ActiveOrg.forget(uid, org.domain_id);
+    this.output.data(res || {});
+  }
+
+  /**
+   * People who belong to MY current organisation as a secondary one.
+   */
+  async members_existing() {
+    const org = await this._org();
+    if (!org) return this.output.status('NOT_IN_ORGANISATION');
+    if (!org.browse) return this.output.status('NOT_ENOUGH_PRIVILEGE');
+    this.output.data({ members: this._rows(await this.yp.await_proc('org_membership_list', org.domain_id)) });
   }
 
   // ── Organisation address (setup wizard "Custom domain") ──────────────

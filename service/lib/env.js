@@ -62,6 +62,21 @@ async function get_env() {
   data.user.disk_usage = usage;
   data.user.otp_key = this.session.get('secret');
   data.organization = await this.yp.await_proc("my_organisation", this.uid);
+  // Multi-org: on another organisation's address the person belongs to
+  // (service/lib/active-org.js), that organisation is the one the browser
+  // works in -- otherwise the router sends them back to their own.
+  const active = this.user.get("active_org");
+  if (active && active.domain_id) {
+    const org = await this.yp.await_proc("organisation_get", active.domain_id);
+    if (!isEmpty(org)) {
+      data.organization = { ...(isArray(org) ? org[0] : org) };
+      data.organization.url = data.organization.link;
+      data.organization.privilege = active.privilege;
+      data.organization.active_role = active.role;
+      data.user.home_domain_id = active.home_domain_id;
+      data.user.domain_id = active.domain_id;
+    }
+  }
   const { main_domain } = sysEnv();
   if (isEmpty(data.organization)) {
     let host = main_domain;
