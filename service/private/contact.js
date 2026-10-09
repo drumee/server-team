@@ -617,7 +617,30 @@ class __private_contact extends Contact {
     let contacts = await this.db.await_proc('my_contact_show_next',
       tag_id, name, order, option, page
     );
+    await this.linkEmailContacts(contacts);
     this.output.list(contacts);
+  }
+
+  /**
+   * A contact saved by email (manual add, import, sync) keeps the address in
+   * `entity` even after that person has a Drumee account, so the row carries
+   * no drumate id — while `is_drumate` (yp.user_exists matches id OR email)
+   * already says the account exists. Resolve it to `drumate_id` so the
+   * Contacts panel can open the chat or ring them instead of treating them
+   * as having no account. Best effort: a failure leaves the row as it was.
+   */
+  async linkEmailContacts(contacts) {
+    for (const c of toArray(contacts)) {
+      if (!c || Number(c.is_drumate) !== 1 || c.drumate_id) continue;
+      if (typeof c.entity !== 'string' || !c.entity.includes('@')) continue;
+      try {
+        let drumate = await this.yp.await_proc('drumate_exists', c.entity);
+        if (isArray(drumate)) drumate = drumate[0];
+        if (drumate && drumate.id) c.drumate_id = drumate.id;
+      } catch (e) {
+        this.warn('[contact.show_contact] drumate lookup failed:', e && e.message);
+      }
+    }
   }
 
   /**
