@@ -169,7 +169,7 @@
         },
         "chunk_size": {
           "type": "number",
-          "doc": "Bytes per chunk (16 MB)"
+          "doc": "Bytes per chunk (4 MB)"
         },
         "total": {
           "type": "number",
