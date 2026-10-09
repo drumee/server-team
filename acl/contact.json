@@ -60,6 +60,31 @@
       ]
     },
 
+    "accept_invite": {
+      "doc": "Redeem the token of a 'Join Drumee' contact invitation email for the signed-in account. Connects the inviter and the redeemer (both contact rows become active), deletes the single-use token, logs invite_accepted and pushes contact.invite_accept to the inviter. Holding the secret is the authorisation; the redeeming account does not have to carry the invited address.",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "params": {
+        "token": {
+          "type": "string",
+          "required": true,
+          "doc": "contact_invite token from the invitation email link"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "doc": "status is 'ok' on success, otherwise INVALID_TOKEN, EXPIRIED_TOKEN, SELF_INVITE, ALREADY_IN_CONTACT, INVITE_PENDING or INVITE_WITHDRAWN",
+        "properties": {
+          "status": { "type": "string" },
+          "drumate_id": { "type": "string", "doc": "Inviter id" },
+          "contact_id": { "type": "string", "doc": "Redeemer's contact row for the inviter" },
+          "fullname": { "type": "string", "doc": "Inviter display name" }
+        }
+      }
+    },
+
     "invite_refuse": {
       "doc": "Refuse a pending contact invitation from another Drumee user. Updates the invitation status, logs the refuse activity, and notifies the inviting party via WebSocket.",
       "scope": "hub",
