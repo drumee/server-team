@@ -23,6 +23,7 @@ const { logConnection } = require('./lib/connection_log');
 const { resolve } = require('path');
 const { isEmpty, isString } = require("lodash");
 const { notifyMemberJoined } = require("./lib/notify-member-joined");
+const { bounceLink } = require("./lib/email-link");
 const {
   PASS_CHECKER,
   ID_NOBODY,
@@ -671,7 +672,7 @@ class __butler extends Mfs {
           heading: lex._your_account_is_all_set,
           message: lex._mail_signup_drumee,
           workspace: lex._discover_drumee_desk,
-          link: `https://${main_domain}/-/`,
+          link: bounceLink(`https://${main_domain}/-/`),
           signature: lex._drumee_team,
           reminder: lex._copyright.format(`${new Date().getFullYear()}`),
           hello: lex._hello_x.format(firstname || ""),

@@ -100,6 +100,20 @@ class __callback extends Entity {
     this.output.html(`<script> window.location.href = '${this._deskPath()}${hash}' </script>`);
   }
 
+  // Any app link mailed out (service/lib/email-link.js bounceLink): the same
+  // same-site bounce as portal_return, to a path + hash on THIS host. `dest`
+  // must be a same-host absolute path ("/…", never "//…" or "/\…", no scheme)
+  // drawn from a URL-safe alphabet with no quote, backslash, angle bracket or
+  // whitespace — it is written into a <script>. Anything else lands on the
+  // desk, as portal_return does.
+  async open() {
+    const dest = String(this.input.use('dest', ''));
+    const ok = dest.length <= 2048
+      && /^\/(?![\/\\])[A-Za-z0-9\-._~!$&()*+,;=:@%\/?#]*$/.test(dest);
+    const to = ok ? dest : `${this._deskPath()}#/desk/`;
+    this.output.html(`<script> window.location.href = '${to}' </script>`);
+  }
+
   // Stripe Billing Portal return_url, and the "Open Drumee" target in outgoing
   // emails. See _deskPath above for why this is a bounce and why it is relative.
   async portal_return() {
