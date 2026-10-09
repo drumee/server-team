@@ -1846,10 +1846,7 @@ class __private_contact extends Contact {
     // Inviter's side: the email row now names this account. 'informed' is the
     // state contact_invite_informed advances to 'active' (refreshing auto names
     // and the contact_block mapping) — the same two steps invite_accept takes.
-    await this.yp.await_query(
-      `UPDATE \`${inviterDb}\`.contact SET entity = ?, uid = ?, category = 'drumate', status = 'informed', mtime = UNIX_TIMESTAMP() WHERE id = ?`,
-      this.uid, this.uid, row.id
-    );
+    await theirs('contact_link_drumate', row.id, this.uid);
     const notice = await this.yp.await_proc(
       'forward_proc', inviter_id, 'contact_notification_by_entity', `${sqlString(this.uid)}`
     );
@@ -1868,10 +1865,7 @@ class __private_contact extends Contact {
     }
     if (!isEmpty(mine) && mine.id) {
       if (mine.status !== 'active') {
-        await this.db.await_query(
-          "UPDATE contact SET uid = ?, category = 'drumate', status = 'informed', mtime = UNIX_TIMESTAMP() WHERE id = ?",
-          inviter_id, mine.id
-        );
+        await this.db.await_proc('contact_link_drumate', mine.id, inviter_id);
         await this.db.await_proc('contact_invite_informed', inviter_id);
       }
       if (created && inviter.email) {
