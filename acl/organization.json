@@ -741,6 +741,14 @@
           "description": "caller is not an admin of the current organisation"
         }
       ]
+    },
+    "workspace_scope": {
+      "doc": "Which of the caller's workspaces belong in the organisation being worked in (multi-org), for the desk's workspace list: {mode: 'only'|'hide'|'all', hub_ids}. 'only' on another organisation's address (its workspaces), 'hide' on the caller's own (workspaces of organisations they are a member of elsewhere), 'all' when there is nothing to filter.",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "params": {}
     }
   },
   "modules": {

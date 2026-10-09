@@ -859,6 +859,45 @@ class __private_adminpanel extends Entity {
   }
 
   /**
+   * Which of the caller's workspaces belong in the organisation being worked
+   * in (multi-org). The desk's workspace list is built from desk.home, which
+   * knows nothing of domains, so the client filters it with this:
+   *   - on another organisation's address (active-org): {mode: 'only',
+   *     hub_ids} -- that organisation's workspaces and nothing else;
+   *   - on their own: {mode: 'hide', hub_ids} -- the workspaces of the
+   *     organisations they are a MEMBER of elsewhere, which they reach by
+   *     switching. Workspaces merely shared with them (guest) stay, as today;
+   *   - nothing to filter: {mode: 'all'}.
+   */
+  async workspace_scope() {
+    const active = this.user.get('active_org');
+    const memberOf = active ? [] : this._rows(await this.yp.await_query(
+      'SELECT domain_id FROM org_membership WHERE uid = ?', this.uid,
+    )).map((r) => ~~r.domain_id);
+    if (!active && !memberOf.length) return this.output.data({ mode: 'all' });
+
+    const db = this.user.get('db_name');
+    if (!db || !/^[0-9a-zA-Z_]+$/.test(db)) return this.output.data({ mode: 'all' });
+    const hubs = this._rows(await this.yp.await_query(
+      `SELECT m.id AS hub_id, e.dom_id FROM \`${db}\`.media m ` +
+      "INNER JOIN yp.entity e ON e.id = m.id WHERE m.category = 'hub'",
+    ));
+    if (active) {
+      const dom = ~~active.domain_id;
+      return this.output.data({
+        mode: 'only',
+        domain_id: dom,
+        hub_ids: hubs.filter((h) => ~~h.dom_id === dom).map((h) => h.hub_id),
+      });
+    }
+    const hide = new Set(memberOf);
+    this.output.data({
+      mode: 'hide',
+      hub_ids: hubs.filter((h) => hide.has(~~h.dom_id)).map((h) => h.hub_id),
+    });
+  }
+
+  /**
    * "+ New organization" (Business plan): one more organisation owned by the
    * caller, who stays in their first one (org_extra_create). Returns the new
    * organisation with its link, for the client to open.
