@@ -26,6 +26,7 @@ const { archive } = Script;
 const { resolve, dirname, join } = require('path');
 const { existsSync, symlinkSync, mkdirSync, writeFileSync, statSync } = require('fs');
 const { spawn } = require('child_process');
+const { bounceLink } = require('../../service/lib/email-link');
 const Moment = require('moment');
 const { isEmpty, isString } = require('lodash');
 const { tmp_dir, data_dir, domain } = sysEnv();
@@ -354,7 +355,10 @@ class __offline_drumate_backup extends Offline {
         this.warn('_sendDownloadEmail: vhost not found, skipping email');
         return;
       }
-      const downloadUrl = `https://${vhost}/-/svc/media.download?zipid=${this.zipid}`;
+      // media.download needs the session (src: read). A straight link from the
+      // mail client arrives without the SameSite=Strict cookie, so it goes
+      // through the same-site bounce (service/lib/email-link).
+      const downloadUrl = bounceLink(`https://${vhost}/-/svc/media.download?zipid=${this.zipid}`);
       const html = `<p>Hello ${this.sender.fullname || ''},</p>
         <p>Your Drumee data export is ready. Click the link below to download your archive:</p>
         <p><a href="${downloadUrl}">${downloadUrl}</a></p>

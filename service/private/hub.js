@@ -30,6 +30,7 @@ const {
 const { resolve } = require("path");
 const { notifyMemberJoined, notifyMembersChanged, notifyInvitationsChanged } = require("../lib/notify-member-joined");
 const { butlerFrom } = require("../lib/mail-sender");
+const { bounceLink } = require("../lib/email-link");
 const { mailFailure } = require("../lib/mail-result");
 const { resolveHubInviteName } = require("../lib/hub-invite-name");
 const { resolveHubDisplayName } = require("../lib/hub-display-name");
@@ -66,6 +67,10 @@ const WORKSPACE_INVITE_TPL = "workspace-invite-member";
 // calls (the popup fires one per selected workspace) under Postfix's default
 // 50 connections per client IP.
 const INVITE_MAIL_BATCH = 25;
+
+// Most addresses one hub.cancel_invite call withdraws. A selection in the
+// Access panel is bounded by what is on screen; this bounds a scripted call.
+const CANCEL_INVITE_MAX = 200;
 
 /**
  * True when a workspace area is shared outside the member circle.
@@ -1685,12 +1690,15 @@ class __private_hub extends Hub {
       workspace_name: hubname,
       // Kept, and still the target of the workspace preview's own links, so an
       // email opened by somebody who has already answered is not a dead end.
-      link: ctaLink,
+      link: bounceLink(ctaLink),
       // The two answers. Both carry the token and nothing else identifying —
       // holding the secret IS the authorisation, exactly as it already was for
       // redemption.
-      accept_link: this._inviteAnswerLink(token, hubId, hubname, "accept"),
-      decline_link: this._inviteAnswerLink(token, hubId, hubname, "decline"),
+      // Through the same-site bounce (lib/email-link): straight links
+      // arrived without the SameSite=Strict session and signed the
+      // recipient out.
+      accept_link: bounceLink(this._inviteAnswerLink(token, hubId, hubname, "accept")),
+      decline_link: bounceLink(this._inviteAnswerLink(token, hubId, hubname, "decline")),
       workspace_external,
       preview_items,
       recent_messages,
@@ -2243,6 +2251,99 @@ class __private_hub extends Hub {
         (r) => !seated.has(String(r.email || "").trim().toLowerCase())
       )
     );
+  }
+
+  /**
+   * Withdraw invitations to this workspace — the Cancel button on a row of the
+   * Access panel's Pending Invitations section, one address or a selection.
+   *
+   * WHY IT EXISTS. An invitation used to stay there until it was answered or
+   * lapsed: a mistyped address, or one the org has no seat left for, sat as
+   * Pending with nothing the admin could do about it.
+   *
+   * WHAT IS WITHDRAWN (token_hub_invite_cancel): every active or declined
+   * hub_invite token of the address for THIS workspace, whoever sent it, and
+   * its pending_invitation row — the row signup grants from and the seat count
+   * reads. An accepted token is untouched: that person is a member, and
+   * removing a member is a different act behind its own button.
+   *
+   * THE INVITEE IS NOT PUSHED ANYTHING. The token being gone is enough: their
+   * notification row reads `invalid` on the next feed (hub-invite-status) and
+   * the email's links answer `invalid`. The row is dismissed so it does not
+   * keep counting as unread. `hub.invite_received` is deliberately NOT sent —
+   * the desk treats it as "you were invited" (sound, sidebar refresh).
+   *
+   * Per-address and best-effort after the withdrawal itself: a dismissal
+   * that fails must not report a cancelled invitation as failed.
+   *
+   * 🚨 THE AUDIT LINES ARE WRITTEN LAST, after every withdrawal and the push.
+   * 'invite_cancelled' needs the action_log enum widened on every hub db
+   * (schemas common/patches/alter_action_log_add_invite_answer_actions.sql).
+   * On a db that has not had it, the insert raises under
+   * STRICT_TRANS_TABLES, and the mariadb wrapper answers an SQL error by
+   * ending the request's shared yp connection while swallowing the error —
+   * interleaved with the withdrawals, every later address would silently
+   * "cancel" nothing. Last, the worst case is a missing log line.
+   */
+  async cancel_invite() {
+    const hub_id = this.hub.get(Attr.id);
+    const seen = new Set();
+    const emails = toArray(this.input.need("emails"))
+      .map((e) => String(e || "").trim())
+      .filter((e) => {
+        const key = e.toLowerCase();
+        if (!e || seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })
+      .slice(0, CANCEL_INVITE_MAX);
+    const results = [];
+    const withdrawn = [];
+    let changed = false;
+    for (const email of emails) {
+      try {
+        let row = await this.yp.await_proc("token_hub_invite_cancel", hub_id, email);
+        if (isArray(row)) row = row[0];
+        const cancelled = parseInt(row && row.cancelled, 10) || 0;
+        if (!cancelled) {
+          results.push({ email, status: "not_found" });
+          continue;
+        }
+        changed = true;
+        withdrawn.push(email);
+        results.push({ email, status: "cancelled" });
+      } catch (err) {
+        this.warn("[hub] cancel_invite failed for", email, err && err.message);
+        results.push({ email, status: "failed" });
+        continue;
+      }
+      try {
+        let drumate = await this.yp.await_proc("drumate_exists", email);
+        if (isArray(drumate)) drumate = drumate[0];
+        if (drumate && drumate.id) {
+          await this.yp.await_proc(
+            "contact_activity_dismiss_hub_invite", drumate.id, hub_id
+          );
+        }
+      } catch (err) {
+        this.warn("[hub] cancel_invite: notification", err && err.message);
+      }
+    }
+    // Other admins with the panel open re-read their Pending Invitations.
+    if (changed) await notifyInvitationsChanged(this, hub_id);
+    const db_name = this.hub.get(Attr.db_name);
+    for (const email of withdrawn) {
+      await writeAudit(this, {
+        db: db_name,
+        uid: this.uid,
+        action: "invite_cancelled",
+        category: "member",
+        notify_to: "admin",
+        entity_id: hub_id,
+        log: `Invite cancelled — the invitation to ${email} was withdrawn`,
+      });
+    }
+    this.output.data({ results });
   }
 
   /**

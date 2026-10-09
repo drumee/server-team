@@ -23,6 +23,7 @@ const {
 const { stringify } = JSON;
 const { isArray, isEmpty, } = require('lodash');
 const { shouldSendNotification } = require("../lib/email-policy");
+const { bounceLink } = require("../lib/email-link");
 
 
 const __public = require('../sharebox.js');
@@ -400,7 +401,9 @@ class __private_sharebox extends __public {
     const lang = this.user.language() || this.input.app_language();
     message = message.replace(/\n/g, '<br>');
     const username = this.user.get('fullname');
-    const link = `${this.input.homepath(host)}/#/dmz/inbound/token=${share_id}`;
+    // Same-site bounce (lib/email-link): this link is MAILED, and a straight
+    // one signed a signed-in recipient out (SameSite=Strict session).
+    const link = bounceLink(`${this.input.homepath(host)}/#/dmz/inbound/token=${share_id}`);
     const subject = `${Cache.message('_sent_you_drop_link', lang)
       .format(username)}`;
 
@@ -443,7 +446,9 @@ class __private_sharebox extends __public {
     let node = args.node;
     let share_id = args.share.share_id;
     const username = this.user.get('fullname');
-    const link = `${this.input.homepath(host)}/#/dmz/inbound/token=${share_id}`;
+    // Same-site bounce (lib/email-link): this link is MAILED, and a straight
+    // one signed a signed-in recipient out (SameSite=Strict session).
+    const link = bounceLink(`${this.input.homepath(host)}/#/dmz/inbound/token=${share_id}`);
     const subject = `${Cache.message('_sent_you_drop_link', lang)
       .format(username)}`;
     for (let recipient of email) {
@@ -475,7 +480,7 @@ class __private_sharebox extends __public {
    * @returns 
    */
   async create_inbound_link() {
-    const email = this.input.need(Attr.email);
+    let email = this.input.need(Attr.email);
     const nid = this.input.need(Attr.nid);
     if (!isArray(email)) {
       email = [email];

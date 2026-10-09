@@ -2882,6 +2882,13 @@ class __private_media extends Media {
       this.exception.user(UNABLE_TO_RENAME_INBOUND, "", node.filename);
       return;
     }
+    // Renaming a WORKSPACE is for its admins and owner only (Duy 2026-10-07):
+    // their rename reaches every member (renameHubForMembers), and a member
+    // below admin renaming it for themselves only made one workspace go by
+    // several names.
+    if (node[FILETYPE] == Attr.hub && !(await this.isWorkspaceAdmin(nid))) {
+      return this.exception.forbiden();
+    }
     let res;
     let oldItems = {};
     let newItems = {};
@@ -2996,6 +3003,23 @@ class __private_media extends Media {
   }
 
   /**
+   * Whether the caller is an admin (or owner) of the workspace `hub_id`, read
+   * from the workspace's own permission table. A workspace rename arrives
+   * scoped to the caller's desk (hub_id = their own id), so the ACL check on
+   * media.rename says nothing about their role in the workspace itself.
+   */
+  async isWorkspaceAdmin(hub_id) {
+    const hub = firstRow(
+      await this.yp.await_query("SELECT db_name FROM entity WHERE id=?", hub_id)
+    );
+    if (!hub || !hub.db_name) return false;
+    const privilege = await this.yp.await_func(
+      `${hub.db_name}.user_permission`, this.uid, "*"
+    );
+    return !!(Number(privilege) & Permission.ADMIN);
+  }
+
+  /**
    * A hub admin's rename reaches EVERY member of the workspace.
    *
    * Each member's desk holds its own row for the workspace and the desk lists
@@ -3009,15 +3033,7 @@ class __private_media extends Media {
    * @returns the hub's member sockets to push to, or null for a personal rename
    */
   async renameHubForMembers(hub_id, filename, oldItems, newItems) {
-    const hub = firstRow(
-      await this.yp.await_query("SELECT db_name FROM entity WHERE id=?", hub_id)
-    );
-    if (!hub || !hub.db_name) return null;
-    const hubDb = hub.db_name;
-    const privilege = await this.yp.await_func(
-      `${hubDb}.user_permission`, this.uid, "*"
-    );
-    if (!(Number(privilege) & Permission.ADMIN)) return null;
+    if (!(await this.isWorkspaceAdmin(hub_id))) return null;
 
     const members = toArray(
       await this.yp.await_proc("hub_rename_for_members", hub_id, filename)

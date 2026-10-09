@@ -27,7 +27,7 @@ const { RedisStore, sysEnv } = require("@drumee/server-essentials");
 
 const { tmp_dir } = sysEnv();
 
-const CHUNK_SIZE = 16 * 1024 * 1024;
+const CHUNK_SIZE = 4 * 1024 * 1024;
 const SESSION_TTL = 48 * 3600; // seconds
 const DIRNAME = "chunked";
 const SESSION_KEY = "upload:session:";

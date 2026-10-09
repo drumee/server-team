@@ -4,6 +4,7 @@ const { Messenger } = require('@drumee/server-essentials');
 const { resolve } = require('path');
 const { stripeClient, endpointSecret } = require('../lib/stripe');
 const { sendButlerMail } = require('../lib/butler-mail');
+const { bounceLink } = require('../lib/email-link');
 const { pushRevenueLive } = require('../private/_revenue_live');
 
 // "What's unlocked" checklist per plan (payment-receipt email, Figma 2803-1288).
@@ -172,7 +173,8 @@ class __public_stripe_webhook extends Entity {
     const currency = invoice.currency || 'usd';
     const card_label = await this._cardLabel(stripe, invoice);
     let billing_link = '';
-    try { billing_link = this.input.homepath(); } catch (e) { billing_link = ''; }
+    // Same-site bounce (lib/email-link), as app_link above already is.
+    try { billing_link = bounceLink(this.input.homepath()); } catch (e) { billing_link = ''; }
     const isFinal = !invoice.next_payment_attempt;
     const tplName = isFinal ? 'payment-final-warning.html' : 'payment-failed.html';
     const subject = isFinal

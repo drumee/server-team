@@ -74,6 +74,13 @@ class privateChat extends Entity {
     // echoed on each row because the list widget sends it and the card
     // model carries it; it no longer selects a slice.
     let page = this.input.use(Attr.page) || 1;
+    // Page 1 already carries every attachment. Any later page must be empty:
+    // the list widget asks for page+1 while a page holds >= pagelength (45)
+    // rows, so returning the whole list again made a 46+ file message page
+    // forever (thousands of calls per open tab, starving uploads).
+    if (Number(page) > 1) {
+      return this.output.data([]);
+    }
     let attach = {};
     let data = await this.db.await_proc("channel_get", message_id);
 

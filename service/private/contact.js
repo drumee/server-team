@@ -15,7 +15,7 @@
  * =============================================================================
  */
 
-const { Attr, Constants, Messenger, utils, RedisStore, Cache, nullValue } = require("@drumee/server-essentials");
+const { Attr, Constants, Messenger, utils, RedisStore, Cache, nullValue, sysEnv } = require("@drumee/server-essentials");
 const { EMAIL_CHECKER } = Constants;
 
 const { readFileSync } = require('fs');
@@ -54,6 +54,7 @@ class __private_contact extends Contact {
 
     this.invite_refuse = this.invite_refuse.bind(this);
     this.invite_accept = this.invite_accept.bind(this);
+    this.accept_invite = this.accept_invite.bind(this);
     this.invite_get = this.invite_get.bind(this);
     this.invite_count = this.invite_count.bind(this);
     this.accept_informed = this.accept_informed.bind(this);
@@ -528,7 +529,7 @@ class __private_contact extends Contact {
     const lang = this.user.language() || this.input.app_language();
     const subject = `${Cache.message('_network_non_drumate_subject', lang).format(username)}`;
 
-    const link = `${this.input.homepath()}#/welcome/signup/${token}`;
+    const link = this._joinLink(email, token);
     const tplPath = resolve(__dirname, 'templates', 'butler', 'contact-add-non-drumate.html');
     const msg = new Messenger({
       subject,
@@ -561,7 +562,7 @@ class __private_contact extends Contact {
    * @param {*} email 
    * @param {*} message 
    */
-  async send_drumate_mail(email, message, vhost) {
+  async send_drumate_mail(email, message, vhost, invitee_id) {
 
     const username = this.user.get(Attr.fullname);
     message = this.input.use(Attr.message) || '';
@@ -571,7 +572,9 @@ class __private_contact extends Contact {
     const subject = `${Cache.message('_network_message', lang)
       .format(username)}`;
 
-    const link = `${this.input.homepath(vhost)}#`;
+    const link = invitee_id
+      ? this._acceptLink(vhost, invitee_id)
+      : `${this.input.homepath(vhost)}#`;
     // Contact-added notification — respect recipient's email_notifications
     // preference. This is the only notification path here; OTP / password
     // reset / account-deletion / admin invitation flows must NEVER be gated.
@@ -617,7 +620,30 @@ class __private_contact extends Contact {
     let contacts = await this.db.await_proc('my_contact_show_next',
       tag_id, name, order, option, page
     );
+    await this.linkEmailContacts(contacts);
     this.output.list(contacts);
+  }
+
+  /**
+   * A contact saved by email (manual add, import, sync) keeps the address in
+   * `entity` even after that person has a Drumee account, so the row carries
+   * no drumate id — while `is_drumate` (yp.user_exists matches id OR email)
+   * already says the account exists. Resolve it to `drumate_id` so the
+   * Contacts panel can open the chat or ring them instead of treating them
+   * as having no account. Best effort: a failure leaves the row as it was.
+   */
+  async linkEmailContacts(contacts) {
+    for (const c of toArray(contacts)) {
+      if (!c || Number(c.is_drumate) !== 1 || c.drumate_id) continue;
+      if (typeof c.entity !== 'string' || !c.entity.includes('@')) continue;
+      try {
+        let drumate = await this.yp.await_proc('drumate_exists', c.entity);
+        if (isArray(drumate)) drumate = drumate[0];
+        if (drumate && drumate.id) c.drumate_id = drumate.id;
+      } catch (e) {
+        this.warn('[contact.show_contact] drumate lookup failed:', e && e.message);
+      }
+    }
   }
 
   /**
@@ -1035,7 +1061,7 @@ class __private_contact extends Contact {
         }
         else {
           let vhost = await this.yp.await_proc('domain_exists', drumate.domain_id);
-          sent = await this.send_drumate_mail(default_email, message, vhost.name);
+          sent = await this.send_drumate_mail(default_email, message, vhost.name, drumate.id);
         }
       }
     }
@@ -1203,7 +1229,7 @@ class __private_contact extends Contact {
       }
       else {
         let vhost = await this.yp.await_proc('domain_exists', drumate.domain_id);
-        send = await this.send_drumate_mail(default_email, message, vhost.name);
+        send = await this.send_drumate_mail(default_email, message, vhost.name, drumate.id);
       }
     }
 
@@ -1337,7 +1363,7 @@ class __private_contact extends Contact {
           return this.output.data(res);
         }
         let vhost = await this.yp.await_proc('domain_exists', drumate.domain_id);
-        sent = await this.send_drumate_mail(email, message, vhost.name);
+        sent = await this.send_drumate_mail(email, message, vhost.name, drumate.id);
       }
 
       if (isEmpty(contact)) {
@@ -1645,6 +1671,8 @@ class __private_contact extends Contact {
     await this.db.await_proc('my_contact_mail_add', data.contact_id, stringify([node]))
 
     res = { ...res, ...data };
+    // For the confirmation the desk shows after accepting from the email link.
+    res.fullname = `${peer.firstname || ''} ${peer.lastname || ''}`.trim();
     data = await this.yp.await_proc('forward_proc', peer.id, 'contact_notification_by_entity', `${sqlString(this.uid)}`)
 
     const lang = this.user.language() || this.input.app_language();
@@ -1686,6 +1714,193 @@ class __private_contact extends Contact {
     this.output.data(res);
   }
 
+
+  /**
+   * The "Join Drumee" link mailed to an address that has no account yet.
+   *
+   * Built on the deployment's MAIN domain, like the workspace-invite links
+   * (hub._endpointBase), and NOT on input.homepath(): that is the inviter's own
+   * request host, which for a member of an organisation is the organisation's
+   * host. The recipient has no session there, so a recipient who was already
+   * signed in was shown the sign-in page ("logged out"), and the app bundle had
+   * to be fetched again from a cold cache on a host they had never visited.
+   * On the main domain a signed-in visitor is forwarded to their own host with
+   * the hash intact (router changeHost), and the welcome module keeps the token
+   * until somebody is signed in to redeem it (contact.accept_invite).
+   *
+   * @param {string} email invited address, prefilled on the sign-up form
+   * @param {string} token yp.token secret minted by invite()
+   * @returns {string}
+   */
+  _joinLink(email, token) {
+    const { main_domain } = sysEnv();
+    const q = [
+      `email=${encodeURIComponent(email)}`,
+      `contact_invite=${encodeURIComponent(token)}`,
+    ];
+    return this._bounceLink(main_domain, q);
+  }
+
+  /**
+   * The "Open my desktop" link mailed to an address that HAS an account.
+   *
+   * It used to be the bare desktop (`homepath(vhost)#`), so clicking it
+   * answered nothing: the invitation stayed Pending until the recipient found
+   * the Accept button. It now names the invitation — who sent it, and which
+   * account it was sent to — and the front end accepts it with
+   * contact.invite_accept once THAT account is signed in (welcome module +
+   * desk _maybeAcceptContactInvite). Ids only, no address in the URL.
+   * Same host as before: the recipient's own (organisation) host.
+   *
+   * @param {string} vhost recipient's domain host
+   * @param {string} invitee_id recipient's account id
+   * @returns {string}
+   */
+  _acceptLink(vhost, invitee_id) {
+    const q = [
+      `contact_accept=${encodeURIComponent(this.uid)}`,
+      `for=${encodeURIComponent(invitee_id)}`,
+    ];
+    return this._bounceLink(vhost, q);
+  }
+
+  /**
+   * Both contact-invitation links go through callback.contact_invite, a
+   * same-site bounce: the session cookie is SameSite=Strict, so a click out of
+   * a mail client (cross-site) arrives without it and a signed-in recipient
+   * was shown the sign-in page. The bounce page's own script then navigates to
+   * the welcome route, same-site, and the cookie is sent. Same mechanism as
+   * callback.portal_return for the other emails.
+   *
+   * @param {string} host host the recipient should land on
+   * @param {string[]} q  already-encoded `key=value` pairs
+   * @returns {string}
+   */
+  _bounceLink(host, q) {
+    const { endpoint_path } = sysEnv();
+    return `https://${host}${endpoint_path || "/-"}/svc/?service=callback.contact_invite&${q.join("&")}`;
+  }
+
+  /**
+   * Redeem the token of a "Join Drumee" email for the signed-in account.
+   *
+   * An invitation sent to an address with no account is stored on the
+   * inviter's side as a contact whose entity is that EMAIL, and nothing ever
+   * turned it into a connection: the token rode on the link but no code read
+   * it, so both sides stayed in Pending forever once the recipient had an
+   * account. Clicking "Join Drumee" is the recipient's acceptance (that is
+   * what the email asks them to do), so redeeming connects both sides, like
+   * invite_accept does for an invitation between two accounts, and tells the
+   * inviter the same way (activity row + `contact.invite_accept` push).
+   *
+   * Holding the secret is the authorisation, as for hub.accept_invite: the
+   * account that redeems it does not have to carry the invited address.
+   *
+   * Touches ONLY the inviter's row for that address and the redeemer's row for
+   * the inviter. Deliberately not the older contact_join proc, which also
+   * rewrites every other invitation to the same address and deletes the
+   * redeemer's existing rows for those inviters.
+   */
+  async accept_invite() {
+    if (!this.uid) {
+      return this.output.data({ status: 'not_authenticated' });
+    }
+    const secret = this.input.need(Attr.token);
+    const token = await this.yp.await_proc('token_get_next', secret);
+    if (isEmpty(token) || !token.secret || token.method !== 'signup' || isEmpty(token.inviter_id)) {
+      return this.output.data({ status: 'INVALID_TOKEN' });
+    }
+    if (token.status !== 'active') {
+      return this.output.data({ status: 'EXPIRIED_TOKEN' });
+    }
+    const inviter_id = token.inviter_id;
+    if (inviter_id === this.uid) {
+      return this.output.data({ status: 'SELF_INVITE' });
+    }
+    let inviter = await this.yp.await_proc('drumate_exists', inviter_id);
+    if (isArray(inviter)) inviter = inviter[0];
+    const inviterDb = await this.yp.await_func('get_db_name', inviter_id);
+    if (isEmpty(inviter) || !inviter.id || !/^[a-z0-9_]+$/i.test(inviterDb || '')) {
+      return this.output.data({ status: 'INVALID_TOKEN' });
+    }
+    const theirs = (proc, ...args) => this.yp.await_proc(`${inviterDb}.${proc}`, ...args);
+    const res = { drumate_id: inviter_id, email: inviter.email };
+
+    // The inviter already has a row for this ACCOUNT (an ordinary invitation,
+    // or an existing connection). Leave both books alone: the pending one is
+    // answered from the Contacts panel, and converting the email row on top of
+    // it would give the inviter two rows for the same person.
+    const existing = await theirs('my_contact_exists', 'entity', this.uid, null, null);
+    if (!isEmpty(existing) && existing.id) {
+      res.status = existing.status === 'active' ? 'ALREADY_IN_CONTACT' : 'INVITE_PENDING';
+      return this.output.data(res);
+    }
+    const row = await theirs('my_contact_exists', 'entity', token.email, null, null);
+    if (isEmpty(row) || !row.id) {
+      // Withdrawn by the inviter since the email went out.
+      await this.yp.await_proc('token_delete', secret);
+      res.status = 'INVITE_WITHDRAWN';
+      return this.output.data(res);
+    }
+
+    // Inviter's side: the email row now names this account. 'informed' is the
+    // state contact_invite_informed advances to 'active' (refreshing auto names
+    // and the contact_block mapping) — the same two steps invite_accept takes.
+    await theirs('contact_link_drumate', row.id, this.uid);
+    const notice = await this.yp.await_proc(
+      'forward_proc', inviter_id, 'contact_notification_by_entity', `${sqlString(this.uid)}`
+    );
+    await theirs('contact_invite_informed', this.uid);
+
+    // Redeemer's side: reuse a row they may already keep for the inviter
+    // (an address-book entry), otherwise add one.
+    let mine = await this.db.await_proc('my_contact_exists', 'entity', inviter_id, null, null);
+    let created = false;
+    if (isEmpty(mine) || !mine.id) {
+      mine = await this.db.await_proc('my_contact_add_next',
+        inviter_id, null, inviter.firstname, inviter.lastname, 'independant', null, null,
+        { source: inviter.email, is_auto: 1 }
+      );
+      created = true;
+    }
+    if (!isEmpty(mine) && mine.id) {
+      if (mine.status !== 'active') {
+        await this.db.await_proc('contact_link_drumate', mine.id, inviter_id);
+        await this.db.await_proc('contact_invite_informed', inviter_id);
+      }
+      if (created && inviter.email) {
+        await this.db.await_proc('my_contact_mail_add', mine.id,
+          stringify([{ email: inviter.email, category: 'priv', is_default: '1' }])
+        );
+      }
+      res.contact_id = mine.id;
+    }
+
+    // Single use, like the workspace invitation links.
+    await this.yp.await_proc('token_delete', secret);
+
+    try {
+      const lang = this.user.language() || this.input.app_language();
+      await this.handshake(Cache.message('_contact_invite_chat_msg', lang), inviter_id, this.uid);
+      await this.handshake(Cache.message('_contact_accept_chat_msg', lang), this.uid, inviter_id);
+    } catch (error) {
+      this.warn('[CONTACT] accept_invite handshake failed:', error.message);
+    }
+    try {
+      await this.yp.await_proc('contact_log_activity', this.uid, inviter_id, 'invite_accepted', {
+        email: inviter.email,
+        accepter_fullname: this.user.get('fullname')
+      });
+    } catch (error) {
+      this.warn('[CONTACT] Failed to log accept activity:', error.message);
+    }
+    const sockets = await this.yp.await_proc('user_sockets', inviter_id);
+    await RedisStore.sendData(this.payload(notice, { service: 'contact.invite_accept' }), sockets);
+
+    res.status = 'ok';
+    res.fullname = `${inviter.firstname || ''} ${inviter.lastname || ''}`.trim();
+    this.output.data(res);
+  }
 
   /**
    * Returns contact invitations addressed to the current user.

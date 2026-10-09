@@ -71,6 +71,49 @@ class __callback extends Entity {
     this.output.html(`<script> window.location.href = '${this._deskPath()}${flag}#/desk/' </script>`);
   }
 
+  // Contact-invitation email links (contact._joinLink / _acceptLink). Same
+  // same-site bounce as portal_return — a click out of a mail client is a
+  // cross-site navigation, the SameSite=Strict session cookie is withheld on
+  // it, and the recipient who IS signed in was shown the sign-in page — but it
+  // has to land on the welcome route that carries the invitation, not the
+  // desk. The hash is REBUILT here from strictly validated values, never
+  // echoed: this writes into a <script>.
+  async contact_invite() {
+    const ID = /^[0-9a-f]{16}$/;
+    const TOKEN = /^[A-Za-z0-9_-]{8,128}$/;
+    const accept = String(this.input.use('contact_accept', ''));
+    const forUid = String(this.input.use('for', ''));
+    const token = String(this.input.use('contact_invite', ''));
+    const email = String(this.input.use('email', ''));
+    let hash = '#/desk/';
+    if (ID.test(accept) && ID.test(forUid)) {
+      hash = `#/welcome/signin?contact_accept=${accept}&for=${forUid}`;
+    } else if (TOKEN.test(token)) {
+      const q = [];
+      // Prefill only; anything unexpected is dropped rather than encoded.
+      if (/^[^\s@'"<>\\]+@[^\s@'"<>\\]+$/.test(email) && email.length <= 254) {
+        q.push(`email=${encodeURIComponent(email)}`);
+      }
+      q.push(`contact_invite=${token}`);
+      hash = `#/welcome/signup?${q.join('&')}`;
+    }
+    this.output.html(`<script> window.location.href = '${this._deskPath()}${hash}' </script>`);
+  }
+
+  // Any app link mailed out (service/lib/email-link.js bounceLink): the same
+  // same-site bounce as portal_return, to a path + hash on THIS host. `dest`
+  // must be a same-host absolute path ("/…", never "//…" or "/\…", no scheme)
+  // drawn from a URL-safe alphabet with no quote, backslash, angle bracket or
+  // whitespace — it is written into a <script>. Anything else lands on the
+  // desk, as portal_return does.
+  async open() {
+    const dest = String(this.input.use('dest', ''));
+    const ok = dest.length <= 2048
+      && /^\/(?![\/\\])[A-Za-z0-9\-._~!$&()*+,;=:@%\/?#]*$/.test(dest);
+    const to = ok ? dest : `${this._deskPath()}#/desk/`;
+    this.output.html(`<script> window.location.href = '${to}' </script>`);
+  }
+
   // Stripe Billing Portal return_url, and the "Open Drumee" target in outgoing
   // emails. See _deskPath above for why this is a bounce and why it is relative.
   async portal_return() {

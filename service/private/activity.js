@@ -461,6 +461,21 @@ function stampBuckets(rows) {
   return rows;
 }
 
+// A stored rollup is a snapshot, so a row at a workspace ROOT (parent_id '0')
+// keeps the workspace name it had when captured. Name it with the viewer's
+// current desk label (notification_rollup_list's hub_label) instead. Only the
+// fields that carried that old name are replaced: a folder below the root, or
+// a single-file upload's own name, is never touched.
+function relabelWorkspaceRoot(row, label) {
+  if (!row || !label || String(row.parent_id) !== '0') return row;
+  const old = row.filename;
+  if (!old || old === label) return row;
+  for (const k of ['filename', 'folder_name', 'link_label']) {
+    if (row[k] === old) row[k] = label;
+  }
+  return row;
+}
+
 // The key notification_dismiss / notification_read act on for a rollup row.
 // It is NOT the rollup's display `key_id`: notification_center_next coalesces
 // key_id from the contact / drumate first, so a media rollup's key_id is the
@@ -851,6 +866,10 @@ class MfsActivity extends Entity {
     // The changelog read pointer and the share-open seen flag both back the Files
     // tab, so they are skipped when the user is clearing a different tab. Without
     // this, clearing "Chat" would silently mark every file notification read too.
+    // mfs_mark_all_read does more than move that pointer — it also marks every
+    // contact_activity row read and advances every p2p chat pointer — so only
+    // the unscoped call uses it; clearing Files alone goes through
+    // _markChangelogRead, or it would clear Task, Meeting, Other and Chat too.
     const clearFiles = !bucket || bucket === BUCKET.files;
 
     this.debug(`[MFS_ACTIVITY] Marking all read for user ${this.uid}, last_id: ${lastId}, bucket: ${bucket || 'all'}`);
@@ -908,7 +927,9 @@ class MfsActivity extends Entity {
     // undefined last_read_id.
     let data = { status: 'ok', last_read_id: 0 };
     if (clearFiles) {
-      const result = await this._callUserProc('mfs_mark_all_read', this.uid, lastId);
+      const result = bucket === BUCKET.files
+        ? await this._markChangelogRead(lastId)
+        : await this._callUserProc('mfs_mark_all_read', this.uid, lastId);
       data = toArray(result)[0];
     }
 
@@ -1603,15 +1624,35 @@ class MfsActivity extends Entity {
     if (!wanted.size) return;
 
     const names = new Map();
+    const rootKeys = new Map(); // key -> hub_id, for parents that are the workspace root
     for (const [key, { hub_id, parent_id }] of wanted) {
       try {
         const a = toArray(
           await this.yp.await_proc('forward_proc', hub_id, 'mfs_node_attr', `${sqlString(parent_id)}`)
         )[0] || {};
         if (a.filename && !internal(a.filename)) names.set(key, a.filename);
+        if (a.filename && `${a.parent_id}` === '0') rootKeys.set(key, hub_id);
       } catch (e) {
         this.debug('[ACTIVITY] folder name lookup failed', key, e && e.message);
       }
+    }
+    // At the workspace root mfs_node_attr answers with the workspace's shared
+    // name (yp.hub.name), which a desk rename never writes. Name it the way the
+    // viewer's desk does: mfs_access_node on the viewer's own db returns the
+    // hub node's own label. One lookup per distinct workspace; on any failure
+    // the shared name stays.
+    const labels = new Map();
+    for (const hub_id of new Set(rootKeys.values())) {
+      try {
+        const node = toArray(await this._callUserProc('mfs_access_node', this.uid, hub_id))[0] || {};
+        if (node.filetype === 'hub' && node.filename) labels.set(hub_id, node.filename);
+      } catch (e) {
+        this.debug('[ACTIVITY] workspace label lookup failed', hub_id, e && e.message);
+      }
+    }
+    for (const [key, hub_id] of rootKeys) {
+      const label = labels.get(hub_id);
+      if (label) names.set(key, label);
     }
     for (const [row, key] of targets) {
       const name = names.get(key);
@@ -2219,6 +2260,20 @@ class MfsActivity extends Entity {
   }
 
   /**
+   * Move only the changelog read pointer — the Files tab's own state. Until
+   * mfs_mark_changelog_read is applied to the user's database, falls back to
+   * mfs_mark_all_read, the previous and broader clear, so marking Files read
+   * still works during a rollout. The fallback also clears the other tabs
+   * again, and `undefined` cannot tell a missing routine from a transient
+   * failure, so drop it once every user database has the routine.
+   */
+  async _markChangelogRead(lastId) {
+    const rows = await this._callUserProc('mfs_mark_changelog_read', this.uid, lastId);
+    if (rows !== undefined) return rows;
+    return this._callUserProc('mfs_mark_all_read', this.uid, lastId);
+  }
+
+  /**
    * Hide a single contact_activity row (hub invite, contact invite, etc.)
    * from the user's activity feed. Underlying event stays around for audit.
    * Endpoint: POST /activity.dismiss_contact_event
@@ -2537,14 +2592,14 @@ class MfsActivity extends Entity {
         try { payload = JSON.parse(payload); } catch (e) { payload = null; }
       }
       if (!payload || typeof payload !== 'object') continue;
-      out.push({
+      out.push(relabelWorkspaceRoot({
         ...payload,
         category: r.category,
         key_id: r.key_id,
         hub_id: payload.hub_id != null ? payload.hub_id : r.hub_id,
         ctime: r.ctime,
         timestamp: r.ctime,
-      });
+      }, r.hub_label));
     }
     return stampBuckets(out);
   }
