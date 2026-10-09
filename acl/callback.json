@@ -24,6 +24,20 @@
       },
       "params": {}
     },
+    "contact_invite": {
+      "doc": "Contact-invitation email links. UX-only same-site bounce, like portal_return, so the SameSite=Strict session cookie is sent: redirects to #/welcome/signin?contact_accept=&for= (invitation to an existing account) or #/welcome/signup?email=&contact_invite= (Join Drumee). The hash is rebuilt from validated values only.",
+      "scope": "hub",
+      "permission": {
+        "src": "read",
+        "fast_check": "public-api"
+      },
+      "params": {
+        "contact_accept": { "type": "string", "required": false, "doc": "Inviter account id" },
+        "for": { "type": "string", "required": false, "doc": "Invitee account id" },
+        "contact_invite": { "type": "string", "required": false, "doc": "Join Drumee token" },
+        "email": { "type": "string", "required": false, "doc": "Address to prefill on sign-up" }
+      }
+    },
     "portal_return": {
       "doc": "Stripe Billing Portal return. UX-only same-site bounce: redirects the browser to the desk so the SameSite=Strict session cookie survives the cross-site return (avoids apparent logout).",
       "scope": "hub",
