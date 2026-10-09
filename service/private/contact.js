@@ -1733,12 +1733,12 @@ class __private_contact extends Contact {
    * @returns {string}
    */
   _joinLink(email, token) {
-    const { main_domain, endpoint_path } = sysEnv();
+    const { main_domain } = sysEnv();
     const q = [
       `email=${encodeURIComponent(email)}`,
       `contact_invite=${encodeURIComponent(token)}`,
     ];
-    return `https://${main_domain}${endpoint_path || "/-"}/#/welcome/signup?${q.join("&")}`;
+    return this._bounceLink(main_domain, q);
   }
 
   /**
@@ -1757,12 +1757,28 @@ class __private_contact extends Contact {
    * @returns {string}
    */
   _acceptLink(vhost, invitee_id) {
-    const { endpoint_path } = sysEnv();
     const q = [
       `contact_accept=${encodeURIComponent(this.uid)}`,
       `for=${encodeURIComponent(invitee_id)}`,
     ];
-    return `https://${vhost}${endpoint_path || "/-"}/#/welcome/signin?${q.join("&")}`;
+    return this._bounceLink(vhost, q);
+  }
+
+  /**
+   * Both contact-invitation links go through callback.contact_invite, a
+   * same-site bounce: the session cookie is SameSite=Strict, so a click out of
+   * a mail client (cross-site) arrives without it and a signed-in recipient
+   * was shown the sign-in page. The bounce page's own script then navigates to
+   * the welcome route, same-site, and the cookie is sent. Same mechanism as
+   * callback.portal_return for the other emails.
+   *
+   * @param {string} host host the recipient should land on
+   * @param {string[]} q  already-encoded `key=value` pairs
+   * @returns {string}
+   */
+  _bounceLink(host, q) {
+    const { endpoint_path } = sysEnv();
+    return `https://${host}${endpoint_path || "/-"}/svc/?service=callback.contact_invite&${q.join("&")}`;
   }
 
   /**
