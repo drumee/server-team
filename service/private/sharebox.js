@@ -480,7 +480,7 @@ class __private_sharebox extends __public {
    * @returns 
    */
   async create_inbound_link() {
-    const email = this.input.need(Attr.email);
+    let email = this.input.need(Attr.email);
     const nid = this.input.need(Attr.nid);
     if (!isArray(email)) {
       email = [email];
