@@ -987,7 +987,7 @@
       "doc": "Remove an uploaded attachment before sending. Deletes a file from chat upload directory. Only works on files in /__chat__/__upload__/ path. File must be owned by user and cannot be a folder or hub.",
       "scope": "hub",
       "permission": {
-        "src": "write"
+        "src": "download"
       },
       "method": "remove_attachment",
       "params": {

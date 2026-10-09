@@ -56,3 +56,7 @@ jobs:
       # Pins that no member-management path can rewrite the owner's row.
       - name: Run owner row guard regression test
         run: node --test offline/test/owner-row-guard.test.js
+      # Pins that a Chat-role member may remove their own pending chat
+      # attachment, View may not, and the bar stays above `read` for the clamps.
+      - name: Run chat attachment remove permission regression test
+        run: node --test offline/test/chat-upload-remove-permission.test.js
