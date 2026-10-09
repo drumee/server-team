@@ -562,7 +562,7 @@ class __private_contact extends Contact {
    * @param {*} email 
    * @param {*} message 
    */
-  async send_drumate_mail(email, message, vhost) {
+  async send_drumate_mail(email, message, vhost, invitee_id) {
 
     const username = this.user.get(Attr.fullname);
     message = this.input.use(Attr.message) || '';
@@ -572,7 +572,9 @@ class __private_contact extends Contact {
     const subject = `${Cache.message('_network_message', lang)
       .format(username)}`;
 
-    const link = `${this.input.homepath(vhost)}#`;
+    const link = invitee_id
+      ? this._acceptLink(vhost, invitee_id)
+      : `${this.input.homepath(vhost)}#`;
     // Contact-added notification — respect recipient's email_notifications
     // preference. This is the only notification path here; OTP / password
     // reset / account-deletion / admin invitation flows must NEVER be gated.
@@ -1059,7 +1061,7 @@ class __private_contact extends Contact {
         }
         else {
           let vhost = await this.yp.await_proc('domain_exists', drumate.domain_id);
-          sent = await this.send_drumate_mail(default_email, message, vhost.name);
+          sent = await this.send_drumate_mail(default_email, message, vhost.name, drumate.id);
         }
       }
     }
@@ -1227,7 +1229,7 @@ class __private_contact extends Contact {
       }
       else {
         let vhost = await this.yp.await_proc('domain_exists', drumate.domain_id);
-        send = await this.send_drumate_mail(default_email, message, vhost.name);
+        send = await this.send_drumate_mail(default_email, message, vhost.name, drumate.id);
       }
     }
 
@@ -1361,7 +1363,7 @@ class __private_contact extends Contact {
           return this.output.data(res);
         }
         let vhost = await this.yp.await_proc('domain_exists', drumate.domain_id);
-        sent = await this.send_drumate_mail(email, message, vhost.name);
+        sent = await this.send_drumate_mail(email, message, vhost.name, drumate.id);
       }
 
       if (isEmpty(contact)) {
@@ -1669,6 +1671,8 @@ class __private_contact extends Contact {
     await this.db.await_proc('my_contact_mail_add', data.contact_id, stringify([node]))
 
     res = { ...res, ...data };
+    // For the confirmation the desk shows after accepting from the email link.
+    res.fullname = `${peer.firstname || ''} ${peer.lastname || ''}`.trim();
     data = await this.yp.await_proc('forward_proc', peer.id, 'contact_notification_by_entity', `${sqlString(this.uid)}`)
 
     const lang = this.user.language() || this.input.app_language();
@@ -1735,6 +1739,30 @@ class __private_contact extends Contact {
       `contact_invite=${encodeURIComponent(token)}`,
     ];
     return `https://${main_domain}${endpoint_path || "/-"}/#/welcome/signup?${q.join("&")}`;
+  }
+
+  /**
+   * The "Open my desktop" link mailed to an address that HAS an account.
+   *
+   * It used to be the bare desktop (`homepath(vhost)#`), so clicking it
+   * answered nothing: the invitation stayed Pending until the recipient found
+   * the Accept button. It now names the invitation — who sent it, and which
+   * account it was sent to — and the front end accepts it with
+   * contact.invite_accept once THAT account is signed in (welcome module +
+   * desk _maybeAcceptContactInvite). Ids only, no address in the URL.
+   * Same host as before: the recipient's own (organisation) host.
+   *
+   * @param {string} vhost recipient's domain host
+   * @param {string} invitee_id recipient's account id
+   * @returns {string}
+   */
+  _acceptLink(vhost, invitee_id) {
+    const { endpoint_path } = sysEnv();
+    const q = [
+      `contact_accept=${encodeURIComponent(this.uid)}`,
+      `for=${encodeURIComponent(invitee_id)}`,
+    ];
+    return `https://${vhost}${endpoint_path || "/-"}/#/welcome/signin?${q.join("&")}`;
   }
 
   /**
