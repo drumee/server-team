@@ -43,6 +43,7 @@ const { isEmpty } = require("lodash");
 const { Messenger, RedisStore, sysEnv, Attr, toArray } = require("@drumee/server-essentials");
 const { shouldSendNotification } = require("./email-policy");
 const { butlerFrom } = require("./mail-sender");
+const { bounceLink } = require("./email-link");
 
 // Dedup window, NOT a throttle: every offline-recipient event mails; the
 // 1 s claim only stops the same event double-sending under concurrency.
@@ -83,7 +84,9 @@ async function _hubDisplayName(ctx, hubId) {
  * away. Kept as its own function in case a deep link is wanted again later.
  */
 function _hubLink() {
-  return `${_endpointBase()}/#/desk`;
+  // Same-site bounce (lib/email-link): a straight link from the mail client
+  // arrives without the SameSite=Strict session and signs the member out.
+  return bounceLink(`${_endpointBase()}/#/desk`);
 }
 
 function _actorName(ctx) {
