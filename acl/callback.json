@@ -38,6 +38,17 @@
         "email": { "type": "string", "required": false, "doc": "Address to prefill on sign-up" }
       }
     },
+    "open": {
+      "doc": "Generic same-site bounce for app links mailed out (service/lib/email-link.js bounceLink): redirects to `dest`, a path + hash on THIS host, so the SameSite=Strict session cookie is sent and is not replaced by a fresh guest one. `dest` must be a same-host absolute path from a URL-safe alphabet; anything else lands on the desk.",
+      "scope": "hub",
+      "permission": {
+        "src": "read",
+        "fast_check": "public-api"
+      },
+      "params": {
+        "dest": { "type": "string", "required": true, "doc": "Same-host path + query + hash, e.g. /-/#/desk" }
+      }
+    },
     "portal_return": {
       "doc": "Stripe Billing Portal return. UX-only same-site bounce: redirects the browser to the desk so the SameSite=Strict session cookie survives the cross-site return (avoids apparent logout).",
       "scope": "hub",

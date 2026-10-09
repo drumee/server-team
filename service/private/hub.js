@@ -30,6 +30,7 @@ const {
 const { resolve } = require("path");
 const { notifyMemberJoined, notifyMembersChanged, notifyInvitationsChanged } = require("../lib/notify-member-joined");
 const { butlerFrom } = require("../lib/mail-sender");
+const { bounceLink } = require("../lib/email-link");
 const { mailFailure } = require("../lib/mail-result");
 const { resolveHubInviteName } = require("../lib/hub-invite-name");
 const { resolveHubDisplayName } = require("../lib/hub-display-name");
@@ -1689,12 +1690,15 @@ class __private_hub extends Hub {
       workspace_name: hubname,
       // Kept, and still the target of the workspace preview's own links, so an
       // email opened by somebody who has already answered is not a dead end.
-      link: ctaLink,
+      link: bounceLink(ctaLink),
       // The two answers. Both carry the token and nothing else identifying —
       // holding the secret IS the authorisation, exactly as it already was for
       // redemption.
-      accept_link: this._inviteAnswerLink(token, hubId, hubname, "accept"),
-      decline_link: this._inviteAnswerLink(token, hubId, hubname, "decline"),
+      // Through the same-site bounce (lib/email-link): straight links
+      // arrived without the SameSite=Strict session and signed the
+      // recipient out.
+      accept_link: bounceLink(this._inviteAnswerLink(token, hubId, hubname, "accept")),
+      decline_link: bounceLink(this._inviteAnswerLink(token, hubId, hubname, "decline")),
       workspace_external,
       preview_items,
       recent_messages,

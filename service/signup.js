@@ -21,6 +21,7 @@ const {
 const { resolve } = require('path');
 const { isEmpty } = require("lodash");
 const { notifyMemberJoined } = require("./lib/notify-member-joined");
+const { bounceLink } = require("./lib/email-link");
 const { Mfs } = require("@drumee/server-core");
 
 // Password policy — shared with drumate.change_password; see the lib for the
@@ -130,7 +131,7 @@ class __signup extends Mfs {
         heading: lex._your_account_is_all_set,
         message: lex._mail_signup_drumee,
         workspace: lex._discover_drumee_desk,
-        link: `https://${mail_domain}/-/`,
+        link: bounceLink(`https://${mail_domain}/-/`),
         signature: lex._drumee_team,
         reminder: lex._copyright.format(`${new Date().getFullYear()}`),
         hello: lex._hello_x.format(""),
