@@ -78,14 +78,24 @@ async function get_env() {
     }
   }
   const { main_domain } = sysEnv();
-  // Multi-org: a personal account that belongs to organisations gets the org
-  // dropdown too (its way to them); the client reads this count.
+  // Multi-org: a personal account that belongs to organisations -- as a
+  // member (org_membership) or a guest holding their workspaces -- gets the
+  // org dropdown too, its way to them; the client reads this count.
   if (!active && ~~data.user.domain_id <= 1 && this.user.get("signed_in")) {
-    const r = await this.yp.await_query(
+    const one = (r) => (isArray(r) ? r[0] : r) || {};
+    const m = one(await this.yp.await_query(
       "SELECT COUNT(*) AS n FROM org_membership WHERE uid = ?", this.uid,
-    );
-    const row = isArray(r) ? r[0] : r;
-    data.user.org_membership_count = ~~(row && row.n);
+    ));
+    let guest = {};
+    const db = this.user.get(Attr.db_name);
+    if (db && /^[0-9a-zA-Z_]+$/.test(db)) {
+      guest = one(await this.yp.await_query(
+        `SELECT COUNT(DISTINCT e.dom_id) AS n FROM \`${db}\`.media m ` +
+        "INNER JOIN yp.entity e ON e.id = m.id " +
+        "WHERE m.category = 'hub' AND m.extension <> 'dmz' AND e.dom_id > 1",
+      ));
+    }
+    data.user.org_membership_count = ~~m.n + ~~guest.n;
   }
   if (isEmpty(data.organization)) {
     let host = main_domain;
