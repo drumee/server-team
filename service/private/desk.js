@@ -96,7 +96,21 @@ class __private_desk extends Media {
    * @param {*} opt 
    */
   async _createHub(args, opt = {}) {
-    const domain = this.user.get(Attr.domain);
+    let domain = this.user.get(Attr.domain);
+    let domain_id;
+    // Multi-org: on a secondary organisation's address the workspace belongs
+    // to THAT organisation. desk_create_hub otherwise takes the domain of the
+    // drumate's own DB (their primary org), so the workspace landed there and
+    // the org-setup wizard's department_assign answered WORKSPACE_NOT_FOUND.
+    const active = this.user.get('active_org');
+    if (active && ~~active.domain_id > 1 && ~~active.domain_id !== ~~active.home_domain_id) {
+      const row = await this.yp.await_query('SELECT name FROM domain WHERE id = ? LIMIT 1', ~~active.domain_id);
+      const r = Array.isArray(row) ? row[0] : row;
+      if (r && r.name) {
+        domain = r.name;
+        domain_id = ~~active.domain_id;
+      }
+    }
     const owner_id = this.uid;
     let { area, filename, hostname, pid } = args;
     if (!domain || !area) {
@@ -119,6 +133,7 @@ class __private_desk extends Media {
     opt.lang = this.input.ua_language();
     filename = await this.db.await_func("unique_filename", pid, filename, "");
     args = { hostname, area, filename, owner_id, domain };
+    if (domain_id) args.domain_id = domain_id;
     const rows = await this.db.await_proc(`desk_create_hub`, args, opt);
     let hub_id, hub_db, home_id;
     for (let r of rows) {
