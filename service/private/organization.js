@@ -22,6 +22,7 @@ const {isEmpty } = require('lodash');
 const {Entity} = require('@drumee/server-core');
 const access = require('../lib/department-access');
 const ActiveOrg = require('../lib/active-org');
+const Seats = require('../lib/seat-budget');
 // Extra organisations one person may create (multi-org, Business plan).
 const MAX_EXTRA_ORGS = 10;
 
@@ -386,18 +387,6 @@ class __private_adminpanel extends Entity {
     }
     const [summary, departments, workspaces] = await Promise.all(reads);
 
-    // Multi-org: people who belong to this organisation as a secondary one
-    // (a join link, member_add_existing) are its members too, in the count
-    // the dropdown and the wizard show. org_summary keeps the seat definition
-    // payment.js bills on; this only adds to what is displayed.
-    if (summary && !isEmpty(summary)) {
-      const extra = this._rows(await this.yp.await_query(
-        'SELECT COUNT(*) AS n FROM org_membership m INNER JOIN drumate d ON d.id = m.uid WHERE m.domain_id = ?',
-        org.domain_id,
-      ))[0];
-      summary.member_count = ~~summary.member_count + ~~(extra && extra.n);
-    }
-
     // await_proc collapses a single-row result to a bare object and answers
     // undefined for an empty one, so a one-department organisation would hand
     // the client an object where it iterates an array and render nothing. Both
@@ -717,20 +706,34 @@ class __private_adminpanel extends Entity {
     const domain_id = ~~link.domain_id;
     let departments = [];
     try { departments = JSON.parse(link.departments); } catch (e) { departments = []; }
-    for (const d of this._rows(departments)) {
-      await this.yp.await_proc('department_member_add', domain_id, String(d), this.uid, link.by_id || this.uid);
-    }
     // Multi-org: someone from another organisation (or none) joins this one
     // as a secondary organisation. The primary one is never touched.
     let org_link = null;
     const home = ~~(this.user.get('home_domain_id') || this.user.domain_id());
     if (home !== domain_id) {
+      // A secondary member holds a seat in this organisation like any other
+      // (member_list_stats counts org_membership), so a full plan refuses the
+      // join. Someone already in it is not taking a new one.
+      const already = this._rows(await this.yp.await_proc('org_membership_get', this.uid, domain_id))[0];
+      if (!already) {
+        const room = await Seats.hasRoomFor(this.yp, domain_id, this.user.get(Attr.email));
+        if (!room.ok) {
+          return this.output.data({
+            status: 'SEAT_LIMIT_REACHED',
+            seat: room.budget.seat,
+            used: room.budget.used,
+          });
+        }
+      }
       const m = await this.yp.await_proc('org_membership_set', domain_id, this.uid, Remit.dom_member, link.by_id || null);
       if (m && !m.error) {
         ActiveOrg.forget(this.uid, domain_id);
         const org = this._rows(await this.yp.await_proc('organisation_get', domain_id))[0];
         org_link = org ? org.link : null;
       }
+    }
+    for (const d of this._rows(departments)) {
+      await this.yp.await_proc('department_member_add', domain_id, String(d), this.uid, link.by_id || this.uid);
     }
     await this.yp.await_proc('org_join_link_use', token);
     const summary = await this._reconcile(domain_id);
@@ -972,6 +975,19 @@ class __private_adminpanel extends Entity {
     if (!person) return this.output.status('USER_NOT_FOUND');
     let privilege = ~~this.input.get('privilege') || Remit.dom_member;
     if (privilege >= Remit.dom_owner && org.role !== 'owner') privilege = Remit.dom_admin;
+    // Same seat rule as join_link_accept; changing an existing secondary
+    // member's role takes no new seat.
+    const already = this._rows(await this.yp.await_proc('org_membership_get', person.id, org.domain_id))[0];
+    if (!already) {
+      const room = await Seats.hasRoomFor(this.yp, org.domain_id, email);
+      if (!room.ok) {
+        return this.output.data({
+          status: 'SEAT_LIMIT_REACHED',
+          seat: room.budget.seat,
+          used: room.budget.used,
+        });
+      }
+    }
     const res = await this.yp.await_proc('org_membership_set', org.domain_id, person.id, privilege, this.uid);
     if (this._refused(res)) return;
     ActiveOrg.forget(person.id, org.domain_id);

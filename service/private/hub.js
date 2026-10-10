@@ -1344,13 +1344,14 @@ class __private_hub extends Hub {
     try {
       const rows = toArray(await this.yp.await_query(
         `SELECT p.uid, d.email
-           FROM privilege p
+           FROM (SELECT uid FROM privilege WHERE domain_id = ?
+                 UNION
+                 SELECT uid FROM org_membership WHERE domain_id = ?) p
            INNER JOIN drumate d ON d.id = p.uid
            INNER JOIN entity e ON e.id = d.id
-          WHERE p.domain_id = ?
-            AND COALESCE(JSON_VALUE(d.profile, '$.category'), '') <> 'system'
+          WHERE COALESCE(JSON_VALUE(d.profile, '$.category'), '') <> 'system'
             AND e.status NOT IN ('archived', 'frozen', 'deleted')`,
-        dom
+        dom, dom
       ));
       for (const r of rows) { if (r) { add(r.uid); add(r.email); } }
     } catch (e) {

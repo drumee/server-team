@@ -700,14 +700,15 @@ class __private_payment extends Entity {
     if (org && org.id) {
       const dom = ~~(org.domain_id || this.user.domain_id());
       let c = await this.yp.await_query(
-        `SELECT COUNT(*) AS c
-           FROM privilege p
+        `SELECT COUNT(DISTINCT p.uid) AS c
+           FROM (SELECT uid FROM privilege WHERE domain_id = ?
+                 UNION
+                 SELECT uid FROM org_membership WHERE domain_id = ?) p
            INNER JOIN drumate d ON p.uid = d.id
            INNER JOIN entity   e ON d.id = e.id
-          WHERE p.domain_id = ?
-            AND COALESCE(JSON_VALUE(d.profile, '$.category'), '') <> 'system'
+          WHERE COALESCE(JSON_VALUE(d.profile, '$.category'), '') <> 'system'
             AND e.status <> 'archived'`,
-        dom
+        dom, dom
       );
       if (Array.isArray(c)) c = c[0];
       row.member_count = ~~(c && c.c);
