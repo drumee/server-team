@@ -386,6 +386,18 @@ class __private_adminpanel extends Entity {
     }
     const [summary, departments, workspaces] = await Promise.all(reads);
 
+    // Multi-org: people who belong to this organisation as a secondary one
+    // (a join link, member_add_existing) are its members too, in the count
+    // the dropdown and the wizard show. org_summary keeps the seat definition
+    // payment.js bills on; this only adds to what is displayed.
+    if (summary && !isEmpty(summary)) {
+      const extra = this._rows(await this.yp.await_query(
+        'SELECT COUNT(*) AS n FROM org_membership m INNER JOIN drumate d ON d.id = m.uid WHERE m.domain_id = ?',
+        org.domain_id,
+      ))[0];
+      summary.member_count = ~~summary.member_count + ~~(extra && extra.n);
+    }
+
     // await_proc collapses a single-row result to a bare object and answers
     // undefined for an empty one, so a one-department organisation would hand
     // the client an object where it iterates an array and render nothing. Both
