@@ -78,6 +78,15 @@ async function get_env() {
     }
   }
   const { main_domain } = sysEnv();
+  // Multi-org: a personal account that belongs to organisations gets the org
+  // dropdown too (its way to them); the client reads this count.
+  if (!active && ~~data.user.domain_id <= 1 && this.user.get("signed_in")) {
+    const r = await this.yp.await_query(
+      "SELECT COUNT(*) AS n FROM org_membership WHERE uid = ?", this.uid,
+    );
+    const row = isArray(r) ? r[0] : r;
+    data.user.org_membership_count = ~~(row && row.n);
+  }
   if (isEmpty(data.organization)) {
     let host = main_domain;
     if (this.uid == ID_NOBODY) {

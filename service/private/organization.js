@@ -14,7 +14,7 @@
  * limitations under the License.
  * =============================================================================
  */
-const { Attr, Remit } = require("@drumee/server-essentials");
+const { Attr, Remit, sysEnv } = require("@drumee/server-essentials");
 
 const { stringify } = JSON;
 const {isEmpty } = require('lodash');
@@ -833,6 +833,24 @@ class __private_adminpanel extends Entity {
       "SELECT JSON_VALUE(get_quota(?), '$.plan') AS plan", uid,
     ))[0] || {};
     const primary_plan = String(quota.plan || 'free');
+    // A personal account (no organisation of its own) that belongs to others:
+    // its own space is "Your organization" (Figma 900:150849, "Org-name-1 ·
+    // Free"), the way back from an organisation it was invited to.
+    const home = ~~(this.user.get('home_domain_id') || this.user.domain_id());
+    if (home <= 1 && list.length) {
+      const { main_domain } = sysEnv();
+      list.unshift({
+        org_id: null,
+        domain_id: 1,
+        name: this.user.get('fullname') || this.user.get(Attr.username) || main_domain,
+        link: main_domain,
+        plan: primary_plan,
+        privilege: Remit.dom_owner,
+        source: 'personal',
+        department_count: null,
+        member_count: null,
+      });
+    }
     const orgs = list.map((o) => {
       const privilege = ~~o.privilege;
       const role = o.source === 'guest' ? 'guest' : this._role(privilege);
@@ -848,7 +866,7 @@ class __private_adminpanel extends Entity {
         owned: privilege >= Remit.dom_owner ? 1 : 0,
         department_count: o.department_count == null ? null : ~~o.department_count,
         member_count: o.member_count == null ? null : ~~o.member_count,
-        current: ~~o.domain_id === hostDom ? 1 : 0,
+        current: (~~o.domain_id === hostDom || (o.source === 'personal' && hostDom <= 1)) ? 1 : 0,
       };
     });
     this.output.data({
@@ -871,6 +889,9 @@ class __private_adminpanel extends Entity {
    */
   async workspace_scope() {
     const active = this.user.get('active_org');
+    // A personal home is not an organisation: everything the person holds
+    // stays on it, as before multi-org.
+    if (!active && ~~this.user.domain_id() <= 1) return this.output.data({ mode: 'all' });
     const memberOf = active ? [] : this._rows(await this.yp.await_query(
       'SELECT domain_id FROM org_membership WHERE uid = ?', this.uid,
     )).map((r) => ~~r.domain_id);
