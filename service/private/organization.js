@@ -866,7 +866,14 @@ class __private_adminpanel extends Entity {
         UNION SELECT 1 FROM org_membership WHERE uid = ? AND domain_id = ? LIMIT 1`,
       uid, dom, uid, dom,
     ))[0];
-    if (!inOrg) return this.output.status('NOT_A_MEMBER');
+    // Not in this organisation (a contact, a guest): the card still names
+    // them -- name and email only, no title or departments.
+    if (!inOrg) {
+      return this.output.data({
+        ...person, title: null, departments: [], in_org: 0,
+        can_manage: 0, self: String(uid) === String(this.uid) ? 1 : 0,
+      });
+    }
     const title = this._rows(await this.yp.await_query(
       'SELECT title FROM member_title WHERE domain_id = ? AND uid = ? LIMIT 1', dom, uid,
     ))[0];
@@ -894,6 +901,7 @@ class __private_adminpanel extends Entity {
       ...person,
       title: title ? title.title : null,
       departments,
+      in_org: 1,
       can_manage: org.write ? 1 : 0,
       self: String(uid) === String(this.uid) ? 1 : 0,
     });
