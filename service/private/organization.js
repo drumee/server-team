@@ -870,11 +870,26 @@ class __private_adminpanel extends Entity {
     const title = this._rows(await this.yp.await_query(
       'SELECT title FROM member_title WHERE domain_id = ? AND uid = ? LIMIT 1', dom, uid,
     ))[0];
+    // Departments as the org chart shows them: those they are a member of,
+    // and those of the workspaces they are in.
     const departments = this._rows(await this.yp.await_query(
       `SELECT d.id, d.name FROM department_member m
          INNER JOIN department d ON d.id = m.department_id AND d.domain_id = m.domain_id
         WHERE m.domain_id = ? AND m.uid = ? ORDER BY d.\`rank\`, d.name`, dom, uid,
     ));
+    const db = this._rows(await this.yp.await_query('SELECT db_name FROM entity WHERE id = ? LIMIT 1', uid))[0];
+    if (db && /^[A-Za-z0-9_]+$/.test(String(db.db_name || ''))) {
+      const seen = new Set(departments.map((d) => String(d.id)));
+      for (const d of this._rows(await this.yp.await_query(
+        `SELECT DISTINCT d.id, d.name, d.\`rank\` FROM \`${db.db_name}\`.media m
+           INNER JOIN hub h ON h.id = m.id
+           INNER JOIN department d ON d.id = h.department_id
+          WHERE m.category = 'hub' AND h.domain_id = ?
+          ORDER BY d.\`rank\`, d.name`, dom,
+      ))) {
+        if (!seen.has(String(d.id))) { seen.add(String(d.id)); departments.push({ id: d.id, name: d.name }); }
+      }
+    }
     this.output.data({
       ...person,
       title: title ? title.title : null,
