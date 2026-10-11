@@ -938,9 +938,10 @@ class __private_adminpanel extends Entity {
    */
   async workspace_scope() {
     const active = this.user.get('active_org');
-    // A personal home is not an organisation: everything the person holds
-    // stays on it, as before multi-org.
-    if (!active && ~~this.user.domain_id() <= 1) return this.output.data({ mode: 'all' });
+    // A personal home (or a primary organisation) lists everything the
+    // person holds EXCEPT the workspaces of organisations they are a member
+    // of: those live under that organisation, reached from the org chip.
+    // Workspaces shared from an organisation they are not a member of stay.
     const memberOf = active ? [] : this._rows(await this.yp.await_query(
       'SELECT domain_id FROM org_membership WHERE uid = ?', this.uid,
     )).map((r) => ~~r.domain_id);
