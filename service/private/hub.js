@@ -34,6 +34,7 @@ const { bounceLink } = require("../lib/email-link");
 const { mailFailure } = require("../lib/mail-result");
 const { resolveHubInviteName } = require("../lib/hub-invite-name");
 const { resolveHubDisplayName } = require("../lib/hub-display-name");
+const { joinDepartmentOf } = require("../lib/dept-join");
 const {
   CAN_CHAT, CHAT_UPLOAD_GRANT, privilegeAllows
 } = require("../lib/member-capability");
@@ -1960,6 +1961,7 @@ class __private_hub extends Hub {
       // already a member, and their bell would keep offering them buttons.
       // Access itself is deliberately untouched here — see the note above.
       await this._closeInvitation(hub_id, tokenRow.email, { accepted: 1 });
+      await joinDepartmentOf(this.yp, hub_id, this.uid, tokenRow.inviter_id);
       return this.output.data({ hub_id, already_member: 1 });
     }
 
@@ -2069,6 +2071,9 @@ class __private_hub extends Hub {
     // token redemption — accept_invite pushed nothing before, so admins with
     // the Folder settings matrix open were stuck with a stale member list.
     await notifyMemberJoined(this, hub_id, this.uid);
+    // A department's workspace: the invitee joins the department (and the
+    // organisation) as well, as the public join link does.
+    await joinDepartmentOf(this.yp, hub_id, this.uid, tokenRow.inviter_id);
     this.output.data({ hub_id });
   }
 
