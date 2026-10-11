@@ -28,6 +28,8 @@ const { markFunnelMilestone } = require("./lib/funnel-milestone");
 const { markFeatureUsage } = require("./lib/feature-usage");
 const ChunkedUpload = require("./lib/chunked-upload");
 const { safeExtension } = require("./lib/file-extension");
+const Gate = require("./lib/download-gate");
+const { archiveTree } = require("./lib/archive-tree");
 const { DENIED } = Events;
 const {
   BATCH_FILE,
@@ -2382,6 +2384,55 @@ class __media extends Mfs {
    *
    * @param {array} args list of node to be created as zip
    */
+  /**
+   * One item of a multi-item download, gated on the browser's "allow multiple
+   * downloads" prompt (lib/download-gate). role=hold parks the first item
+   * until the user answers; role=open is the second item, which the browser
+   * requests only once the user allows it — it opens the gate. Both then
+   * redirect to their own file (`to`, a path on this origin).
+   */
+  async download_gate() {
+    const gate = this.input.need("gate");
+    const role = this.input.need("role");
+    const to = this.input.need("to");
+    const client = RedisStore.getClient();
+    if (!Gate.validGate(gate) || !Gate.validTarget(to) || !client) {
+      return this.output.head({ "Cache-Control": "no-store" }, 204);
+    }
+    const goto = () => this.output.head({ location: to, "Cache-Control": "no-store" }, 302);
+    if (role === Gate.OPEN) {
+      await Gate.mark(client, this.uid, gate, Gate.OPEN);
+      return goto();
+    }
+    // The page closed or the browser dropped it: stop waiting.
+    const response = this.output.response;
+    const isGone = () => !response || !!(response.destroyed || (response.socket && response.socket.destroyed));
+    const answer = await Gate.hold(client, this.uid, gate, { sleep, isGone });
+    if (answer === Gate.OPEN) return goto();
+    if (!answer) {
+      // Still waiting: answer just before nginx would cut the request, with
+      // this same request one hop further on.
+      const next = Gate.nextHop(this.input.get(Attr.url));
+      if (next) return this.output.head({ location: next, "Cache-Control": "no-store" }, 302);
+    }
+    // Refused, given up, or too long: ends empty, nothing saved.
+    this.output.head({ "Cache-Control": "no-store" }, 204);
+  }
+
+  /**
+   * Has the user answered the browser's prompt for this gate? With cancel,
+   * give up: the parked first item ends, empty.
+   */
+  async download_gate_state() {
+    const gate = this.input.need("gate");
+    const client = RedisStore.getClient();
+    if (!Gate.validGate(gate) || !client) return this.output.data({ state: "" });
+    const state = this.input.use("cancel")
+      ? await Gate.mark(client, this.uid, gate, Gate.CANCEL)
+      : await Gate.state(client, this.uid, gate);
+    this.output.data({ gate, state });
+  }
+
   zip_release() {
     const id = this.input.need(Attr.id);
     const src = join(tmp_dir, DOWNLOAD_FOLDER, this.uid, id);
@@ -2481,6 +2532,9 @@ class __media extends Mfs {
     let size = 0;
     if (isArray(ids)) {
       let res = [];
+      // Each node's rows laid out under its own name (lib/archive-tree): the
+      // stored file_path drifts, and drift went straight into the zip.
+      const taken = new Set();
       for (let n of ids) {
         // Manifest EACH selected node on ITS OWN hub DB. The old code computed
         // db_name but discarded it, and called mfs_manifest with the OUTER `nid`
@@ -2494,7 +2548,7 @@ class __media extends Mfs {
         // collisions.
         let db_name = await this.yp.await_func("get_db_name", n.hub_id);
         r = await this.yp.await_proc(`${db_name}.mfs_manifest`, { nid: n.nid, uid: this.uid, show_nodes: 1 });
-        res = res.concat(r[0]);
+        res = res.concat(archiveTree(r[0], n.nid, taken, r[2] && r[2].filename));
         size = parseInt(size) + parseInt(r[1].total_size);
       }
       nodes = [res, { size, total_size: size }, { filename }];
@@ -2502,7 +2556,7 @@ class __media extends Mfs {
       r = await this.db.await_proc("mfs_manifest", { nid, uid: this.uid, show_nodes: 1 });
       filename = this.granted_node().filename || r[2].filename || "drumee";
       size = parseInt(r[1].total_size);
-      nodes = [r[0], { size, total_size: size }, { filename }];
+      nodes = [archiveTree(r[0], nid, new Set(), filename), { size, total_size: size }, { filename }];
     }
     return nodes;
   }

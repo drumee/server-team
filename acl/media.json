@@ -1537,6 +1537,61 @@
         }
       }
     },
+    "download_gate": {
+      "doc": "One item of a multi-item download, gated on the browser's 'allow multiple downloads' prompt (lib/download-gate). role=hold parks the first item until the user answers; role=open is the second item, which the browser only requests once the user allows it, and opens the gate. Both redirect to `to`, a path on this origin; a refused or abandoned gate ends with 204.",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "params": {
+        "gate": {
+          "type": "string",
+          "required": true,
+          "doc": "The page's random gate id"
+        },
+        "role": {
+          "type": "string",
+          "required": true,
+          "doc": "hold (first item) or open (second item)"
+        },
+        "to": {
+          "type": "string",
+          "required": true,
+          "doc": "Same-origin path of the item's own file"
+        },
+        "hop": {
+          "type": "number",
+          "required": false,
+          "doc": "Redirects so far while parked"
+        }
+      },
+      "returns": {}
+    },
+    "download_gate_state": {
+      "doc": "Whether the user has answered the browser's prompt for a download gate: open, cancel, or empty while waiting. With cancel, gives up and ends the parked item.",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "params": {
+        "gate": {
+          "type": "string",
+          "required": true,
+          "doc": "The page's random gate id"
+        },
+        "cancel": {
+          "type": "number",
+          "required": false,
+          "doc": "1 to give up on the gate"
+        }
+      },
+      "returns": {
+        "state": {
+          "type": "string",
+          "doc": "open | cancel | empty"
+        }
+      }
+    },
     "zip_release": {
       "doc": "Delete temporary zip file after download",
       "scope": "hub",
