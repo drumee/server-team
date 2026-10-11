@@ -29,6 +29,7 @@ const { markFeatureUsage } = require("./lib/feature-usage");
 const ChunkedUpload = require("./lib/chunked-upload");
 const { safeExtension } = require("./lib/file-extension");
 const Gate = require("./lib/download-gate");
+const { archiveTree } = require("./lib/archive-tree");
 const { DENIED } = Events;
 const {
   BATCH_FILE,
@@ -2531,6 +2532,9 @@ class __media extends Mfs {
     let size = 0;
     if (isArray(ids)) {
       let res = [];
+      // Each node's rows laid out under its own name (lib/archive-tree): the
+      // stored file_path drifts, and drift went straight into the zip.
+      const taken = new Set();
       for (let n of ids) {
         // Manifest EACH selected node on ITS OWN hub DB. The old code computed
         // db_name but discarded it, and called mfs_manifest with the OUTER `nid`
@@ -2544,7 +2548,7 @@ class __media extends Mfs {
         // collisions.
         let db_name = await this.yp.await_func("get_db_name", n.hub_id);
         r = await this.yp.await_proc(`${db_name}.mfs_manifest`, { nid: n.nid, uid: this.uid, show_nodes: 1 });
-        res = res.concat(r[0]);
+        res = res.concat(archiveTree(r[0], n.nid, taken, r[2] && r[2].filename));
         size = parseInt(size) + parseInt(r[1].total_size);
       }
       nodes = [res, { size, total_size: size }, { filename }];
@@ -2552,7 +2556,7 @@ class __media extends Mfs {
       r = await this.db.await_proc("mfs_manifest", { nid, uid: this.uid, show_nodes: 1 });
       filename = this.granted_node().filename || r[2].filename || "drumee";
       size = parseInt(r[1].total_size);
-      nodes = [r[0], { size, total_size: size }, { filename }];
+      nodes = [archiveTree(r[0], nid, new Set(), filename), { size, total_size: size }, { filename }];
     }
     return nodes;
   }

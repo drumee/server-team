@@ -16,6 +16,7 @@
  * =============================================================================
  */
 const Minimist = require('minimist');
+const { archiveTree } = require('../../service/lib/archive-tree');
 const { exit } = require('process');
 const {
   RedisStore, Mariadb, Attr, Constants, Offline, sysEnv, Script
@@ -156,11 +157,13 @@ class __offline_media_zip extends Offline {
     if (isArray(this.nodes)) {
       let res = [];
       let size = 0;
+      // Laid out by the tree, not the stored file_path (service/lib/archive-tree).
+      const taken = new Set();
       for (let n of this.nodes) {
         let hub = await this.yp.await_proc('get_hub', n.hub_id);
         let db_name = hub.db_name;
         var r = await this.yp.await_proc(`${db_name}.mfs_manifest`, { nid: n.nid, uid: this.uid, show_nodes: 1 });
-        res = res.concat(r[0]);
+        res = res.concat(archiveTree(r[0], n.nid, taken, r[2] && r[2].filename));
         size = size + r[1].total_size;
       }
       nodes = [res, { size }, { filename }];
