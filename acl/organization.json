@@ -696,7 +696,7 @@
       ]
     },
     "member_remove_existing": {
-      "doc": "Remove a person from the caller's CURRENT organisation when it is their secondary one. Org admins; only the owner may remove an owner.",
+      "doc": "Remove a person from the caller's CURRENT organisation when it is their secondary one - the org chart's Delete member. Takes them out of every department (and back the workspace access departments gave), out of the organisation's workspaces they were invited to (not one they own), and drops their title and reporting line. Org admins; only the owner may remove an owner. Returns {uid, workspaces, ...reconcile summary}.",
       "scope": "hub",
       "permission": {
         "src": "owner"

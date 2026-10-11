@@ -1006,9 +1006,40 @@ class __private_adminpanel extends Entity {
     const cur = this._rows(await this.yp.await_proc('org_membership_get', uid, org.domain_id))[0];
     if (!cur) return this.output.status('NOT_A_MEMBER');
     if (~~cur.privilege >= Remit.dom_owner && org.role !== 'owner') return this.output.status('NOT_ENOUGH_PRIVILEGE');
-    const res = await this.yp.await_proc('org_membership_remove', org.domain_id, uid);
-    ActiveOrg.forget(uid, org.domain_id);
-    this.output.data(res || {});
+    const dom = org.domain_id;
+    // Out of the organisation altogether, not just its membership row: the
+    // org chart's "Delete member" (Figma) leaves nothing behind.
+    //  - every department here, and the workspace access they gave
+    //    (_reconcile takes back what departments granted);
+    for (const r of this._rows(await this.yp.await_query(
+      'SELECT department_id FROM department_member WHERE domain_id = ? AND uid = ?', dom, uid,
+    ))) {
+      await this.yp.await_proc('department_member_remove', dom, String(r.department_id), uid);
+    }
+    const res = await this.yp.await_proc('org_membership_remove', dom, uid);
+    ActiveOrg.forget(uid, dom);
+    let summary = {};
+    try { summary = await this._reconcile(dom); } catch (e) { this.warn('[org] reconcile after removal failed:', e && e.message); }
+    //  - access to the organisation's workspaces given directly (invitations),
+    //    except a workspace they own;
+    let workspaces = 0;
+    for (const h of this._rows(await this.yp.await_query(
+      "SELECT h.id, e.db_name FROM hub h INNER JOIN entity e ON e.id = h.id WHERE h.domain_id = ? AND h.owner_id <> ?",
+      dom, uid,
+    ))) {
+      if (!h.db_name || !/^[A-Za-z0-9_]+$/.test(String(h.db_name))) continue;
+      if (!(await this._hubPrivilege(h.db_name, uid))) continue;
+      try {
+        await this.yp.await_proc(`${h.db_name}.hub_member_remove`, uid, this.uid);
+        workspaces++;
+      } catch (e) { this.warn('[org] workspace removal failed:', h.id, e && e.message); }
+    }
+    //  - their title and their place in the reporting chart (anyone who
+    //    reported to them now reports to the owner).
+    await this.yp.await_query('DELETE FROM member_title WHERE domain_id = ? AND uid = ?', dom, uid);
+    await this.yp.await_query('DELETE FROM org_reporting WHERE domain_id = ? AND uid = ?', dom, uid);
+    await this.yp.await_query('DELETE FROM org_reporting WHERE domain_id = ? AND manager_uid = ?', dom, uid);
+    this.output.data({ ...(res || {}), uid, workspaces, ...summary });
   }
 
   /**
