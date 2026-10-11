@@ -601,6 +601,25 @@
         }
       ]
     },
+    "member_card": {
+      "doc": "One person of the caller's current organisation for the member card (org chart, avatars elsewhere): {uid, firstname, lastname, fullname, email, title, departments:[{id,name}], can_manage, self}. Any member. NOT_A_MEMBER when the person is not in this organisation.",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "params": {
+        "uid": {
+          "type": "string",
+          "required": true,
+          "minLength": 16,
+          "maxLength": 16
+        }
+      },
+      "errors": [
+        { "code": "NOT_IN_ORGANISATION" },
+        { "code": "NOT_A_MEMBER" }
+      ]
+    },
     "my_orgs": {
       "doc": "Every organisation the caller belongs to, for the org dropdown (Figma 900:150849 / 900:150993): {orgs:[{domain_id, org_id, name, link, plan, role owner|admin|member|guest, privilege, source primary|membership|guest, owned, department_count, member_count, current}], primary_plan, can_create_org}. Guests are organisations where the caller holds workspaces without a seat.",
       "scope": "hub",

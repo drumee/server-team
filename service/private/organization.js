@@ -49,6 +49,7 @@ class __private_adminpanel extends Entity {
 
     this.my_subscription = this.my_subscription.bind(this);
     this.my_organisation = this.my_organisation.bind(this);
+    this.member_card = this.member_card.bind(this);
     this.my_privilege = this.my_privilege.bind(this);
 
     this.add = this.add.bind(this);
@@ -843,6 +844,45 @@ class __private_adminpanel extends Entity {
   }
 
   // ── Multi-org (Figma 900:150849 / 900:150993) ────────────────────────
+
+  /**
+   * One person of MY current organisation, for the member card (Figma
+   * 978:125420, 910:81010): name, email, title and departments. Any member
+   * may read it -- it is what the org chart already shows them.
+   * NOT_A_MEMBER when the person is not in this organisation.
+   */
+  async member_card() {
+    const org = await this._org();
+    if (!org) return this.output.status('NOT_IN_ORGANISATION');
+    const uid = String(this.input.need(Attr.uid) || '').trim();
+    const dom = org.domain_id;
+    const person = this._rows(await this.yp.await_query(
+      `SELECT d.id AS uid, d.firstname, d.lastname, d.fullname, d.email
+         FROM drumate d WHERE d.id = ? LIMIT 1`, uid,
+    ))[0];
+    if (!person) return this.output.status('NOT_A_MEMBER');
+    const inOrg = this._rows(await this.yp.await_query(
+      `SELECT 1 AS yes FROM privilege WHERE uid = ? AND domain_id = ?
+        UNION SELECT 1 FROM org_membership WHERE uid = ? AND domain_id = ? LIMIT 1`,
+      uid, dom, uid, dom,
+    ))[0];
+    if (!inOrg) return this.output.status('NOT_A_MEMBER');
+    const title = this._rows(await this.yp.await_query(
+      'SELECT title FROM member_title WHERE domain_id = ? AND uid = ? LIMIT 1', dom, uid,
+    ))[0];
+    const departments = this._rows(await this.yp.await_query(
+      `SELECT d.id, d.name FROM department_member m
+         INNER JOIN department d ON d.id = m.department_id AND d.domain_id = m.domain_id
+        WHERE m.domain_id = ? AND m.uid = ? ORDER BY d.\`rank\`, d.name`, dom, uid,
+    ));
+    this.output.data({
+      ...person,
+      title: title ? title.title : null,
+      departments,
+      can_manage: org.write ? 1 : 0,
+      self: String(uid) === String(this.uid) ? 1 : 0,
+    });
+  }
 
   /**
    * Every organisation the person belongs to, for the org dropdown:
