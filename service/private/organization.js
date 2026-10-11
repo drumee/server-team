@@ -21,6 +21,7 @@ const {isEmpty } = require('lodash');
 
 const {Entity} = require('@drumee/server-core');
 const access = require('../lib/department-access');
+const DeptWs = require('../lib/dept-workspace');
 const ActiveOrg = require('../lib/active-org');
 const Seats = require('../lib/seat-budget');
 // Extra organisations one person may create (multi-org, Business plan).
@@ -395,12 +396,15 @@ class __private_adminpanel extends Entity {
     if (!org.browse) {
       workspaces = this._rows(await this.yp.await_proc('my_departments', this.uid, org.domain_id))
         .filter((w) => w && w.hub_id);
+      // Where their "New workspace" may land (service/lib/dept-workspace.js).
+      const addable = DeptWs.addableDepartments(workspaces);
       const byDept = new Map();
       for (const w of workspaces) {
         if (!w.department_id || byDept.has(w.department_id)) continue;
         byDept.set(w.department_id, {
           id: w.department_id, name: w.department_name, rank: w.department_rank,
           ctime: w.department_ctime, workspace_count: 0, member_count: 0,
+          can_add_workspace: addable.has(String(w.department_id)) ? 1 : 0,
         });
       }
       for (const w of workspaces) {
@@ -420,6 +424,18 @@ class __private_adminpanel extends Entity {
         }
       }
       departments = [...byDept.values()];
+      // Their own workspaces of the organisation that sit in no department:
+      // without them a workspace they made outside every department showed
+      // nowhere, since their personal home hides the organisation's.
+      workspaces = workspaces.concat(
+        this._rows(await this.yp.await_proc('my_ungrouped_workspaces', this.uid, org.domain_id))
+          .filter((w) => w && w.hub_id),
+      );
+    } else {
+      const addable = org.write ? null : await this._addableDepartments(org);
+      departments = this._rows(departments).map((d) => ({
+        ...d, can_add_workspace: !addable || addable.has(String(d.id)) ? 1 : 0,
+      }));
     }
 
     // await_proc collapses a single-row result to a bare object and answers
@@ -486,7 +502,16 @@ class __private_adminpanel extends Entity {
       departments = [...seen.values()];
     }
 
-    const byDept = new Map(departments.map((d) => [d.id, { ...d, workspaces: [] }]));
+    // can_add_workspace: whether the caller's "New workspace" from this
+    // department lands in it (service/lib/dept-workspace.js).
+    const addable = org.write
+      ? null
+      : await this._addableDepartments(org, org.browse ? null : workspaces);
+    const byDept = new Map(departments.map((d) => [d.id, {
+      ...d,
+      can_add_workspace: !addable || addable.has(String(d.id)) ? 1 : 0,
+      workspaces: [],
+    }]));
     for (const w of workspaces) {
       const d = w.department_id && byDept.get(w.department_id);
       if (d) d.workspaces.push(w);
@@ -495,6 +520,21 @@ class __private_adminpanel extends Entity {
       departments: [...byDept.values()],
       can_manage: org.write ? 1 : 0,
     });
+  }
+
+  /**
+   * The departments this caller may put a workspace of their own into: those
+   * they can edit in (service/lib/dept-workspace.js). For a caller who is not
+   * an org admin; an org admin may use every department.
+   *
+   * @param {Object} org _org()
+   * @param {Array} [rows] the caller's my_departments rows, when already read
+   * @returns {Promise<Set<String>>}
+   */
+  async _addableDepartments(org, rows) {
+    const mine = rows
+      || this._rows(await this.yp.await_proc('my_departments', this.uid, org.domain_id));
+    return DeptWs.addableDepartments(mine);
   }
 
   /**
@@ -604,17 +644,22 @@ class __private_adminpanel extends Entity {
    * grant what is missing, take back what is no longer given (see
    * service/lib/department-access.js for the rules). Never throws: a
    * workspace that cannot be written is counted, not fatal.
+   *
+   * @param {Number} domain_id
+   * @param {String} [onlyHub] one workspace whose department just changed:
+   *   only its grants are looked at, not the whole organisation's
    */
-  async _reconcile(domain_id) {
+  async _reconcile(domain_id, onlyHub) {
     const summary = { granted: 0, updated: 0, revoked: 0, failed: 0 };
     const stored = this._rows(await this.yp.await_proc('organisation_get_access_rules', domain_id))[0];
     const rules = access.rulesByTitle(stored && stored.access_rules);
+    const mine = (r) => !onlyHub || String(r.hub_id) === String(onlyHub);
     const desired = access.desiredGrants(
-      await this.yp.await_proc('department_desired_grants', domain_id), rules,
+      this._rows(await this.yp.await_proc('department_desired_grants', domain_id)).filter(mine), rules,
     );
     const existing = new Map();
     for (const g of this._rows(await this.yp.await_proc('department_grant_list', domain_id))) {
-      existing.set(`${g.hub_id}|${g.uid}`, g);
+      if (mine(g)) existing.set(`${g.hub_id}|${g.uid}`, g);
     }
     const grant = (uid, hub_id, privilege) => this.yp.await_proc(
       'member_save_workspace_roles', uid, JSON.stringify([{ hub_id, privilege }]),
@@ -1247,15 +1292,38 @@ class __private_adminpanel extends Entity {
   async department_assign() {
     const org = await this._org();
     if (!org) return this.output.status('NOT_IN_ORGANISATION');
-    if (!org.write) return this.output.status('NOT_ENOUGH_PRIVILEGE');
 
     const hub_id = String(this.input.need(Attr.nid) || '').trim();
     const dept = String(this.input.use('department_id', '') || '').trim();
+
+    // Not an org admin: only a workspace of their own, still in no
+    // department, into a department they can edit in -- a "New workspace"
+    // made from that department (service/lib/dept-workspace.js).
+    if (!org.write) {
+      const hub = this._rows(await this.yp.await_query(
+        'SELECT owner_id, department_id FROM hub WHERE id = ? AND domain_id = ?',
+        hub_id, org.domain_id,
+      ))[0] || null;
+      const addable = await this._addableDepartments(org);
+      if (!DeptWs.memberMayAssign(hub, this.uid, dept, addable)) {
+        return this.output.status('NOT_ENOUGH_PRIVILEGE');
+      }
+    }
+
     const res = await this.yp.await_proc(
       'department_assign', org.domain_id, hub_id, dept || null,
     );
     if (this._refused(res)) return;
-    this.output.data(res);
+    // The department's people get the access their title gives them on this
+    // workspace now, and the one it left takes back what it gave -- not at
+    // the next title or rule change.
+    let summary = {};
+    try {
+      summary = await this._reconcile(org.domain_id, hub_id);
+    } catch (e) {
+      this.warn('[org] reconcile after assign failed:', e && e.message);
+    }
+    this.output.data({ ...(res || {}), ...summary });
   }
 
 }

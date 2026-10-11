@@ -220,7 +220,7 @@
       ]
     },
     "department_assign": {
-      "doc": "Move one workspace into a department (the workspace arrives as `nid`; `hub_id` is the caller's own hub and is what the ACL reads for scope, exactly as in desk.leave_hub), or out of every department when department_id is empty or absent - that is how a workspace becomes ungrouped without the department being deleted, so an empty value is a legitimate target and not a missing argument. Changes no permission, no address and no storage: department is a label on the organisation's side of the world.",
+      "doc": "Move one workspace into a department (the workspace arrives as `nid`; `hub_id` is the caller's own hub and is what the ACL reads for scope, exactly as in desk.leave_hub), or out of every department when department_id is empty or absent - that is how a workspace becomes ungrouped without the department being deleted, so an empty value is a legitimate target and not a missing argument. An org admin moves any workspace; anyone else may only file a workspace of their own that is in no department into a department where they have Edit or Admin on at least one workspace (NOT_ENOUGH_PRIVILEGE otherwise). The department's people then get the access their title gives them on that workspace, and a department it left takes back what it gave (department access, for this one workspace). No address or storage changes.",
       "scope": "hub",
       "permission": {
         "src": "owner"
