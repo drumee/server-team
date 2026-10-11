@@ -318,6 +318,23 @@
       "errors": []
     },
 
+    "of_user": {
+      "doc": "The caller's contact entry for a Drumee user, looked up by user id: the record the Contacts page edits (emails, mobile numbers, addresses). Used by member cards (org chart) so they read and update the same data. Returns the get_contact shape plus contact_id, or {contact_id: null} when there is no such contact.",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "params": {
+        "uid": {
+          "type": "string",
+          "required": true,
+          "minLength": 16,
+          "maxLength": 16,
+          "doc": "Drumee user id"
+        }
+      },
+      "errors": []
+    },
     "get_contact": {
       "doc": "Retrieve full details of a specific contact including all associated email addresses, phone numbers, postal addresses, and tags.",
       "scope": "hub",

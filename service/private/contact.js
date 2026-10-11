@@ -43,6 +43,7 @@ class __private_contact extends Contact {
     this.google_auth = this.google_auth.bind(this);
     this.send_mail = this.send_mail.bind(this);
     this.add = this.add.bind(this);
+    this.of_user = this.of_user.bind(this);
     this.update = this.update.bind(this);
     this.show_contact = this.show_contact.bind(this);
     this.delete_contact = this.delete_contact.bind(this);
@@ -713,6 +714,23 @@ class __private_contact extends Contact {
     const contact_id = this.input.need(Attr.contact_id);
     let r = await this._show(contact_id);
     this.output.data(r);
+  }
+
+  /**
+   * The caller's contact entry for a Drumee user, by their user id: the same
+   * record the Contacts page edits (emails, phone numbers...), so a card
+   * elsewhere (the org chart's member card) reads and writes one source.
+   * `{ contact_id: null }` when the caller has no contact for them.
+   */
+  async of_user() {
+    const uid = String(this.input.need(Attr.uid) || '').trim();
+    let row = await this.db.await_query(
+      'SELECT id FROM contact WHERE uid = ? OR entity = ? ORDER BY mtime DESC LIMIT 1', uid, uid,
+    );
+    if (isArray(row)) row = row[0];
+    if (!row || !row.id) return this.output.data({ contact_id: null, uid });
+    const r = await this._show(row.id);
+    this.output.data({ ...r, contact_id: row.id, uid });
   }
 
   /**
