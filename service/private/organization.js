@@ -385,7 +385,41 @@ class __private_adminpanel extends Entity {
         this.yp.await_proc('org_workspaces', org.domain_id),
       );
     }
-    const [summary, departments, workspaces] = await Promise.all(reads);
+    let [summary, departments, workspaces] = await Promise.all(reads);
+
+    // Below admin: the organisation screen still opens (Files lands there
+    // for everyone), drawn from what the caller can open -- the departments
+    // they have a workspace in and those workspaces (yp.my_departments, the
+    // topbar crumb's source), never the whole inventory.
+    if (!org.browse) {
+      workspaces = this._rows(await this.yp.await_proc('my_departments', this.uid, org.domain_id))
+        .filter((w) => w && w.hub_id);
+      const byDept = new Map();
+      for (const w of workspaces) {
+        if (!w.department_id || byDept.has(w.department_id)) continue;
+        byDept.set(w.department_id, {
+          id: w.department_id, name: w.department_name, rank: w.department_rank,
+          ctime: w.department_ctime, workspace_count: 0, member_count: 0,
+        });
+      }
+      for (const w of workspaces) {
+        const d = byDept.get(w.department_id);
+        if (d) d.workspace_count++;
+      }
+      const ids = [...byDept.keys()];
+      if (ids.length) {
+        for (const r of this._rows(await this.yp.await_query(
+          `SELECT department_id, COUNT(*) AS n FROM department_member
+            WHERE domain_id = ? AND department_id IN (${ids.map(() => '?').join(',')})
+            GROUP BY department_id`,
+          org.domain_id, ...ids,
+        ))) {
+          const d = byDept.get(r.department_id);
+          if (d) d.member_count = ~~r.n;
+        }
+      }
+      departments = [...byDept.values()];
+    }
 
     // await_proc collapses a single-row result to a bare object and answers
     // undefined for an empty one, so a one-department organisation would hand
@@ -397,10 +431,10 @@ class __private_adminpanel extends Entity {
       departments: this._rows(departments),
       workspaces: this._rows(workspaces),
       can_manage: org.write ? 1 : 0,
-      // Whether the client should offer "Open" at all. Reported rather than
-      // inferred from an empty list: "no departments yet" and "not allowed to
-      // see the departments" are different states and must not render alike.
-      can_browse: org.browse ? 1 : 0,
+      // Who may open the organisation screen: every member (Files lands there
+      // for everyone). What a member sees is scoped above to what they can
+      // open; can_manage still decides every write.
+      can_browse: 1,
     });
   }
 
