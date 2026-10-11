@@ -724,8 +724,15 @@ class __private_contact extends Contact {
    */
   async of_user() {
     const uid = String(this.input.need(Attr.uid) || '').trim();
+    // By their id, or -- once the default email was changed (member card,
+    // Contacts page) -- by their login email still in the entry's list.
     let row = await this.db.await_query(
-      'SELECT id FROM contact WHERE uid = ? OR entity = ? ORDER BY mtime DESC LIMIT 1', uid, uid,
+      `SELECT c.id FROM contact c
+         LEFT JOIN contact_email ce ON ce.contact_id = c.id
+        WHERE c.uid = ? OR c.entity = ?
+           OR ce.email = (SELECT email FROM yp.drumate WHERE id = ? LIMIT 1)
+        ORDER BY (c.uid = ? OR c.entity = ?) DESC, c.mtime DESC LIMIT 1`,
+      uid, uid, uid, uid, uid,
     );
     if (isArray(row)) row = row[0];
     if (!row || !row.id) return this.output.data({ contact_id: null, uid });
