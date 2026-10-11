@@ -116,7 +116,13 @@ async function apply(session) {
     if (!user || !user.get("signed_in")) return;
     const own = ~~(user.get("domain_id") || user.get("dom_id"));
     const host = session.input && session.input.host && session.input.host();
-    const hostDom = await hostDomain(session.yp, host);
+    let hostDom = await hostDomain(session.yp, host);
+    // An explicit organisation (org_domain_id) wins over the address: the
+    // org-setup wizard creates a new organisation and sets it up before the
+    // desk moves to its address. Same standing check as the address, so it
+    // reaches nothing the caller could not reach by opening that address.
+    const asked = ~~(session.input && session.input.get && session.input.get("org_domain_id"));
+    if (asked > 1) hostDom = asked;
     if (hostDom <= 1 || hostDom === own) return;
     const s = await standing(session.yp, user, hostDom);
     if (!s) return;

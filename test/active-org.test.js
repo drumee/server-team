@@ -33,5 +33,11 @@ function session({ hostDom, own, signed=1, member=null, guest=false, fail=false 
   s = session({ hostDom: 76, own: 35, fail: true }); await AO.apply(s); assert.equal(s.user.get('domain_id'), 35, 'db error untouched');
   const bad = session({ hostDom: 73, own: 35 }); bad.input.host = () => "bad host'; --"; await AO.apply(bad);
   assert.equal(bad.calls.length, 0, 'odd host: no query');
-  console.log('active-org: all 8 cases pass');
+  AO.forget('u1');
+  s = session({ hostDom: 35, own: 35, member: { privilege: 63 } }); s.input.get = (k) => (k === 'org_domain_id' ? '78' : undefined);
+  await AO.apply(s); assert.equal(s.user.get('domain_id'), 78, 'explicit org: member gets it on their own address');
+  AO.forget('u1');
+  s = session({ hostDom: 35, own: 35 }); s.input.get = (k) => (k === 'org_domain_id' ? '79' : undefined);
+  await AO.apply(s); assert.equal(s.user.get('domain_id'), 35, 'explicit org: stranger untouched');
+  console.log('active-org: all 10 cases pass');
 })().catch((e) => { console.error(e); process.exit(1); });
