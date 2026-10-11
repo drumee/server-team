@@ -36,24 +36,14 @@
      carries): the viewBox then drives the height and the mark can never be
      stretched by an off-ratio box. min() keeps it inside a phone viewport.
 
-     240px is the FOOTPRINT THIS SCREEN ALREADY HAD: the cloud + typeset
-     wordmark it replaces measured ~230px wide. Sizing the lockup by width
-     rather than by the mark's old 64px height is what keeps that — matching
-     the height instead would have made it 322px wide, since the lockup gives
-     the wordmark more room beside the mark than the hand-built pairing did. */
+     160px, sized by width so the viewBox drives the height (~32px). It was
+     240px while the screen still carried a "Warming Up..." caption; with only
+     the lockup and the bar left, the screen is scaled down by a third. */
   .warmup-symbol svg.warmup-logo {
-    width: min(240px, 72vw);
+    width: min(160px, 50vw);
     height: auto;
   }
-  /* The caption in black, not the #433cc5 it inherits from loader.css:437.
-     #0B0A21 rather than #000: that is the black the lockup's own wordmark is
-     drawn in (fill="#0B0A21" above), so the two lines below each other read as
-     one colour instead of near-miss blacks. Overridden here for the same
-     reason the sizing above is — loader.css is not in this repo. */
-  .warmup-progress-text {
-    color: #0b0a21;
-  }
-  /* Air between the caption and the bar, which sat 5px under the text.
+  /* Air between the lockup and the bar.
      PADDING on the row, not a new `bottom` on the bar: the track (::after
      above) and the fill (.warmup-progress-bar, loader.css:424) are both
      absolutely positioned at bottom:-5px, and an absolute child resolves
@@ -110,16 +100,12 @@
      clamps the whole box. 100% rather than another 100vw: on desktop 100vw
      includes the scrollbar gutter, 100% does not.
 
-     The width is restated as calc(455px + 64px) because switching to border-box
-     would otherwise have RESHAPED the desktop card: loader.css's 455px would
-     start including the padding, leaving 391px of content and a 391px progress
-     bar where the design has always had 455px. Written as a sum rather than as
-     519px so it stays legible as "loader.css:405's width, plus the padding a
-     side it was always drawn outside of". Nothing above phone width is resized
-     by this change. */
+     Written as calc(300px + 64px): a 300px progress bar (content box) plus the
+     32px of padding a side. loader.css:405 draws a 455px bar; it is scaled
+     down by a third to match the 160px lockup above. */
   .warmup-01 {
     box-sizing: border-box;
-    width: calc(455px + 64px);
+    width: calc(300px + 64px);
     max-width: 100%;
   }
 
@@ -140,27 +126,16 @@
       gap: 12px;
     }
 
-    /* 72vw was sized for the desktop card, where it never binds (it is 240px
-       from 334px up). On a phone it DOES bind, and 72vw of a 320px screen is
-       230px of lockup — the mark ends up louder than the app it is booting.
-       60vw holds it to ~192px there and still hits the designed 240px by 400px
-       wide. */
+    /* 45vw holds the lockup to ~144px on a 320px screen and reaches the
+       designed 160px by 356px wide. */
     .warmup-symbol svg.warmup-logo {
-      width: min(240px, 60vw);
-    }
-
-    /* 20px/30px is the desktop caption. At phone width it sits directly over a
-       bar that is now ~335px instead of 455px; 17px keeps "Warming Up..." on
-       one line at 320px with the shorter measure. */
-    .warmup-progress-text {
-      font-size: 17px;
-      line-height: 24px;
+      width: min(160px, 45vw);
     }
   }
 
   /* --- Tablet ------------------------------------------------------------- */
-  /* The 519px card is already right on a 768-1024px screen, so this block does
-     not resize it — the lockup deliberately keeps its designed 240px footprint
+  /* The 364px card is already right on a 768-1024px screen, so this block does
+     not resize it — the lockup deliberately keeps its designed 160px footprint
      here rather than being inflated to fill a bigger display. What a tablet
      needs is the same full-bleed correction as a phone (it is a device screen,
      not a window, so the same four corner notches apply) and a guaranteed
@@ -180,9 +155,9 @@
   /* Keyed on height, not on a device: a 740x360 phone held sideways and a
      tablet with the keyboard up both land here. The screen is centred content
      in a box roughly 300px tall once the browser chrome is out, and the
-     portrait stack (240px lockup + 16px gap + 42px progress row + 64px padding)
-     is most of that. Compacting the lockup and the padding keeps the caption
-     and the bar clear of the chrome instead of being clipped by
+     portrait stack (32px lockup + 16px gap + 12px progress row + 64px padding)
+     is well inside that, but the 480px cut-off is kept as a safety margin. Compacting the lockup and the padding keeps the bar
+     clear of the chrome instead of being clipped by
      .warmup-main's overflow:hidden. */
   @media (max-height: 480px) {
     .warmup-01 {
@@ -191,12 +166,7 @@
     }
 
     .warmup-symbol svg.warmup-logo {
-      width: min(180px, 34vw);
-    }
-
-    .warmup-progress-text {
-      font-size: 16px;
-      line-height: 22px;
+      width: min(140px, 30vw);
     }
   }
 </style>
@@ -232,7 +202,6 @@
       </div>
     </div>
     <div class="warmup-progress">
-      <span id="warmup-text" class="warmup-progress-text">Warming Up...</span>
       <span id="warmup-progess" class="warmup-progress-bar"></span>
     </div>
   </div>
