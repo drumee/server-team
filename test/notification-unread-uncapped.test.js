@@ -182,15 +182,26 @@ test('Mark as all read on Task clears every unread task row in one call per even
 
 // get_feed with every enrichment stubbed out: only the merge / bucket / drop
 // logic under test runs.
-function feedContext({input, baseRows, rollups = [], contactRows = {}}) {
+// Each context gets its own user database name: the missing-routine
+// cooldown is keyed per database and lives for the whole process.
+let dbSeq = 0;
+function feedContext({input, baseRows, rollups = [], contactRows = {}, bucketRows = null}) {
   let listed;
+  const calls = [];
+  const dbName = `db_feed_${++dbSeq}`;
   const activity = base({
     input: {use: (k) => input[k]},
+    user: {get: () => dbName},
     output: {list: (rows) => { listed = rows; return rows; }},
     yp: {await_proc: async () => []},
-    async _callUserProc(proc) {
+    async _callUserProc(proc, ...args) {
+      calls.push([proc, ...args]);
       if (proc === 'activity_get_feed_all' || proc === 'mfs_get_activity_feed') {
         return baseRows.map((r) => ({...r}));
+      }
+      // activity_get_feed_bucket not deployed unless the test gives its rows.
+      if (proc === 'activity_get_feed_bucket') {
+        return bucketRows ? bucketRows.map((r) => ({...r})) : undefined;
       }
       return [];
     },
@@ -213,7 +224,7 @@ function feedContext({input, baseRows, rollups = [], contactRows = {}}) {
     async _dropDeleted(rows) { return rows; },
     async _decorateBookmarks(rows) { return rows; },
   });
-  return {activity, listed: () => listed};
+  return {activity, listed: () => listed, calls};
 }
 
 const task = (id) => ({id, event: 'task_mention', event_type: 'contact', timestamp: 900 + id, is_read: 0, data: '{}'});
@@ -287,4 +298,52 @@ test('Unread ON keeps paging task rows past the first 50', async () => {
   assert.equal(seen.length, 120);
   assert.equal(new Set(seen).size, 120);
   assert.deepEqual(await ids(4), []);
+});
+
+const fileRow = (id, extra = {}) => ({
+  id, event: 'media.new', event_type: 'mfs', timestamp: 500 + id, is_read: 0, ...extra,
+});
+
+test('Unread OFF on a tab pages that tab only (activity_get_feed_bucket)', async () => {
+  const ctx = feedContext({
+    input: {page: 2, unread_only: 0, bucket: 'files'},
+    baseRows: [task(1), task(2)], // what the whole feed would have answered
+    bucketRows: [fileRow(2), fileRow(1)], // newest first, as the procedure answers
+  });
+  await ctx.activity.get_feed();
+  assert.deepEqual(ctx.listed().map((r) => r.id), [2, 1]);
+  const feedCalls = ctx.calls.filter(([p]) => p.startsWith('activity_get_feed'));
+  assert.deepEqual(feedCalls, [['activity_get_feed_bucket', 'me', 2, 'files']]);
+});
+
+test('Unread OFF on a tab falls back to the whole feed while activity_get_feed_bucket is absent', async () => {
+  const ctx = feedContext({
+    input: {page: 1, unread_only: 0, bucket: 'files'},
+    baseRows: [task(1), fileRow(3)],
+  });
+  await ctx.activity.get_feed();
+  assert.deepEqual(ctx.listed().map((r) => r.id), [3]);
+  assert.deepEqual(
+    ctx.calls.filter(([p]) => p.startsWith('activity_get_feed')).map(([p]) => p),
+    ['activity_get_feed_bucket', 'activity_get_feed_all'],
+  );
+  // Same database within the cooldown: the missing routine is not asked again.
+  ctx.calls.length = 0;
+  await ctx.activity.get_feed();
+  assert.deepEqual(
+    ctx.calls.filter(([p]) => p.startsWith('activity_get_feed')).map(([p]) => p),
+    ['activity_get_feed_all'],
+  );
+});
+
+test('All (no tab) and Unread ON never use activity_get_feed_bucket', async () => {
+  for (const input of [
+    {page: 1, unread_only: 0},
+    {page: 1, unread_only: 1, bucket: 'files'},
+    {page: 1, unread_only: 0, bucket: 'files', filter: 'mentions'},
+  ]) {
+    const ctx = feedContext({input, baseRows: [fileRow(1)], bucketRows: []});
+    await ctx.activity.get_feed();
+    assert.ok(!ctx.calls.some(([p]) => p === 'activity_get_feed_bucket'), JSON.stringify(input));
+  }
 });

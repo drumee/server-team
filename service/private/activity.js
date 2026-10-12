@@ -886,6 +886,26 @@ class MfsActivity extends Entity {
   }
 
   /**
+   * A user-DB routine that may not be in every database yet (the rollout
+   * window, or a pool DB provisioned before it). Answers { ok, rows }: ok is
+   * false when the call failed, and the routine is then skipped for
+   * PROC_RETRY_MS, keyed PER DATABASE so one stale DB never silences another.
+   */
+  async _optionalUserProc(name, ...args) {
+    const key = `user-db:${this.user.get(Attr.db_name)}:${name}`;
+    const now = Date.now();
+    const retryAfter = MISSING_PROCS.get(key);
+    if (retryAfter && now < retryAfter) return { ok: false, rows: [] };
+    const rows = await this._callUserProc(name, ...args);
+    if (rows === undefined) {
+      MISSING_PROCS.set(key, now + PROC_RETRY_MS);
+      return { ok: false, rows: [] };
+    }
+    if (retryAfter) MISSING_PROCS.delete(key);
+    return { ok: true, rows: toArray(rows) };
+  }
+
+  /**
    * Get count of unread notifications
    * Endpoint: GET /mfs_activity.get_unread_count
    * 
@@ -1162,7 +1182,19 @@ class MfsActivity extends Entity {
       // Full-feed callers require real read history. Failing closed is safer
       // than silently returning the legacy unread/dismissed log under an OFF
       // toggle, which would misrepresent the selected contract.
-      result = await this._callUserProc('activity_get_feed_all', this.uid, page);
+      //
+      // A tab pages its OWN rows (activity_get_feed_bucket filters before the
+      // LIMIT). Paging the whole feed and keeping the tab's rows afterwards
+      // left pages with nothing of the tab whenever other rows crowded them
+      // (hundreds of task notifications ahead of the file ones), and that
+      // empty page ended the list: the Files tab listed 7 of its 15 unread
+      // rows. Without the routine, the whole feed as before.
+      let scoped = null;
+      if (bucket && filter === 'all') {
+        const res = await this._optionalUserProc('activity_get_feed_bucket', this.uid, page, bucket);
+        if (res.ok) scoped = res.rows;
+      }
+      result = scoped || await this._callUserProc('activity_get_feed_all', this.uid, page);
     }
     result = toArray(result);
     for (const row of result) {
@@ -2888,17 +2920,9 @@ class MfsActivity extends Entity {
    * PROC_RETRY_MS, keyed PER DATABASE so one stale DB never silences another.
    */
   async _newFilesByHub(since) {
-    const key = `user-db:${this.user.get(Attr.db_name)}:mfs_new_by_hub`;
-    const now = Date.now();
-    const retryAfter = MISSING_PROCS.get(key);
-    if (retryAfter && now < retryAfter) return [];
     try {
-      const rows = await this._callUserProc('mfs_new_by_hub', this.uid, since);
-      if (rows === undefined) {
-        MISSING_PROCS.set(key, now + PROC_RETRY_MS);
-        return [];
-      }
-      if (retryAfter) MISSING_PROCS.delete(key);
+      const { ok, rows } = await this._optionalUserProc('mfs_new_by_hub', this.uid, since);
+      if (!ok) return [];
       const out = [];
       for (const r of toArray(rows)) {
         if (!r || !r.hub_id) continue;
