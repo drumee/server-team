@@ -1168,6 +1168,13 @@ class MfsActivity extends Entity {
     // merged on page 1 -- and the raw copies of those rows are dropped from
     // every page. Read rows page exactly as before.
     const scopedUnread = !unreadOnly && SCOPED_UNREAD_BUCKETS.has(bucket);
+    // Unread OFF on All too, for the invitations only: a pending contact
+    // invitation, a workspace invitation or a refused invitation is counted
+    // from its rollup, and the raw activity_get_feed_all row it stands for can
+    // be missing (an invitation older than contact_activity logging) or sit
+    // pages deep. All therefore lists the rollup, like Unread ON and like the
+    // Other tab, and drops the raw unread copy (prod audit 2026-10-12).
+    const inviteRollups = !unreadOnly && (!bucket || scopedUnread);
     // unread_only=1 → unread-only feed (mfs_get_activity_feed, unchanged).
     // unread_only=0 → full feed (read + unread together) via
     // activity_get_feed_all, which returns the unified log with a correct
@@ -1215,6 +1222,15 @@ class MfsActivity extends Entity {
     if (filter !== 'mentions' && filter !== 'shares' && page <= 1) {
       try {
         const opens = toArray(await this.yp.await_proc('secure_share_open_feed', this.uid, unreadOnly));
+        // Unread OFF: the 50 newest opens, read or not, can leave out an older
+        // UNREAD one that the badge counts (it counts the unread list). Add the
+        // unread list's rows that are not there yet (prod audit 2026-10-12).
+        if (!unreadOnly) {
+          const have = new Set(opens.filter(Boolean).map((r) => String(r.id)));
+          for (const r of toArray(await this.yp.await_proc('secure_share_open_feed', this.uid, 1))) {
+            if (r && !have.has(String(r.id))) opens.push(r);
+          }
+        }
         // Identify who opened each share, for the row's name AND its avatar:
         // without this the row reads "Someone opened X" even when we know
         // exactly who it was, and shows the workspace icon rather than a face.
@@ -1294,6 +1310,7 @@ class MfsActivity extends Entity {
     // (only then may the raw copies be dropped below), and the contact ids
     // they carry.
     let scopedMerged = false;
+    let invitesMerged = false;
     const mergedContactIds = new Set();
     if (filter !== 'mentions' && filter !== 'shares' && page <= 1) {
       try {
@@ -1327,7 +1344,7 @@ class MfsActivity extends Entity {
             }
             continue;
           }
-          if (!ALWAYS.has(r.category) && !unreadOnly && !scopedUnread) continue;
+          if (!ALWAYS.has(r.category) && !unreadOnly && !inviteRollups) continue;
           // Item skeleton + sort read `timestamp` first, then `ctime`; rollups
           // only carry ctime, so mirror it to timestamp for correct ordering.
           if (r.timestamp == null) r.timestamp = r.ctime;
@@ -1336,6 +1353,7 @@ class MfsActivity extends Entity {
           if (r.is_read == null) r.is_read = 0;
           result.push(r);
         }
+        invitesMerged = inviteRollups;
         // The rollups that have ALREADY been read. A chat/teamchat/media/ticket
         // rollup is recomputed from unread state, so reading it makes
         // notification_center_next stop emitting it entirely -- there is no
@@ -1400,13 +1418,16 @@ class MfsActivity extends Entity {
           }
           result.sort((a, b) => (Number(b.timestamp || b.ctime || 0) - Number(a.timestamp || a.ctime || 0)));
         }
-      } else if (scopedUnread) {
+      } else {
         // Page 1 listed these unread rows already; their raw copies must not
         // come back on a later page.
-        for (const r of await this._contactUnreadRows(1)) {
-          if (r.id != null) mergedContactIds.add(String(r.id));
+        if (scopedUnread) {
+          for (const r of await this._contactUnreadRows(1)) {
+            if (r.id != null) mergedContactIds.add(String(r.id));
+          }
+          scopedMerged = true;
         }
-        scopedMerged = true;
+        invitesMerged = inviteRollups;
       }
     }
 
@@ -1452,7 +1473,7 @@ class MfsActivity extends Entity {
     if (bucket) {
       result = result.filter((row) => row && row.bucket === bucket);
     }
-    if (scopedMerged) {
+    if (scopedMerged || invitesMerged) {
       // The raw activity_get_feed_all copy of a row merged on page 1: the same
       // contact row by id, or an invitation the merged rollups stand for (the
       // read-state alignment above leaves exactly those raw invitation rows
@@ -1460,7 +1481,8 @@ class MfsActivity extends Entity {
       result = result.filter((r) => !(
         r && r.feed_page_source === 'base' && r.event_type === 'contact'
         && Number(r.is_read) === 0
-        && (mergedContactIds.has(String(r.id)) || ROLLUP_REPRESENTED_EVENTS.has(r.event))
+        && ((scopedMerged && mergedContactIds.has(String(r.id)))
+          || (invitesMerged && ROLLUP_REPRESENTED_EVENTS.has(r.event)))
       ));
     }
 
@@ -2053,6 +2075,28 @@ class MfsActivity extends Entity {
   }
 
   /**
+   * Keys (meetingNoticeKeys) of the user's recent meeting invitations, READ or
+   * not. An invitation stands in for its meeting's scheduled-meeting rollup
+   * whether or not it has been opened; checking only the invitations on the
+   * same page (or only the unread ones) let the badge count a rollup that the
+   * full feed dropped (prod audit 2026-10-12: Meeting badge 1 over an empty
+   * tab). The newest page of the Meeting tab, so one bounded read; empty when
+   * activity_get_feed_bucket is not deployed.
+   */
+  async _meetingInviteKeys() {
+    try {
+      const { ok, rows } = await this._optionalUserProc('activity_get_feed_bucket', this.uid, 1, BUCKET.meeting);
+      if (!ok) return new Set();
+      const notices = rows.filter((r) => r && r.event === 'meeting_notice');
+      flattenMeetingNotice(notices);
+      return meetingNoticeKeys(notices);
+    } catch (e) {
+      this.debug('[ACTIVITY] meeting invitations unavailable', e && e.message);
+      return new Set();
+    }
+  }
+
+  /**
    * Turn a scheduled meeting's rollup row into a MEETING row (Duy 2026-08-21,
    * issues 9 + 10).
    *
@@ -2090,6 +2134,9 @@ class MfsActivity extends Entity {
 
     // Meetings this user has already been told about by a targeted invitation.
     const covered = meetingNoticeKeys(rows);
+    if (pending.some((r) => !isCoveredByNotice(r, covered))) {
+      for (const k of await this._meetingInviteKeys()) covered.add(k);
+    }
     const drop = new Set(pending.filter((r) => isCoveredByNotice(r, covered)));
     // Only the survivors need a time resolved — a dropped row is never rendered.
     const needTime = pending.filter((r) => !drop.has(r));
@@ -2644,7 +2691,11 @@ class MfsActivity extends Entity {
       this._callUserProc('notification_hub_invites'),
     ]);
     const rows = toArray(rollups);
-    const hubs = toArray(hubInvites);
+    // A workspace "invite" the user wrote to THEMSELF (they added themselves
+    // via add_contributors, before hub._grantMembership stopped writing that
+    // receipt) is their own action: activity_get_feed_all hides it, so it must
+    // not reach the badge or the tabs either.
+    const hubs = toArray(hubInvites).filter((r) => !r || String(r.author_id) !== String(this.uid));
     let refused = [];
     let workspaceMoves = [];
     try {
@@ -2842,9 +2893,21 @@ class MfsActivity extends Entity {
     //    is skipped, exactly as get_feed drops it from the page.
     try {
       const covered = meetingNoticeKeys(contactRows);
-      for (const r of await this._notificationRollups()) {
-        if (!r) continue;
+      const rollups = toArray(await this._notificationRollups()).filter(Boolean);
+      // Read invitations cover their meeting's rollup too (_stampMeetingRollups).
+      if (rollups.some((r) => isScheduleRollup(r) && !isCoveredByNotice(r, covered))) {
+        for (const k of await this._meetingInviteKeys()) covered.add(k);
+      }
+      // get_feed lists a workspace-move rollup only when its changelog row is
+      // not already on the first page of the feed; that row is counted in 5.
+      // below, so the rollup is counted on the same condition, not twice
+      // (prod audit 2026-10-12: Files badge 7 over 6 rows).
+      const listedMoves = rollups.some((r) => r.category === 'workspace_move')
+        ? await this._firstPageWorkspaceMoveIds()
+        : new Set();
+      for (const r of rollups) {
         if (isCoveredByNotice(r, covered)) continue;
+        if (r.category === 'workspace_move' && listedMoves.has(String(r.key_id))) continue;
         bump(r);
       }
     } catch (e) {
@@ -2910,6 +2973,22 @@ class MfsActivity extends Entity {
     //    procedure is not deployed.
     const files_by_hub = await this._newFilesByHub(filesSinceArg(this.input.use('files_since')));
     this.output.data({ all, ...counts, files_by_hub });
+  }
+
+  /**
+   * Ids of the media.workspace_move rows on the first page of the Unread feed
+   * (mfs_get_activity_feed) -- the rows get_feed checks before adding a
+   * workspace-move rollup. Empty on any failure, i.e. the badge counts as
+   * before.
+   */
+  async _firstPageWorkspaceMoveIds() {
+    try {
+      const rows = toArray(await this._callUserProc('mfs_get_activity_feed', this.uid, 1));
+      return new Set(rows.filter((r) => r && r.event === 'media.workspace_move').map((r) => String(r.id)));
+    } catch (e) {
+      this.debug('[ACTIVITY] unread_counts: workspace moves unavailable', e && e.message);
+      return new Set();
+    }
   }
 
   /**

@@ -1125,22 +1125,27 @@ class __private_hub extends Hub {
       entity_id: uid,
       log: `Member added to workspace '${hub_name || this.hub.get(Attr.id)}'`,
     });
-    try {
-      await this.yp.await_proc(
-        "contact_log_activity", this.uid, uid, "hub_invite_received",
-        {
-          hub_id: this.hub.get(Attr.id),
-          hub_name: hub_name,
-          message: message,
-          from_fullname: from_fullname,
-          privilege: privilege,
-        }
-      );
-    } catch (err) {
-      this.warn(
-        "[hub] _grantMembership: log activity failed for", uid,
-        err && err.message
-      );
+    // No "<you> added you to team …" receipt to somebody who added
+    // THEMSELF: the notification panel hides one's own actions, so such a row
+    // was counted by the Other badge yet never listed (prod audit 2026-10-12).
+    if (String(uid) !== String(this.uid)) {
+      try {
+        await this.yp.await_proc(
+          "contact_log_activity", this.uid, uid, "hub_invite_received",
+          {
+            hub_id: this.hub.get(Attr.id),
+            hub_name: hub_name,
+            message: message,
+            from_fullname: from_fullname,
+            privilege: privilege,
+          }
+        );
+      } catch (err) {
+        this.warn(
+          "[hub] _grantMembership: log activity failed for", uid,
+          err && err.message
+        );
+      }
     }
     // Notify online members (admins with the Folder settings permission matrix
     // open) so the new member appears immediately without a manual reload.
