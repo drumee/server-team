@@ -656,6 +656,32 @@ const CONTACT_UNREAD_PROCS = [
   'contact_invite_accepted_unread',
 ];
 
+// The contact_activity event behind each CONTACT_UNREAD_PROCS entry. Every one
+// of those procedures stops at CONTACT_UNREAD_PAGE rows, so a user with more
+// unread rows than that (374 task notifications on prod, 2026-10-11) had a
+// badge stuck at 100, an Unread feed that never listed the rest, and a Mark as
+// all read that cleared 100 per click. The contact_unread_* routines (yp) take
+// the event instead and are uncapped or paged; while they are not deployed,
+// every caller falls back to exactly the procedure above.
+const CONTACT_UNREAD_EVENTS = {
+  contact_task_assigned_unread: 'task_assigned',
+  contact_task_mention_unread: 'task_mention',
+  contact_task_column_change_unread: 'task_column_change',
+  contact_storage_alert_unread: 'storage_alert',
+  contact_reward_expiry_unread: 'reward_expiry_warning',
+  contact_meeting_notice_unread: 'meeting_notice',
+  contact_invite_accepted_unread: 'invite_accepted',
+};
+const CONTACT_UNREAD_PAGE = 50; // = the LIMIT of every CONTACT_UNREAD_PROCS entry
+
+// Notification tabs whose unread rows come mostly from rollups and low-volume
+// contact events, and which therefore sit far down the full feed of a user
+// with many task notifications. See get_feed (scopedUnread).
+const SCOPED_UNREAD_BUCKETS = new Set([BUCKET.meeting, BUCKET.other]);
+// Contact events that the full feed represents with a rollup (contact,
+// hub_invite, contact_refused) rather than with the raw row.
+const ROLLUP_REPRESENTED_EVENTS = new Set(['invite_received', 'hub_invite_received', 'invite_refused']);
+
 const MISSING_PROCS = new Map(); // proc name -> epoch ms to retry after
 const PROC_RETRY_MS = 60 * 1000;
 
@@ -769,6 +795,37 @@ class MfsActivity extends Entity {
   async _optionalYpProcResult(name, ...args) {
     const rows = await this._optionalYpProc(name, ...args);
     return { ok: !MISSING_PROCS.has(name), rows };
+  }
+
+  /**
+   * One page of the caller's unread contact_activity rows, CONTACT_UNREAD_PAGE
+   * per event, in the shape of the CONTACT_UNREAD_PROCS rows. Page 1 is what
+   * those procedures return (plus an id tie-break); page N carries the next
+   * CONTACT_UNREAD_PAGE of every event, so paging through the feed reaches
+   * every row the badge counts.
+   *
+   * Falls back per event: without contact_unread_rows, page 1 is the old
+   * procedure's rows and later pages are empty, i.e. exactly today's output.
+   * Each event is independently best-effort, as before.
+   */
+  async _contactUnreadRows(page) {
+    const offset = (Math.max(1, parseInt(page, 10) || 1) - 1) * CONTACT_UNREAD_PAGE;
+    const out = [];
+    for (const proc of CONTACT_UNREAD_PROCS) {
+      try {
+        const res = await this._optionalYpProcResult(
+          'contact_unread_rows', this.uid, CONTACT_UNREAD_EVENTS[proc], offset, CONTACT_UNREAD_PAGE
+        );
+        let rows = res.rows;
+        if (!res.ok) rows = offset ? [] : await this._optionalYpProc(proc, this.uid);
+        for (const r of rows) if (r) out.push(r);
+      } catch (e) {
+        // debug (not warn): a routine missing during a rollout window is
+        // expected and must not spam the alert bot.
+        this.debug(`[ACTIVITY] ${proc} rows skipped`, e && e.message);
+      }
+    }
+    return out;
   }
 
   async _callUserProc(procName, ...args) {
@@ -931,6 +988,12 @@ class MfsActivity extends Entity {
     if (bucket && lookup(CONTACT_CLEAR, bucket)) {
       for (const proc of lookup(CONTACT_CLEAR, bucket)) {
         try {
+          // Every unread row of the event in one statement. The loop below
+          // only reaches the procedure's 50 newest, so a Task tab with
+          // hundreds unread needed a click per 100 rows; it stays as the
+          // fallback while contact_unread_mark_read is not deployed.
+          const all = await this._optionalYpProcResult('contact_unread_mark_read', this.uid, CONTACT_UNREAD_EVENTS[proc]);
+          if (all.ok) continue;
           const rows = await this._optionalYpProc(proc, this.uid);
           for (const r of rows) {
             const activityId = parseInt(r && r.id);
@@ -1030,6 +1093,15 @@ class MfsActivity extends Entity {
     // Round 3: one of the 5 Notification Center tabs. null = unscoped, i.e. the
     // exact pre-existing behaviour for every caller that doesn't send it.
     const bucket = validBucket(this.input.use('bucket'));
+    // Unread OFF on the Meeting or Other tab. The full feed pages through
+    // activity_get_feed_all and only THEN keeps the tab's rows, so for a user
+    // with hundreds of task notifications every unread meeting notice or
+    // invitation sat pages deep, page 1 of the tab came back empty and the list
+    // stopped there: a badge of 1 or 2 over an empty tab (prod, 2026-10-11).
+    // These tabs therefore take their UNREAD rows the way Unread ON does --
+    // merged on page 1 -- and the raw copies of those rows are dropped from
+    // every page. Read rows page exactly as before.
+    const scopedUnread = !unreadOnly && SCOPED_UNREAD_BUCKETS.has(bucket);
     // unread_only=1 → unread-only feed (mfs_get_activity_feed, unchanged).
     // unread_only=0 → full feed (read + unread together) via
     // activity_get_feed_all, which returns the unified log with a correct
@@ -1140,6 +1212,11 @@ class MfsActivity extends Entity {
     // Kept for _alignContactReadState below, so it can reuse this call's
     // rollups instead of running notification_center_next a second time.
     let liveRollups = null;
+    // scopedUnread bookkeeping: whether page 1's unread rows were really merged
+    // (only then may the raw copies be dropped below), and the contact ids
+    // they carry.
+    let scopedMerged = false;
+    const mergedContactIds = new Set();
     if (filter !== 'mentions' && filter !== 'shares' && page <= 1) {
       try {
         // chat/media/teamchat/ticket rollups are NOT returned by
@@ -1172,7 +1249,7 @@ class MfsActivity extends Entity {
             }
             continue;
           }
-          if (!ALWAYS.has(r.category) && !unreadOnly) continue;
+          if (!ALWAYS.has(r.category) && !unreadOnly && !scopedUnread) continue;
           // Item skeleton + sort read `timestamp` first, then `ctime`; rollups
           // only carry ctime, so mirror it to timestamp for correct ordering.
           if (r.timestamp == null) r.timestamp = r.ctime;
@@ -1211,28 +1288,43 @@ class MfsActivity extends Entity {
         // no in-app notification (the panel opens on Unread ON). Each proc is
         // independently best-effort so a missing/failing one never sinks the
         // others.
-        if (unreadOnly) {
-          for (const proc of CONTACT_UNREAD_PROCS) {
-            try {
-              const rows = await this._optionalYpProc(proc, this.uid);
-              for (const r of rows) {
-                if (!r) continue;
-                if (r.timestamp == null) r.timestamp = r.ctime;
-                result.push(r);
-              }
-            } catch (e) {
-              // debug (not warn) on purpose: a missing proc during the rollout
-              // window (server deployed before the SQL is applied) is expected
-              // and degrades gracefully (task items still show under Unread OFF
-              // via activity_get_feed_all). warn would spam the Telegram alert
-              // bot every call until the proc lands.
-              this.debug(`[ACTIVITY] ${proc} merge skipped`, e && e.message);
-            }
+        // A missing proc during the rollout window (server deployed before the
+        // SQL is applied) degrades gracefully inside _contactUnreadRows (task
+        // items still show under Unread OFF via activity_get_feed_all).
+        if (unreadOnly || scopedUnread) {
+          for (const r of await this._contactUnreadRows(1)) {
+            if (r.timestamp == null) r.timestamp = r.ctime;
+            if (r.id != null) mergedContactIds.add(String(r.id));
+            result.push(r);
           }
+          scopedMerged = scopedUnread;
         }
         result.sort((a, b) => (Number(b.timestamp || b.ctime || 0) - Number(a.timestamp || a.ctime || 0)));
       } catch (e) {
         this.warn('[ACTIVITY] rollup merge failed', e && e.message);
+      }
+    }
+
+    if (filter !== 'mentions' && filter !== 'shares' && page > 1) {
+      if (unreadOnly) {
+        // Unread ON, later pages: the next CONTACT_UNREAD_PAGE unread rows of
+        // every contact event, so the feed reaches every row the badge counts
+        // instead of stopping at the first 50 per event merged on page 1.
+        const more = await this._contactUnreadRows(page);
+        if (more.length) {
+          for (const r of more) {
+            if (r.timestamp == null) r.timestamp = r.ctime;
+            result.push(r);
+          }
+          result.sort((a, b) => (Number(b.timestamp || b.ctime || 0) - Number(a.timestamp || a.ctime || 0)));
+        }
+      } else if (scopedUnread) {
+        // Page 1 listed these unread rows already; their raw copies must not
+        // come back on a later page.
+        for (const r of await this._contactUnreadRows(1)) {
+          if (r.id != null) mergedContactIds.add(String(r.id));
+        }
+        scopedMerged = true;
       }
     }
 
@@ -1278,6 +1370,17 @@ class MfsActivity extends Entity {
     if (bucket) {
       result = result.filter((row) => row && row.bucket === bucket);
     }
+    if (scopedMerged) {
+      // The raw activity_get_feed_all copy of a row merged on page 1: the same
+      // contact row by id, or an invitation the merged rollups stand for (the
+      // read-state alignment above leaves exactly those raw invitation rows
+      // unread). Read rows are untouched and keep their pagination.
+      result = result.filter((r) => !(
+        r && r.feed_page_source === 'base' && r.event_type === 'contact'
+        && Number(r.is_read) === 0
+        && (mergedContactIds.has(String(r.id)) || ROLLUP_REPRESENTED_EVENTS.has(r.event))
+      ));
+    }
 
     // Drop what the user removed with the trash button. Applied LAST so it
     // catches every source that fed `result`, and applied in both toggle states
@@ -1287,6 +1390,19 @@ class MfsActivity extends Entity {
     result = await this._dropDeleted(result);
 
     this.output.list(await this._decorateBookmarks(result));
+  }
+
+  /**
+   * The CONTACT_UNREAD_PROCS rows among `candidates`, as lists of rows with an
+   * id (the shape _alignContactReadState reads). contact_unread_ids checks the
+   * page's own ids, so a row past the procedures' 50-row cap is still found
+   * unread; without it, the procedures' own (capped) rows, as before.
+   */
+  async _countedContactIds(candidates) {
+    const ids = candidates.map((r) => parseInt(r.id, 10)).filter((n) => Number.isFinite(n) && n > 0);
+    const res = await this._optionalYpProcResult('contact_unread_ids', this.uid, JSON.stringify(ids));
+    if (res.ok) return [res.rows];
+    return Promise.all(CONTACT_UNREAD_PROCS.map((proc) => this._optionalYpProc(proc, this.uid)));
   }
 
   /**
@@ -1324,7 +1440,7 @@ class MfsActivity extends Entity {
     let pendingInviters;
     try {
       const [procRows, hubInvites, refused, pending] = await Promise.all([
-        Promise.all(CONTACT_UNREAD_PROCS.map((proc) => this._optionalYpProc(proc, this.uid))),
+        this._countedContactIds(candidates),
         this._callUserProc('notification_hub_invites'),
         this._callUserProc('notification_contact_refused'),
         // Page 1 already has the rollups, which respect a dismissed contact
@@ -2511,6 +2627,28 @@ class MfsActivity extends Entity {
     }
     flattenMeetingNotice(contactRows);
     for (const r of contactRows) bump(r);
+    // Those procedures return at most CONTACT_UNREAD_PAGE rows per event, so a
+    // user past that read 50 + 50 on the Task badge whatever the real number.
+    // contact_unread_count has the real number per event (same rule); only the
+    // rows the procedures did not return are added, to the event's own tab.
+    // Without the routine the badge is what it was.
+    try {
+      const res = await this._optionalYpProcResult('contact_unread_count', this.uid);
+      if (res.ok) {
+        const listed = new Map();
+        for (const r of contactRows) listed.set(r.event, (listed.get(r.event) || 0) + 1);
+        for (const r of res.rows) {
+          if (!r || !r.event) continue;
+          const extra = (parseInt(r.cnt, 10) || 0) - (listed.get(r.event) || 0);
+          if (extra > 0) {
+            const bucket = bucketOf({ event: r.event, event_type: 'contact' });
+            if (Object.prototype.hasOwnProperty.call(counts, bucket)) counts[bucket] += extra;
+          }
+        }
+      }
+    } catch (e) {
+      this.debug('[ACTIVITY] unread_counts: contact_unread_count skipped', e && e.message);
+    }
 
     // 1. The rollup categories + hub invites + refused invitations + workspace
     //    moves. Already bucket-stamped; bucketOf is idempotent on them. A
