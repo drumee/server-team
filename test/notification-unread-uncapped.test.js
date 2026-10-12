@@ -347,3 +347,108 @@ test('All (no tab) and Unread ON never use activity_get_feed_bucket', async () =
     assert.ok(!ctx.calls.some(([p]) => p === 'activity_get_feed_bucket'), JSON.stringify(input));
   }
 });
+
+// ---- prod audit 2026-10-12: the 5 remaining badge / list disagreements ----
+
+test('a workspace invitation the user wrote to themself is neither counted nor listed', async () => {
+  const activity = base({
+    async _callUserProc(proc) {
+      if (proc === 'notification_center_next') return [];
+      if (proc === 'notification_hub_invites') {
+        return [
+          {id: 985, author_id: 'me', ctime: 9, data: '{"hub_id":"h1"}'},
+          {id: 850, author_id: 'liam', ctime: 8, data: '{"hub_id":"h2"}'},
+        ];
+      }
+      return [];
+    },
+    async _storeRollups() {},
+  });
+  const items = await activity._notificationRollups();
+  assert.deepEqual(items.map((r) => r.key_id), ['850']);
+});
+
+test('Unread OFF on All lists the invitation rollups and drops their raw unread copies', async () => {
+  const rawInvite = {id: 1060, event: 'hub_invite_received', event_type: 'contact', timestamp: 3, is_read: 0, data: '{}', feed_page_source: 'base'};
+  const readInvite = {...rawInvite, id: 1001, is_read: 1, timestamp: 2};
+  const p1 = feedContext({
+    input: {page: 1, unread_only: 0},
+    baseRows: [task(1), rawInvite, readInvite],
+    rollups: [
+      {category: 'hub_invite', key_id: '1060', hub_id: 'h1', ctime: 3},
+      {category: 'contact', key_id: 'inviter', drumate_id: 'inviter', ctime: 1},
+    ],
+  });
+  await p1.activity.get_feed();
+  const ids = p1.listed().map((r) => r.category || r.id);
+  assert.ok(ids.includes('hub_invite'), 'the hub-invite rollup is listed');
+  assert.ok(ids.includes('contact'), 'a pending invitation with no raw row is listed');
+  assert.ok(!ids.includes(1060), 'the raw unread copy is dropped');
+  assert.ok(ids.includes(1001), 'a read invitation keeps its raw row');
+  const p2 = feedContext({input: {page: 2, unread_only: 0}, baseRows: [rawInvite, readInvite]});
+  await p2.activity.get_feed();
+  assert.deepEqual(p2.listed().map((r) => r.id), [1001]);
+});
+
+const scheduleRollup = {category: 'media', item_filetype: 'schedule', cnt: 1, item_filename: 'Sprint review', hub_id: 'h9', key_id: 'n1', ctime: 5};
+const readInvitation = {id: 77, event: 'meeting_notice', event_type: 'contact', is_read: 1,
+  data: JSON.stringify({kind: 'invite', title: 'Sprint review', hub_id: 'h9'})};
+
+test('a read meeting invitation covers its scheduled-meeting rollup in the feed', async () => {
+  const activity = base({
+    async _optionalUserProc(proc, uid, page, bucket) {
+      assert.deepEqual([proc, uid, page, bucket], ['activity_get_feed_bucket', 'me', 1, 'meeting']);
+      return {ok: true, rows: [{...readInvitation}]};
+    },
+  });
+  const out = await activity._stampMeetingRollups([{...scheduleRollup}]);
+  assert.deepEqual(out, []);
+  // Without the routine: as before, the rollup stays.
+  const old = base({async _optionalUserProc() { return {ok: false, rows: []}; }, yp: {await_proc: async () => []}});
+  assert.equal((await old._stampMeetingRollups([{...scheduleRollup}])).length, 1);
+});
+
+test('unread_counts: a covered meeting rollup and an already-counted workspace move are not counted', async () => {
+  let sent;
+  const activity = base({
+    input: {use: () => undefined},
+    output: {data: (d) => { sent = d; return d; }},
+    yp: {await_proc: async () => []},
+    async _optionalYpProc() { return []; },
+    async _optionalYpProcResult() { return {ok: false, rows: []}; },
+    async _optionalUserProc() { return {ok: true, rows: [{...readInvitation}]}; },
+    async _notificationRollups() {
+      return [
+        {...scheduleRollup},
+        {category: 'workspace_move', key_id: '119628', ctime: 4},
+        {category: 'workspace_move', key_id: '5', ctime: 3},
+      ];
+    },
+    async _callUserProc(proc) {
+      if (proc === 'mfs_get_unread_count') return [{unread_count: 5}];
+      if (proc === 'mfs_get_activity_feed') return [{id: 119628, event: 'media.workspace_move'}, {id: 119627, event: 'media.move'}];
+      return [];
+    },
+    async _newFilesByHub() { return []; },
+  });
+  await activity.unread_counts();
+  assert.equal(sent.meeting, 0);
+  assert.equal(sent.files, 6); // 5 changelog rows + the move whose row is not on page 1
+  assert.equal(sent.all, 6);
+});
+
+test('Unread OFF lists every unread share open even past the 50 newest opens', async () => {
+  const calls = [];
+  const ctx = feedContext({input: {page: 1, unread_only: 0, bucket: 'files'}, baseRows: [], bucketRows: []});
+  ctx.activity.yp = {await_proc: async (proc, uid, unreadOnly) => {
+    calls.push([proc, unreadOnly]);
+    if (proc !== 'secure_share_open_feed') return [];
+    return unreadOnly
+      ? [{id: 276, last_seen_at: 1, is_read: 0}, {id: 900, last_seen_at: 9, is_read: 0}]
+      : [{id: 900, last_seen_at: 9, is_read: 0}, {id: 899, last_seen_at: 8, is_read: 1}];
+  }};
+  await ctx.activity.get_feed();
+  const opens = ctx.listed().filter((r) => r.category === 'share_open').map((r) => r.id).sort();
+  assert.deepEqual(opens, [276, 899, 900]);
+  assert.deepEqual(calls.filter(([p]) => p === 'secure_share_open_feed'), [['secure_share_open_feed', 0], ['secure_share_open_feed', 1]]);
+});
