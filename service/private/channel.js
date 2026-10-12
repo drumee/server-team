@@ -2036,13 +2036,32 @@ class __private_channel extends Entity {
     ) return this.output.list([]);
     const order = this.input.use(Attr.order, "desc");
     const page = this.input.use(Attr.page) || 1;
-    let data = await this.db.await_proc(
-      "channel_file_thread_list_by_folder",
-      this.uid,
-      `${folder_nid}`,
-      order,
-      page,
-    );
+    // topic_id: the folder chat topic the list is for — a thread belongs to
+    // the topic it was started in (channel_file_thread_set_topic). Absent or
+    // "all" lists the whole folder.
+    const topic_id = this.input.use("topic_id");
+    let data;
+    if (isEmpty(topic_id) || `${topic_id}` === "all") {
+      data = await this.db.await_proc(
+        "channel_file_thread_list_by_folder",
+        this.uid,
+        `${folder_nid}`,
+        order,
+        page,
+      );
+    } else {
+      if (isTopicId(topic_id) && !(await this._topicInFolder(topic_id, folder_nid))) {
+        return this.output.list([]);
+      }
+      data = await this.db.await_proc(
+        "channel_file_thread_list_by_topic",
+        this.uid,
+        `${folder_nid}`,
+        isTopicId(topic_id) ? `${topic_id}` : "general",
+        order,
+        page,
+      );
+    }
     const { allowed } = await this._filterAccessibleFileThreads(data);
     this.output.list(allowed);
   }
@@ -2266,6 +2285,13 @@ class __private_channel extends Entity {
     const is_new = Number(root.is_new) === 1;
     if (isEmpty(file_thread_id)) {
       return this.output.data({ status: "POST_FAILED" });
+    }
+    // A new thread belongs to the folder chat topic it was started from: its
+    // root card goes to that topic's chat, and the topic lists the thread.
+    // Not a topic of this folder -> the thread stays outside any topic.
+    const topic_id = this.input.use("topic_id");
+    if (is_new && isTopicId(topic_id) && (await this._topicInFolder(topic_id, folder_nid))) {
+      await this.db.await_proc("channel_file_thread_set_topic", file_thread_id, `${topic_id}`);
     }
 
     // Attachments: copy into sbox + promote staged device uploads into the
