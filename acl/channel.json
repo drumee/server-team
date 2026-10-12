@@ -925,7 +925,7 @@
       }
     },
     "search": {
-      "doc": "Full-text (LIKE) search over the current hub's channel messages, scoped to ONE conversation. With no file_thread_id it searches the workspace/folder team chat (file_thread_id IS NULL); with file_thread_id it searches that file thread's child messages. Returns up to 45 matching previews newest-first via channel_search_scoped. Powers the chat-header search field.",
+      "doc": "Full-text (LIKE) search over the current hub's channel messages, scoped to ONE conversation. A message matches on its text OR on the filename of one of its attachments. With no file_thread_id it searches the workspace/folder team chat (file_thread_id IS NULL); with file_thread_id it searches that file thread's child messages. The pattern is literal (% and _ are not wildcards). Returns up to 45 matching previews newest-first via channel_search_scoped. Powers the chat-header search field.",
       "scope": "hub",
       "permission": {
         "src": "read"
@@ -959,6 +959,7 @@
             "author_id": { "type": "string", "doc": "UID of the message author" },
             "ctime": { "type": "number", "doc": "Unix timestamp when the message was posted" },
             "preview": { "type": "string", "doc": "First 150 chars of the message body" },
+            "match_filename": { "type": "string", "doc": "Filename of the first attachment that matched, or null when the message text matched" },
             "firstname": { "type": "string", "doc": "Author first name" },
             "lastname": { "type": "string", "doc": "Author last name" },
             "fullname": { "type": "string", "doc": "Author full name" },
