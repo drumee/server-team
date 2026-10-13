@@ -752,6 +752,8 @@ const PROC_RETRY_MS = 60 * 1000;
 // schema not yet applied) still stops costing a dropped yp connection on
 // every refresh.
 const MUTE_PROC_FAILURES = new Map(); // proc name -> consecutive undefined
+const MUTE_PROC_SKIP_UNTIL = new Map(); // proc name -> epoch ms; not MISSING_PROCS,
+// which _optionalYpProc sets on a single failure of the same routines
 const MUTE_PROC_LATCH = 3;
 
 // unread_counts `files_since`: the web client's per-workspace "Files tab last
@@ -3393,12 +3395,12 @@ class MfsActivity extends Entity {
   // routine for PROC_RETRY_MS. Any answer clears both.
   async _muteProc(name) {
     const now = Date.now();
-    const retryAfter = MISSING_PROCS.get(name);
-    if (retryAfter && now < retryAfter) return undefined;
+    const skipUntil = MUTE_PROC_SKIP_UNTIL.get(name);
+    if (skipUntil && now < skipUntil) return undefined;
     const rows = await this.yp.await_proc(name, this.uid);
     if (rows !== undefined) {
       MUTE_PROC_FAILURES.delete(name);
-      MISSING_PROCS.delete(name);
+      MUTE_PROC_SKIP_UNTIL.delete(name);
       return rows;
     }
     const failures = (MUTE_PROC_FAILURES.get(name) || 0) + 1;
@@ -3408,7 +3410,7 @@ class MfsActivity extends Entity {
       return undefined;
     }
     MUTE_PROC_FAILURES.delete(name);
-    MISSING_PROCS.set(name, now + PROC_RETRY_MS);
+    MUTE_PROC_SKIP_UNTIL.set(name, now + PROC_RETRY_MS);
     this.warn(`[ACTIVITY] ${name} failed ${failures} times in a row; muted chats are not hidden for ${PROC_RETRY_MS / 1000}s`);
     return undefined;
   }

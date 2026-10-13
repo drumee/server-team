@@ -169,6 +169,18 @@ test('get_feed drops stored copies of a muted chat and keeps the paged base rows
   assert.ok(ids.includes(`h-nid-${MUTED_HUB}`) && ids.includes(`m-${MUTED_PEER}`), JSON.stringify(ids));
 });
 
+test('one failed mute_state read elsewhere does not un-hide muted chats', async () => {
+  // activity.mute_state (panel boot) reads the same routine through
+  // _optionalYpProc, which cools a routine down after a single failure.
+  const boot = activity({ hubMutes: undefined });
+  assert.deepEqual(await boot._optionalYpProc('notification_mute_state', boot.uid), []);
+  const a = activity({
+    hubMutes: [{ hub_id: MUTED_HUB }],
+    proc: { notification_center_next: [teamchat(MUTED_HUB), teamchat(OPEN_HUB)] },
+  });
+  assert.deepEqual((await a._notificationRollups()).map((r) => r.hub_id), [OPEN_HUB]);
+});
+
 // Runs last: it leaves notification_mute_state latched for PROC_RETRY_MS.
 test('a mute routine failing three times in a row is skipped for a while', async () => {
   const run = async () => {

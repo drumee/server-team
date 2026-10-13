@@ -876,7 +876,7 @@
       ]
     },
     "mute_state": {
-      "doc": "The caller's chat mute state. A muted chat (a workspace, a person, or everything) raises no popup, OS notification, sound or mobile push, and its rows leave the Notification Center and every unread badge; meeting start and end notices and bookmarked rows stay. Answers global 0 with an empty hubs list when nothing is muted, which is also what it answers before the schema is applied, so nothing is hidden on a missing routine.",
+      "doc": "The caller's chat mute state. A muted chat (a workspace, a person, or everything) raises no popup, OS notification, sound or mobile push, and its new notifications leave the Notification Center and every unread badge; meeting start and end notices and bookmarked rows stay, and already-read chat history still lists under Unread OFF. Answers global 0 with an empty hubs list when nothing is muted, which is also what it answers before the schema is applied, so nothing is hidden on a missing routine.",
       "scope": "hub",
       "permission": {
         "src": "read"
@@ -906,7 +906,7 @@
     },
 
     "mute_set": {
-      "doc": "Mute or unmute the chat notifications for one workspace or for all of them: popups, OS notifications, mobile push, and the chat rows in the feed and the unread badges (meeting start and end notices and bookmarks stay). Muting globally clears the per-workspace mutes, and unmuting globally clears everything, so the stored state always has one interpretation. Returns the full resulting state so the client can refresh its cache from the write itself. Allowed to all members, like dismiss_rollup: this writes the CALLER'S OWN preference row, keyed on the session uid, and changes nothing about the workspace - so a read-only member must still be able to silence a workspace that is shouting at them.",
+      "doc": "Mute or unmute the chat notifications for one workspace or for all of them: popups, OS notifications, mobile push, and its new chat notifications in the feed and the unread badges (meeting start and end notices and bookmarks stay). Muting globally clears the per-workspace mutes, and unmuting globally clears everything, so the stored state always has one interpretation. Returns the full resulting state so the client can refresh its cache from the write itself. Allowed to all members, like dismiss_rollup: this writes the CALLER'S OWN preference row, keyed on the session uid, and changes nothing about the workspace - so a read-only member must still be able to silence a workspace that is shouting at them.",
       "scope": "hub",
       "permission": {
         "src": "read"
@@ -962,7 +962,7 @@
       "errors": []
     },
     "mute_peer_set": {
-      "doc": "Mute or unmute the direct messages from one person: popups, OS notifications, mobile push, and their rows in the feed and the unread badges. Writes the caller's own preference row (notification_mute_peer). Answers the full state, like mute_set. The caller sends their own hub (Visitor.id) as hub_id.",
+      "doc": "Mute or unmute the direct messages from one person: popups, OS notifications, mobile push, and their new notifications in the feed and the unread badges. Writes the caller's own preference row (notification_mute_peer). Answers the full state, like mute_set. The caller sends their own hub (Visitor.id) as hub_id.",
       "scope": "hub",
       "permission": { "src": "read" },
       "params": {
