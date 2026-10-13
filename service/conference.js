@@ -288,7 +288,12 @@ class conference extends __yp {
       this.warn("127:ENEXPECTED  CASE");
     }
 
-    await this.pushUserOnlineStatus();
+    // Fire-and-forget: one Redis send per online contact socket, sequential,
+    // used to sit between the joiner and its own join reply (and so between
+    // a 1:1 callee's Accept and the call going live).
+    Promise.resolve()
+      .then(() => this.pushUserOnlineStatus())
+      .catch((e) => this.warn && this.warn("join: online status push failed", e && e.message));
     let data = {
       permission: user.permission,
       details,
