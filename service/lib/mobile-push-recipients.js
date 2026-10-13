@@ -1,6 +1,7 @@
 const BROADCAST_EVENTS = new Set(['channel.post']);
 // Chat pushes the user can mute (activity.mute_set / mute_peer_set). Tasks,
-// mentions in tasks and meeting reminders are not chat and keep ringing.
+// mentions in tasks and meeting reminders are not chat and keep ringing, and
+// so does an instant-meeting card posted in a muted chat (see unmutedUids).
 const MUTABLE_EVENTS = new Set(['chat.post', 'channel.post']);
 const MAX_RECIPIENTS = 100;
 const MEMBER_PAGE_SIZE = 45;
@@ -70,10 +71,12 @@ function eligibleRecipientUids(event, currentHubUids = []) {
 /**
  * Drop the recipients who muted this chat push. `mutedRows` is the result of
  * yp.notification_muted_uids; anything but rows filters nothing (fail open:
- * a lookup that broke must not silence a phone).
+ * a lookup that broke must not silence a phone). `isMeeting` marks an
+ * instant-meeting start/end card: muting a chat silences its messages, not the
+ * meetings started in it, which the Notification Center keeps showing too.
  */
-function unmutedUids(event, uids, mutedRows) {
-  if (!MUTABLE_EVENTS.has(event && event.type)) return uids;
+function unmutedUids(event, uids, mutedRows, isMeeting = false) {
+  if (!MUTABLE_EVENTS.has(event && event.type) || isMeeting) return uids;
   const muted = new Set(
     (Array.isArray(mutedRows) ? mutedRows : [])
       .map(row => String((row && row.uid) || ''))

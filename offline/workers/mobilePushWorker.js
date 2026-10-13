@@ -24,6 +24,7 @@ const {
 } = require('../../service/lib/mobile-push-authorization');
 const {
   createMobilePushContent,
+  isMeetingCard,
 } = require('../../service/lib/mobile-push-content');
 const { sqlString } = require('../../service/lib/sql-literal');
 
@@ -72,7 +73,27 @@ async function withoutMuted(event, uids) {
     logError('mobile_push_mute_lookup_failed', error, {event_id: event.event_id});
     return uids;
   }
-  return unmutedUids(event, uids, rows);
+  if (!rows.some(row => row && row.uid)) return uids;
+  return unmutedUids(event, uids, rows, await isMeetingEvent(event));
+}
+
+// An instant-meeting start/end is a channel.post whose body is the
+// [[MEETING:…]] card; it still rings for a muted chat. Read only when someone
+// muted, so a plain event costs nothing extra. A failed read counts as a chat
+// message (still filtered): a missed meeting ring is better than a leaked chat.
+async function isMeetingEvent(event) {
+  if (event.type !== 'channel.post' || !event.hub_id || !event.key_id) return false;
+  try {
+    const row = toArray(await yp.await_proc(
+      'forward_proc',
+      event.hub_id,
+      'channel_get_message',
+      `${sqlString(event.key_id)}`,
+    ))[0];
+    return !!row && isMeetingCard(row.message);
+  } catch (_) {
+    return false;
+  }
 }
 
 async function eligibleUids(event) {

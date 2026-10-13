@@ -90,6 +90,12 @@ test('muted recipients are dropped from chat pushes', () => {
   assert.deepEqual(unmutedUids({type: 'chat.post'}, uids, [{uid: 'u1'}, {uid: 'u3'}]), ['u2']);
 });
 
+test('a meeting card still reaches a recipient who muted the chat', () => {
+  const uids = ['u1', 'u2'];
+  assert.deepEqual(unmutedUids({type: 'channel.post'}, uids, [{uid: 'u1'}], true), uids);
+  assert.deepEqual(unmutedUids({type: 'channel.post'}, uids, [{uid: 'u1'}], false), ['u2']);
+});
+
 test('mute never touches non-chat pushes', () => {
   const uids = ['u1', 'u2'];
   for (const type of ['task.assigned', 'task.mention', 'room.reminder']) {
