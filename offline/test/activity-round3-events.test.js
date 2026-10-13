@@ -771,6 +771,8 @@ const bucketHelpers = new Function(
          } };
        }
        _optionalYpProc = GUARD;
+       // No chat is muted here (see test/activity-muted-chat-rows.test.js).
+       async _chatMutes() { return { global: 0, hubs: new Set(), peers: new Set() }; }
        ${sliceMethod('mark_all_read')}
        ${sliceMethod('_markChangelogRead')}
      }

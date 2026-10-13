@@ -149,6 +149,8 @@ test('Mark as all read on Task clears every unread task row in one call per even
   const yp = [];
   const marked = [];
   const context = {
+    // No chat is muted in this case (see activity-muted-chat-rows.test.js).
+    async _chatMutes() { return {global: 0, hubs: new Set(), peers: new Set()}; },
     uid: 'me',
     input: {get: () => 0, use: (k) => (k === 'bucket' ? 'task' : undefined)},
     debug: () => undefined,
