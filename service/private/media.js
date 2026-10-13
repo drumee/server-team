@@ -3080,6 +3080,7 @@ class __private_media extends Media {
       let { metadata } = node;
       metadata = cleanSeen(metadata);
       metadata.md5Hash = md5Hash;
+      metadata.modified_by = this.uid;
       let { mtime } = await this.db.await_proc("mfs_set_metadata", node.id, metadata, 1);
       node.mtime = mtime;
       node.metadata = metadata;
@@ -3189,7 +3190,8 @@ class __private_media extends Media {
       }
 
       const hash = createHash("md5").update(readFileSync(filepath)).digest("hex");
-      const merged = cleanSeen({ ...metadata, md5Hash: hash });
+      // modified_by: who last changed the content, for the Details card.
+      const merged = cleanSeen({ ...metadata, md5Hash: hash, modified_by: this.uid });
 
       const old_filesize = attr.filesize || 0;
       const old_category = attr.category || attr.filetype;
@@ -3338,6 +3340,7 @@ class __private_media extends Media {
     let { metadata } = node;
     metadata = cleanSeen(metadata);
     metadata.md5Hash = md5Hash;
+    metadata.modified_by = this.uid;
 
     // Snapshot the pre-replace blob into file_version before the new
     // upload overwrites it. Skipped automatically when md5 matches.

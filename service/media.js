@@ -2932,7 +2932,46 @@ class __media extends Mfs {
         }
       }
     }
+    if (this.input.get('modifier')) node = await this._withModifier(node);
     this.output.data(node);
+  }
+
+  /**
+   * Who last changed the file, for the Details card ("Modified by"). A content
+   * save stamps metadata.modified_by (office editor, save, replace, rotate). A
+   * file nobody has changed since it was made falls back to its maker:
+   * mfs_get_path's row for the node itself carries media.owner_id, while
+   * mfs_access_node's firstname/lastname belong to origin_id (for a file made
+   * from a template, the template's account). Never for a guest - a share-link
+   * viewer gets the node as before.
+   * @param {Object} node granted node
+   * @returns {Promise<Object>} the node, with modified_by + modified_by_name when known
+   */
+  async _withModifier(node) {
+    const guest_id = Cache.getSysConf("guest_id");
+    if (!this.uid || [ID_NOBODY, guest_id].includes(this.uid)) return node;
+    try {
+      let meta = node.metadata || {};
+      if (typeof meta === "string") meta = JSON.parse(meta || "{}");
+      let modified_by = meta.modified_by;
+      if (!modified_by) {
+        const nid = `${node.nid || node.id}`;
+        const rows = toArray(await this.db.await_proc("mfs_get_path", nid, this.uid));
+        const self = rows.find((r) => r && `${r.nid}` === nid);
+        modified_by = self && self.owner_id;
+      }
+      if (!modified_by) return node;
+      const u = await this.yp.await_proc("get_user", modified_by);
+      if (!u || !u.id || u.id === ID_NOBODY) return { ...node, modified_by };
+      let p = u.profile || {};
+      if (typeof p === "string") p = JSON.parse(p || "{}");
+      const modified_by_name =
+        u.fullname || [p.firstname, p.lastname].filter(Boolean).join(" ") || p.email || "";
+      return { ...node, modified_by, modified_by_name };
+    } catch (e) {
+      this.warn("get_node_attr: modifier lookup failed", e && e.message);
+      return node;
+    }
   }
 
   /**
