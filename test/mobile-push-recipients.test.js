@@ -7,6 +7,7 @@ const {
   hubMemberPageArguments,
   MAX_RECIPIENTS,
   pagedHubMembers,
+  unmutedUids,
 } = require('../service/lib/mobile-push-recipients');
 
 test('uses a fixed database page size for hub recipient resolution', () => {
@@ -78,4 +79,26 @@ test('pages current hub membership up to the recipient cap', async () => {
 
   assert.deepEqual(pages, [1, 2, 3]);
   assert.equal(members.length, MAX_RECIPIENTS);
+});
+
+test('muted recipients are dropped from chat pushes', () => {
+  const uids = ['u1', 'u2', 'u3'];
+  assert.deepEqual(
+    unmutedUids({type: 'channel.post'}, uids, [{uid: 'u2'}]),
+    ['u1', 'u3'],
+  );
+  assert.deepEqual(unmutedUids({type: 'chat.post'}, uids, [{uid: 'u1'}, {uid: 'u3'}]), ['u2']);
+});
+
+test('mute never touches non-chat pushes', () => {
+  const uids = ['u1', 'u2'];
+  for (const type of ['task.assigned', 'task.mention', 'room.reminder']) {
+    assert.deepEqual(unmutedUids({type}, uids, [{uid: 'u1'}]), uids);
+  }
+});
+
+test('a failed mute lookup filters nothing', () => {
+  const uids = ['u1', 'u2'];
+  assert.deepEqual(unmutedUids({type: 'channel.post'}, uids, undefined), uids);
+  assert.deepEqual(unmutedUids({type: 'channel.post'}, uids, [{}, null]), uids);
 });
