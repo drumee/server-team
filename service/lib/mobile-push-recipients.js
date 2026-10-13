@@ -1,4 +1,7 @@
 const BROADCAST_EVENTS = new Set(['channel.post']);
+// Chat pushes the user can mute (activity.mute_set / mute_peer_set). Tasks,
+// mentions in tasks and meeting reminders are not chat and keep ringing.
+const MUTABLE_EVENTS = new Set(['chat.post', 'channel.post']);
 const MAX_RECIPIENTS = 100;
 const MEMBER_PAGE_SIZE = 45;
 const CAN_READ = 0b0000010;
@@ -64,8 +67,24 @@ function eligibleRecipientUids(event, currentHubUids = []) {
   return [...candidates].slice(0, MAX_RECIPIENTS);
 }
 
+/**
+ * Drop the recipients who muted this chat push. `mutedRows` is the result of
+ * yp.notification_muted_uids; anything but rows filters nothing (fail open:
+ * a lookup that broke must not silence a phone).
+ */
+function unmutedUids(event, uids, mutedRows) {
+  if (!MUTABLE_EVENTS.has(event && event.type)) return uids;
+  const muted = new Set(
+    (Array.isArray(mutedRows) ? mutedRows : [])
+      .map(row => String((row && row.uid) || ''))
+      .filter(Boolean),
+  );
+  return muted.size ? uids.filter(uid => !muted.has(String(uid))) : uids;
+}
+
 module.exports = {
   BROADCAST_EVENTS,
+  MUTABLE_EVENTS,
   MEMBER_PAGE_SIZE,
   MAX_RECIPIENTS,
   activeHubMemberUids,
@@ -73,4 +92,5 @@ module.exports = {
   hubMemberPageArguments,
   pagedHubMembers,
   privilegeAllows,
+  unmutedUids,
 };
