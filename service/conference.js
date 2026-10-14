@@ -27,6 +27,7 @@ const {
   onlyMembers,
   onRoomEmptied,
 } = require("./lib/meeting-lifecycle");
+const { earlyArrival } = require("./lib/meeting-early");
 const { markFeatureUsage } = require("./lib/feature-usage");
 class conference extends __yp {
 
@@ -80,6 +81,16 @@ class conference extends __yp {
     }
     if (!metadata.type) {
       metadata.type = this.input.need(Attr.type);
+    }
+    // Anyone but the organizer early for a scheduled meeting waits: nothing is
+    // joined, so the room is not started and nobody is told it was
+    // (lib/meeting-early). No `user` in the reply, so a client that does not
+    // know `waiting` stops at its permission check instead of entering.
+    const early = await earlyArrival(this, {
+      hub_id, uid: metadata.uid, type: metadata.type, socket_id,
+    });
+    if (early) {
+      return this.output.data({ status: "waiting", reason: "MEETING_NOT_STARTED", ...early });
     }
     let args = { room_id, hub_id, socket_id };
     let p = await this.yp.await_proc("conference_join", args, metadata);
