@@ -11,6 +11,7 @@ const stub = (rel, exports) => {
   require.cache[p] = { id: p, filename: p, loaded: true, exports };
 };
 const PUBLIC = "360deefd360def00";
+const sent = [];
 require.cache[require.resolve("@drumee/server-essentials")] = {
   exports: {
     Attr: { id: "id", nid: "nid", flag: "flag", password: "password", days: "days", hours: "hours",
@@ -18,7 +19,8 @@ require.cache[require.resolve("@drumee/server-essentials")] = {
       etime: "etime", attendees: "attendees", profile: "profile" },
     Privilege: { write: 15, download: 7 },
     Cache: { getSysConf: (k) => (k === "public_id" ? PUBLIC : null), message: () => "" },
-    sysEnv: () => ({}), RedisStore: {}, toArray: (v) => (Array.isArray(v) ? v : v == null ? [] : [v]),
+    sysEnv: () => ({}), toArray: (v) => (Array.isArray(v) ? v : v == null ? [] : [v]),
+    RedisStore: { sendData: async (payload, dest) => { sent.push({ payload, dest }); } },
   },
 };
 stub("service/room.js", class {});
@@ -54,6 +56,7 @@ function make({ input = {}, nodes = {}, publicPriv = 0, callerPriv = 63, uid = O
     exception: { user: (code) => { out.error = code; }, forbiden: () => { out.error = "FORBIDDEN"; } },
     output: { data: (d) => { out.data = d; } },
     randomString: () => "r",
+    payload: (data, opt) => ({ ...data, ...opt }),
     debug: () => {},
     _index_meeting: async () => {},
     _unindex_meeting: async () => {},
@@ -82,6 +85,35 @@ const fileNode = (id) => ({ id, filetype: "document", filename: "f" });
     assert.deepStrictEqual(set[2].content.attachments, [F1, F2]);
     assert.strictEqual(set[2].content.title, "M");
     assert.ok(!calls.some((c) => c[0] === "permission_grant"));
+  }
+  // link_files tells the hub's sockets, so an open Meet tab refetches the meeting
+  {
+    sent.length = 0;
+    const { self } = make({
+      input: { nid: MEET, file_nids: [F1] },
+      nodes: { [MEET]: meetingNode({ created_by: OWNER }), [F1]: fileNode(F1) },
+    });
+    await self.link_files();
+    assert.strictEqual(sent.length, 1);
+    assert.strictEqual(sent[0].payload.service, "room.update");
+    assert.strictEqual(sent[0].payload.nid, MEET);
+    assert.strictEqual(sent[0].payload.hub_id, "hhhhhhhhhhhhhhhh");
+    // A call that links nothing new (the file is already on it) tells nobody.
+    sent.length = 0;
+    const again = make({
+      input: { nid: MEET, file_nids: [F1] },
+      nodes: { [MEET]: meetingNode({ created_by: OWNER, attachments: [F1] }), [F1]: fileNode(F1) },
+    });
+    await again.self.link_files();
+    assert.deepStrictEqual(again.out.data.attachments, [F1]);
+    assert.strictEqual(sent.length, 0);
+    // A refused call changes nothing, so it tells nobody.
+    sent.length = 0;
+    const refused = make({ input: { nid: MEET, file_nids: [F1] }, uid: "someoneelse00000",
+      nodes: { [MEET]: meetingNode({ created_by: OWNER }), [F1]: fileNode(F1) } });
+    await refused.self.link_files();
+    assert.strictEqual(refused.out.error, "NOT_MEETING_OWNER");
+    assert.strictEqual(sent.length, 0);
   }
   // link_files mirrors an existing public grant onto the new files only
   {
