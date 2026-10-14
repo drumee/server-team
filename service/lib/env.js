@@ -160,6 +160,9 @@ function platform() {
   // every account is eligible — today's behaviour, which makes the rollout
   // order free: ship, then set the date in myDrumee.json.
   platform.tours_new_user_since = ~~global.myDrumee.tours_new_user_since;
+  // Lets phones receive contextual tours (ui-team libs/tutorial-tours isMobile).
+  // 0/absent = phones are skipped, the behaviour before the phone layout.
+  platform.mobile_tours = global.myDrumee.mobile_tours ? 1 : 0;
   platform.cdnHost = global.myDrumee.cdnHost;
   platform.version = global.VERSION;
   platform.TfaMethods = TfaMethods;
