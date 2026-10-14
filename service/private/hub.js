@@ -185,8 +185,72 @@ class __private_hub extends Hub {
     const type = this.input.need(Attr.type);
     const page = this.input.use(Attr.page, 1);
     let members = await this._members_by_type(type, page);
+    // Opt-in: the caller wants each member's OWN profile name, not the label
+    // the viewer's contact book holds for them (see _applyProfileNames).
+    if (this.input.use("names") === "profile") {
+      members = await this._applyProfileNames(members);
+    }
     members = await this._hydrateMemberProfileNames(members, { type, page });
     this.output.list(members);
+  }
+
+  /**
+   * Replace contact-book names with the members' live profile names.
+   *
+   * hub_get_members_by_type overwrites firstname / lastname / fullname /
+   * surname from the REQUESTING user's contact book. A contact keeps a copy of
+   * the name taken when it was created — contact_sync only refreshes the
+   * admin-assigned ones — so after a member renames their profile, everyone
+   * holding them as a contact keeps seeing the old name. In a meeting that is
+   * visible next to the live one: the video tile carries the name the member
+   * broadcasts from their own profile, the roster row the stale contact copy.
+   *
+   * Opt-in (`names: "profile"`) so every other surface keeps its current
+   * contact-book naming. One query for the whole page. A member whose profile
+   * has no name keeps the row as it was (contact name, then the email
+   * fallbacks _hydrateMemberProfileNames already provides).
+   */
+  async _applyProfileNames(members) {
+    const rows = toArray(members);
+    const ids = [
+      ...new Set(rows.map((m) => this._cleanMemberName(m && m.id)).filter(Boolean)),
+    ];
+    if (!ids.length) return rows;
+    let profiles;
+    try {
+      profiles = toArray(
+        await this.yp.await_query(
+          `SELECT id, firstname, lastname FROM yp.drumate WHERE id IN (${ids
+            .map(() => "?")
+            .join(",")})`,
+          ...ids
+        )
+      );
+    } catch (e) {
+      this.syslog(
+        "get_members_by_type profile names lookup failed",
+        stringify({ uid: this.uid, error: e && e.message })
+      );
+      return rows;
+    }
+    const byId = new Map(
+      profiles.filter((p) => p && p.id).map((p) => [`${p.id}`, p])
+    );
+    return rows.map((member) => {
+      const profile = byId.get(this._cleanMemberName(member && member.id));
+      if (!profile) return member;
+      const firstname = this._cleanMemberName(profile.firstname);
+      const lastname = this._cleanMemberName(profile.lastname);
+      const name = [firstname, lastname].filter(Boolean).join(" ");
+      if (!name) return member;
+      return {
+        ...member,
+        firstname: firstname || null,
+        lastname: lastname || null,
+        fullname: name,
+        surname: name,
+      };
+    });
   }
 
   _cleanMemberName(value) {
