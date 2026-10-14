@@ -98,7 +98,7 @@
             },
             "can_write": {
               "type": "integer",
-              "doc": "1 when the caller may edit this row from the Calendar. Folder-owned rows answer 0: they are edited in their folder. Meetings answer 1 only for the creator, matching room.update's creator-only rule"
+              "doc": "1 when the caller may edit this row from the Calendar. Personal tasks answer 1. A workspace task answers 1 when the caller's role in that workspace carries the write bit, read from the workspace's own permissions (mfs_access_node on the workspace root), and 0 for view and chat members or when that read fails. Meetings answer 1 only for the creator, matching room.update's creator-only rule"
             },
             "recur": {
               "type": "object",
