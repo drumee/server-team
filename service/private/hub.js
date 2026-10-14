@@ -1803,6 +1803,15 @@ class __private_hub extends Hub {
       await this._rememberInvitee(email, drumate, contactBook);
     }
 
+    // Everybody else's view of this workspace's pending invitations (the
+    // Access panel's Pending section, the admin console's Pending card and
+    // its Active directory rows) re-reads on hub.invitations_changed, which
+    // was sent when an invitation was answered or withdrawn but never when
+    // one was SENT, so they sat on the old list until reopened. Before the
+    // reply: entity_sockets is read through this.yp, closed with the request.
+    // Never throws.
+    if (mailQueue.length) await notifyInvitationsChanged(this, hubId);
+
     this.output.data({ results: results.filter(Boolean) });
 
     if (mailQueue.length) {
