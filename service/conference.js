@@ -28,6 +28,8 @@ const {
   onRoomEmptied,
 } = require("./lib/meeting-lifecycle");
 const { earlyArrival } = require("./lib/meeting-early");
+const { isMeetingNode } = require("./lib/meeting-attachments");
+const { sqlString } = require("./lib/sql-literal");
 const { markFeatureUsage } = require("./lib/feature-usage");
 class conference extends __yp {
 
@@ -61,6 +63,33 @@ class conference extends __yp {
    *
    * @returns
    */
+  /**
+   * The room a join lands in. A workspace has one meeting room, its root node:
+   * that is what web Meet and mobile join, scheduled meeting or not. An invite
+   * link names the meeting node instead, so a guest and the host it waits for
+   * ended up in two different rooms. A meeting node becomes the room it belongs
+   * to, and goes along as access_id: conference_join lets a guest who holds
+   * only the meeting wait in that room for a host. Any other id is kept.
+   *
+   * @param {String} hub_id
+   * @param {String} room_id as the client sent it
+   * @returns {Promise<{room_id: String, access_id: ?String}>}
+   */
+  async _meetingRoom(hub_id, room_id) {
+    if (!room_id) return { room_id, access_id: null };
+    let node;
+    try {
+      node = toArray(await this.yp.await_proc(
+        'forward_proc', hub_id, 'mfs_node_attr', `${sqlString(room_id)}`
+      ))[0];
+    } catch (e) {
+      return { room_id, access_id: null };
+    }
+    const home = node && (node.actual_home_id || node.home_id);
+    if (!isMeetingNode(node) || !home) return { room_id, access_id: null };
+    return { room_id: home, access_id: room_id };
+  }
+
   async join() {
     let sid = this.input.sid();
     let socket_id = this.input.need(Attr.socket_id);
@@ -94,7 +123,9 @@ class conference extends __yp {
     if (early) {
       return this.output.data({ status: "waiting", reason: "MEETING_NOT_STARTED", ...early });
     }
-    let args = { room_id, hub_id, socket_id };
+    let access_id;
+    ({ room_id, access_id } = await this._meetingRoom(hub_id, room_id));
+    let args = { room_id, hub_id, socket_id, access_id };
     let p = await this.yp.await_proc("conference_join", args, metadata);
     this.debug("AAA:69", { args, metadata, p })
     p = toArray(p);
@@ -206,8 +237,13 @@ class conference extends __yp {
     let recipients = attendees;
     let payload = user;
     let details = await this.db.await_proc("mfs_node_attr", room_id);
-    const isFirstJoiner = attendees.length === 0;
-    if ((user.role == "host" || isFirstJoiner) && user.uid == this.uid) {
+    // A guest still waiting for a host neither starts the meeting nor counts
+    // as someone in it (conference_join `waiting`); it is still told when the
+    // meeting starts, being among the recipients.
+    const waiting = (a) => Number(a && a.waiting) === 1;
+    const present = toArray(attendees).filter((a) => !waiting(a));
+    const isFirstJoiner = present.length === 0;
+    if (!waiting(user) && (user.role == "host" || isFirstJoiner) && user.uid == this.uid) {
       await this.inform({ recipients, payload }, "conference.start");
       // Tell the WORKSPACE only when the meeting actually starts. This branch is
       // also entered by a host REjoining (reload, network blip, media Retry) and
@@ -249,7 +285,7 @@ class conference extends __yp {
             // a schedule notice has an invitee list and nobody in the room,
             // a started meeting has people in it. No extra query — both
             // values were already in hand.
-            const roster = [...toArray(attendees), user]
+            const roster = [...present, user]
               .filter(Boolean)
               .map((a) => ({
                 uid: a.uid,
