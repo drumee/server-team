@@ -2999,6 +2999,9 @@ class __private_channel extends Entity {
     if (!row || !row.found) return this.output.data({ found: 0 });
     let message = await this.db.await_proc("channel_get", message_id);
     message.key_id = this.hub.get(Attr.id);
+    // The folder window's Start button checks hub_id before it un-lights
+    // "Join meeting" (same pair onRoomEmptied sends).
+    message.hub_id = message.key_id;
     let recipients = await this.yp.await_proc("entity_sockets", {
       hub_id: message.key_id,
     });

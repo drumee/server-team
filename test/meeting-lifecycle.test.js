@@ -70,6 +70,8 @@ function fakeYp(rows, { db_name = "hub_db" } = {}) {
         const r = byId.get(args[0]);
         const md = JSON.parse((r && r.metadata) || "{}");
         md.meeting_status = "ended";
+        // JSON_INSERT: the first end time wins.
+        if (/'\$\.ended_at'/.test(sql) && md.ended_at == null) md.ended_at = 1700000000;
         if (r) r.metadata = JSON.stringify(md);
         updates.push(args[0]);
         return { affectedRows: 1 };
@@ -196,6 +198,8 @@ async function test(name, fn) {
       assert.strictEqual(payload.model.key_id, "H");
       assert.strictEqual(payload.model.hub_id, "H");
       assert.strictEqual(JSON.parse(payload.model.metadata).meeting_status, "ended");
+      // The card's timeline end time travels with the flip.
+      assert.strictEqual(JSON.parse(payload.model.metadata).ended_at, 1700000000);
       assert.strictEqual(dest.length, 2);
     }
   });
