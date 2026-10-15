@@ -1059,23 +1059,31 @@ class __dmz extends Mfs {
       info.dmz_expiry = rows[0].dmz_expiry;
     }
     info.require_pwd = info.require_password;
-    // In the token's own hub, like every other lookup here: this.db is the
-    // request's vhost, which is not a member's personal space — there the
-    // node came back empty, so the gate had no title and a right password
-    // never showed up as privilege.
-    let node = toArray(await this.yp.await_proc(
-      'forward_proc', info.hub_id, 'mfs_access_node', `${sqlString(this.uid)},${sqlString(info.nid)}`
-    ))[0] || {};
-    if (info.require_pwd && !node.privilege) {
+    // Past the gate only once THIS session gave this link's password. Not the
+    // session's access to the node: a public link grants the node to the one
+    // shared public identity when it is created, so a session that had opened
+    // any other open link used to walk through. A dead or expired link has no
+    // gate, it says so instead.
+    let passed = false;
+    if (info.require_pwd && info.validity == 'TICKET_OK') {
+      try { passed = await this._isSharePasswordOk(token); } catch (e) { passed = false; }
+    }
+    if (info.require_pwd && info.validity == 'TICKET_OK' && !passed) {
       info.status = 'REQUIRED_PASSWORD';
-      // The gate names what it guards (a meeting's title), as the invite card
-      // already did for whoever received the link.
-      info.filename = node.filename || '';
+      // A meeting's gate names it, as the invite card already did for whoever
+      // received the link; any other share keeps its name behind the password.
+      // Looked up in the token's own hub: this.db is the request's vhost, which
+      // is not a member's personal space.
+      let node = toArray(await this.yp.await_proc(
+        'forward_proc', info.hub_id, 'mfs_access_node', `${sqlString(this.uid)},${sqlString(info.nid)}`
+      ))[0] || {};
+      if (isMeetingNode(node)) info.filename = node.filename || '';
       if (!password) {
         return this.output.data(info);
       }
       let res = await this.session.dmz_login(token, password);
       if (res.is_verified) {
+        try { await this._markSharePasswordOk(token); } catch (e) { /* the gate asks again */ }
         res.require_pwd = 0;
         info.status = 'TICKET_OK';
         this.output.data(res);
@@ -1325,8 +1333,9 @@ class __dmz extends Mfs {
    *   - the target is derived from the token, never from client input. A client
    *     cannot name a nid, so it cannot walk out of the share.
    *   - a share that is not plainly open is refused: revoked, expired, invalid,
-   *     locked, password-gated or email-gated all return a status and NO items.
-   *     This endpoint performs no gate, so it must not serve gated content.
+   *     locked or email-gated all return a status and NO items, and so does a
+   *     password-gated one unless this same session already gave its password
+   *     to dmz.login. This endpoint performs no gate of its own.
    *   - a FILE share lists the parent folder hard-filtered to that one file, so
    *     siblings are never exposed (same remap as _loginSecureShare).
    *   - displayed privilege is the anonymous guest's, then clamped again by the
@@ -1354,18 +1363,6 @@ class __dmz extends Mfs {
    * @returns {Promise<{info: object, viewerUid: ?string, legacyPrivilege: ?number}
    *                  |{status: string}>} `status` set means REFUSED, no data.
    */
-  async _passedPasswordGate(info) {
-    try {
-      const rows = await this.yp.await_proc(
-        'forward_proc', info.hub_id, 'mfs_access_node',
-        `${sqlString(this.uid)},${sqlString(info.node_id || info.nid)}`
-      );
-      return (parseInt((toArray(rows)[0] || {}).privilege, 10) || 0) > 0;
-    } catch (e) {
-      return false;
-    }
-  }
-
   async _shareByToken(token, tag) {
     let info = null;
     let viewerUid = null;
@@ -1397,13 +1394,16 @@ class __dmz extends Mfs {
       return { status: info.validity };
     }
     // Gated shares are the gate's business, not these endpoints'. A legacy
-    // link whose password this session already gave (dmz.login then grants
-    // the session the node, the same test it uses to skip the gate) is past
-    // the gate: without this a password-protected meeting never listed its
-    // files.
+    // link passes only once this same session gave its password to dmz.login,
+    // which marks token + session; without that a password-protected meeting
+    // never listed its files.
     if (info.is_locked) return { status: 'TICKET_LOCKED' };
-    if (info.require_password && (info.is_secure || !(await this._passedPasswordGate(info)))) {
-      return { status: 'REQUIRED_PASSWORD' };
+    if (info.require_password) {
+      let passed = false;
+      if (!info.is_secure) {
+        try { passed = await this._isSharePasswordOk(token); } catch (e) { passed = false; }
+      }
+      if (!passed) return { status: 'REQUIRED_PASSWORD' };
     }
     if (info.require_email) return { status: 'REQUIRED_EMAIL' };
     return { info, viewerUid, legacyPrivilege };
@@ -1511,9 +1511,9 @@ class __dmz extends Mfs {
    * come from file/orig, which room.public_link / room.link_files opened to the
    * link identity.
    *
-   * A password-protected (or locked, or email-gated) link answers nothing:
-   * _shareByToken refuses gated shares outright, so the token alone never
-   * leaks the file names the password is meant to protect.
+   * A locked or email-gated link answers nothing, and so does a
+   * password-protected one until this session gave its password to dmz.login:
+   * the token alone never leaks the file names the password protects.
    *
    * Every nid comes through attachmentsOf, which only admits /^[0-9a-f]{16}$/,
    * so interpolating it into the forward_proc argument string is safe.

@@ -430,8 +430,12 @@ class __yp extends Entity {
       "dmz_settings",
       ``
     );
-    info.hours = rows[0].hours;
-    info.days = rows[0].days;
+    // dmz_settings exists only in a workspace's database; a member's personal
+    // space answers no rows.
+    if (rows && rows[0]) {
+      info.hours = rows[0].hours;
+      info.days = rows[0].days;
+    }
     if (info.is_public && !res.guest_name) {
       res.require_name = 1;
     }
