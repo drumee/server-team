@@ -313,6 +313,16 @@
           "type": "string",
           "required": false,
           "doc": "Display name for guest users. Applied to metadata and persisted via cookie_touch when the caller is a guest."
+        },
+        "schedule_id": {
+          "type": "string",
+          "required": false,
+          "doc": "Meeting node id when the join comes from one scheduled meeting (its calendar card or editor). An early invitee then waits for that meeting's start however far off it is (lib/meeting-early)."
+        },
+        "schedule_at": {
+          "type": "integer",
+          "required": false,
+          "doc": "Start (epoch seconds) of the occurrence of schedule_id the calendar card stood for. A recurring series is indexed at its NEXT occurrence once one starts, so this is what lets a member join the one under way (lib/meeting-early)."
         }
       },
       "returns": {

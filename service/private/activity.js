@@ -461,6 +461,27 @@ function stampBuckets(rows) {
   return rows;
 }
 
+// Is this rollup a chat the viewer muted (a workspace, a person, or
+// everything — `mutes` from _chatMutes)? A muted chat leaves the feed and every
+// badge (Aaron 2026-10-13). Meeting start/end rollups bucket as Meeting and
+// are kept. Works on raw notification_center_next rows, mapped rollups and
+// stored copies alike:
+//   teamchat  — by hub_id
+//   chat (DM) — by the peer, rollupDismissKey (drumate_id); never key_id
+//               alone, which is a contact id on copies stored under the
+//               earlier keying
+// Not applied to get_feed's base rows (read chat history, DM @-mentions): they
+// are paged by activity_get_feed_all/_bucket, and dropping rows after the page
+// is read ends paging early on web and mobile. Hiding those belongs in SQL.
+function isMutedChatRow(row, mutes) {
+  if (!row || !mutes) return false;
+  const all = !!mutes.global;
+  if (bucketOf(row) !== BUCKET.chat) return false;
+  if (row.category === 'teamchat') return all || mutes.hubs.has(String(row.hub_id));
+  if (row.category === 'chat') return all || mutes.peers.has(String(rollupDismissKey(row)));
+  return false;
+}
+
 // A stored rollup is a snapshot, so a row at a workspace ROOT (parent_id '0')
 // keeps the workspace name it had when captured. Name it with the viewer's
 // current desk label (notification_rollup_list's hub_label) instead. Only the
@@ -724,6 +745,16 @@ const ROLLUP_REPRESENTED_EVENTS = new Set(['invite_received', 'hub_invite_receiv
 
 const MISSING_PROCS = new Map(); // proc name -> epoch ms to retry after
 const PROC_RETRY_MS = 60 * 1000;
+// _chatMutes runs on every badge refresh, so it cannot share the cooldown
+// above as is: one failed query would un-hide every user's muted chats for a
+// minute. It counts consecutive failures per routine instead and only skips
+// one after MUTE_PROC_LATCH in a row — a routine that is really missing (a
+// schema not yet applied) still stops costing a dropped yp connection on
+// every refresh.
+const MUTE_PROC_FAILURES = new Map(); // proc name -> consecutive undefined
+const MUTE_PROC_SKIP_UNTIL = new Map(); // proc name -> epoch ms; not MISSING_PROCS,
+// which _optionalYpProc sets on a single failure of the same routines
+const MUTE_PROC_LATCH = 3;
 
 // unread_counts `files_since`: the web client's per-workspace "Files tab last
 // opened over" marks, { "<hub_id>": <unix ts> }. Only well-formed entries are
@@ -943,6 +974,10 @@ class MfsActivity extends Entity {
     // The changelog read pointer and the share-open seen flag both back the Files
     // tab, so they are skipped when the user is clearing a different tab. Without
     // this, clearing "Chat" would silently mark every file notification read too.
+    // mfs_mark_all_read does more than move that pointer — it also marks every
+    // contact_activity row read and advances every p2p chat pointer — so only
+    // the unscoped call uses it; clearing Files alone goes through
+    // _markChangelogRead, or it would clear Task, Meeting, Other and Chat too.
     const clearFiles = !bucket || bucket === BUCKET.files;
 
     this.debug(`[MFS_ACTIVITY] Marking all read for user ${this.uid}, last_id: ${lastId}, bucket: ${bucket || 'all'}`);
@@ -959,9 +994,17 @@ class MfsActivity extends Entity {
     // Read-capable rollups snapshot privacy-safe history before advancing their
     // pointers; media/contact retain their existing clear behavior.
     try {
-      const rollups = toArray(await this._callUserProc('notification_center_next'));
+      const [rawRollups, mutes] = await Promise.all([
+        this._callUserProc('notification_center_next'),
+        this._chatMutes(),
+      ]);
+      const rollups = toArray(rawRollups);
       for (const r of rollups) {
         if (!r || !r.category) continue;
+        // A muted chat is hidden from every tab, so clearing a tab must not
+        // read it: notification_read stamps _seen_ on its messages, and the
+        // other members would see this user as having read what they never saw.
+        if (isMutedChatRow(r, mutes)) continue;
         // Same bucket rule the tabs are built from, so "clear this tab" clears
         // exactly the rows that tab shows — a teamchat rollup carrying a
         // meeting_action is cleared by Meeting, not by Chat.
@@ -1000,7 +1043,9 @@ class MfsActivity extends Entity {
     // undefined last_read_id.
     let data = { status: 'ok', last_read_id: 0 };
     if (clearFiles) {
-      const result = await this._callUserProc('mfs_mark_all_read', this.uid, lastId);
+      const result = bucket === BUCKET.files
+        ? await this._markChangelogRead(lastId)
+        : await this._callUserProc('mfs_mark_all_read', this.uid, lastId);
       data = toArray(result)[0];
     }
 
@@ -1198,6 +1243,9 @@ class MfsActivity extends Entity {
       result = scoped || await this._callUserProc('activity_get_feed_all', this.uid, page);
     }
     result = toArray(result);
+    // Muted chats are hidden from the rollups merged below, never from these
+    // paged base rows (see isMutedChatRow).
+    const mutes = await this._chatMutes();
     for (const row of result) {
       if (row) row.feed_page_source = 'base';
     }
@@ -1369,6 +1417,9 @@ class MfsActivity extends Entity {
           for (const st of stored) {
             if (live.has(`${st.category}:${st.key_id}`)) continue;
             if (superseded.has(st)) continue;
+            // Skipped here, not in _storedRollups: supersede and
+            // _clickedRollup still need to see every stored copy.
+            if (isMutedChatRow(st, mutes)) continue;
             result.push({ ...st, is_read: 1 });
           }
           await this._retireRollups(superseded);
@@ -2449,6 +2500,20 @@ class MfsActivity extends Entity {
   }
 
   /**
+   * Move only the changelog read pointer — the Files tab's own state. Until
+   * mfs_mark_changelog_read is applied to the user's database, falls back to
+   * mfs_mark_all_read, the previous and broader clear, so marking Files read
+   * still works during a rollout. The fallback also clears the other tabs
+   * again, and `undefined` cannot tell a missing routine from a transient
+   * failure, so drop it once every user database has the routine.
+   */
+  async _markChangelogRead(lastId) {
+    const rows = await this._callUserProc('mfs_mark_changelog_read', this.uid, lastId);
+    if (rows !== undefined) return rows;
+    return this._callUserProc('mfs_mark_all_read', this.uid, lastId);
+  }
+
+  /**
    * Hide a single contact_activity row (hub invite, contact invite, etc.)
    * from the user's activity feed. Underlying event stays around for audit.
    * Endpoint: POST /activity.dismiss_contact_event
@@ -2666,9 +2731,10 @@ class MfsActivity extends Entity {
    * Best-effort: a failing sub-source degrades to [] rather than throwing.
    */
   async _notificationRollups() {
-    const [rollups, hubInvites] = await Promise.all([
+    const [rollups, hubInvites, mutes] = await Promise.all([
       this._callUserProc('notification_center_next'),
       this._callUserProc('notification_hub_invites'),
+      this._chatMutes(),
     ]);
     const rows = toArray(rollups);
     // A workspace "invite" the user wrote to THEMSELF (they added themselves
@@ -2691,12 +2757,27 @@ class MfsActivity extends Entity {
     // Stamp `bucket` here so BOTH consumers get it from one place: list() (the
     // badge / priority source) and get_feed()'s chronological merge. Purely
     // additive — an existing client that ignores the field is unaffected.
-    const items = stampBuckets([
+    //
+    // A muted chat leaves here, so it reaches no badge, no tab and no feed,
+    // and is not stored below. A meeting start/end posted in a muted
+    // workspace stays (bucket Meeting), but its rollup's `cnt` counts every
+    // unread message of that folder, which the web rail adds to the Chat pill:
+    // it is flagged `muted` and counted once.
+    const items = [];
+    for (const r of stampBuckets([
       ...rows.map(mapNotificationRow),
       ...hubs.map(mapHubInviteRow),
       ...refused.map(mapContactRefusedRow),
       ...workspaceMoves,
-    ]);
+    ])) {
+      if (isMutedChatRow(r, mutes)) continue;
+      if (r && r.category === 'teamchat' && r.bucket === BUCKET.meeting
+        && (mutes.global || mutes.hubs.has(String(r.hub_id)))) {
+        r.muted = 1;
+        r.cnt = 1;
+      }
+      items.push(r);
+    }
 
     // Capture the live rollups so they can still be rendered once they have
     // been read. Deliberately placed HERE and not in get_feed: this method is
@@ -3225,19 +3306,15 @@ class MfsActivity extends Entity {
   }
 
   // ============================================================
-  // Notification popup mute (Round 3 / Sprint 1 row 6)
+  // Chat mute — a workspace, a person, or everything
   //
-  // 🚨 THE POPUP CHANNEL ONLY. Nothing in this section may ever be read by
-  // list(), get_feed() or unread_counts(): a muted user keeps every row in the
-  // Notification Center and keeps the bell badge, they just stop being
-  // interrupted by a card. Muting is "stop talking to me", not "stop
-  // recording". Both feed paths are deliberately left untouched.
-  //
-  // The suppression itself happens on the CLIENT, which reads this state once
-  // and re-reads it from the return value of every mute_set. The chat push
-  // path is not touched at all — no per-message, per-recipient lookup is added
-  // to the hottest push we have, and no popup decision depends on a round trip
-  // that can fail silently mid-message.
+  // The popup card, OS notification and sound are suppressed on the CLIENT,
+  // which reads this state once and re-reads it from every mute_set; mobile
+  // push is filtered by the push worker (notification_muted_uids). Since Aaron's
+  // 2026-10-13 call a muted chat also leaves the Notification Center and every
+  // badge: list(), get_feed(), unread_counts() and mark_all_read() read the
+  // mutes through _chatMutes / isMutedChatRow. Meeting start/end and bookmarks
+  // stay. channel.js, the chat push path, still never reads them.
   // ============================================================
 
   /**
@@ -3250,6 +3327,29 @@ class MfsActivity extends Entity {
    * legitimately arrive together, but this does not assert on that — it
    * reports what is there.
    */
+  // Session-uid person mutes (notification_mute_peer). Fails open: an old
+  // schema without the routine answers none.
+  async _peerMutes(rows) {
+    const list = rows !== undefined ? rows : await this._optionalYpProc('notification_mute_peer_state', this.uid);
+    const peers = [];
+    for (const r of toArray(list)) {
+      const id = r && r.peer_id != null ? String(r.peer_id) : '';
+      if (id && !peers.includes(id)) peers.push(id);
+    }
+    return peers;
+  }
+
+  // '1'/'0'/true/false/absent → boolean. Absent means mute: the endpoints are
+  // named for what they usually do, and only the explicit falsey values
+  // unmute. Strings are checked because form and query payloads arrive as
+  // strings, where '0' and 'false' are both truthy in JS and would silently
+  // invert the caller's intent.
+  _muteFlag(raw) {
+    return raw === undefined || raw === null || raw === ''
+      ? true
+      : !(raw === 0 || raw === '0' || raw === false || raw === 'false');
+  }
+
   _muteState(rows) {
     let global = 0;
     const hubs = [];
@@ -3263,20 +3363,74 @@ class MfsActivity extends Entity {
   }
 
   /**
-   * The caller's current popup-mute state.
-   * Endpoint: POST /activity.mute_state
-   *
-   * Best-effort by design: before the schema is applied this answers "nothing
-   * muted", which is the safe direction — popups keep working exactly as they
-   * do today rather than everything falling silent on a missing routine.
+   * The caller's chat mutes, for hiding muted chats from the feed and the
+   * badges: { global, hubs: Set, peers: Set }. Read once per request (memo on
+   * the worker, which the router builds per request) and straight through
+   * await_proc, not _optionalYpProc: that helper's process-wide cooldown would
+   * let one failed query un-hide every user's muted chats for a minute. Fails
+   * open, for this request only.
    */
-  async mute_state() {
-    const rows = await this._optionalYpProc('notification_mute_state', this.uid);
-    this.output.data(this._muteState(rows));
+  _chatMutes() {
+    if (!this._chatMutesP) {
+      this._chatMutesP = (async () => {
+        try {
+          const [hubRows, peerRows] = await Promise.all([
+            this._muteProc('notification_mute_state'),
+            this._muteProc('notification_mute_peer_state'),
+          ]);
+          const { global, hubs } = this._muteState(hubRows);
+          const peers = await this._peerMutes(toArray(peerRows));
+          return { global, hubs: new Set(hubs), peers: new Set(peers) };
+        } catch (e) {
+          this.warn('[ACTIVITY] chat mute lookup failed', e && e.message);
+          return { global: 0, hubs: new Set(), peers: new Set() };
+        }
+      })();
+    }
+    return this._chatMutesP;
+  }
+
+  // One mute routine for _chatMutes. `undefined` (failed or not deployed)
+  // hides nothing for this request; MUTE_PROC_LATCH failures in a row skip the
+  // routine for PROC_RETRY_MS. Any answer clears both.
+  async _muteProc(name) {
+    const now = Date.now();
+    const skipUntil = MUTE_PROC_SKIP_UNTIL.get(name);
+    if (skipUntil && now < skipUntil) return undefined;
+    const rows = await this.yp.await_proc(name, this.uid);
+    if (rows !== undefined) {
+      MUTE_PROC_FAILURES.delete(name);
+      MUTE_PROC_SKIP_UNTIL.delete(name);
+      return rows;
+    }
+    const failures = (MUTE_PROC_FAILURES.get(name) || 0) + 1;
+    if (failures < MUTE_PROC_LATCH) {
+      MUTE_PROC_FAILURES.set(name, failures);
+      this.debug(`[ACTIVITY] ${name} failed; muted chats are not hidden for this request`);
+      return undefined;
+    }
+    MUTE_PROC_FAILURES.delete(name);
+    MUTE_PROC_SKIP_UNTIL.set(name, now + PROC_RETRY_MS);
+    this.warn(`[ACTIVITY] ${name} failed ${failures} times in a row; muted chats are not hidden for ${PROC_RETRY_MS / 1000}s`);
+    return undefined;
   }
 
   /**
-   * Mute or unmute the popups for one workspace, or for all of them.
+   * The caller's current mute state.
+   * Endpoint: POST /activity.mute_state
+   *
+   * A mute silences the chat's popup, OS notification, sound and mobile push,
+   * and hides its rows from the feed and every badge (_chatMutes); meeting
+   * start/end and bookmarks stay. Best-effort by design: before the schema is
+   * applied this answers "nothing muted", the safe direction.
+   */
+  async mute_state() {
+    const rows = await this._optionalYpProc('notification_mute_state', this.uid);
+    this.output.data({ ...this._muteState(rows), peers: await this._peerMutes() });
+  }
+
+  /**
+   * Mute or unmute the chat notifications of one workspace, or of all of them.
    * Endpoint: POST /activity.mute_set
    * Input: hub_id (string, empty or absent = all workspaces),
    *        muted (boolean, default true)
@@ -3292,22 +3446,47 @@ class MfsActivity extends Entity {
    */
   async mute_set() {
     const hub_id = String(this.input.use('hub_id') || '');
-    const raw = this.input.use('muted');
-    // Absent means mute: the endpoint is named for what it usually does, and
-    // only the explicit falsey values unmute. Strings are checked because form
-    // and query payloads arrive as strings, where '0' and 'false' are both
-    // truthy in JS and would silently invert the caller's intent.
-    const muted =
-      raw === undefined || raw === null || raw === ''
-        ? true
-        : !(raw === 0 || raw === '0' || raw === false || raw === 'false');
+    const muted = this._muteFlag(this.input.use('muted'));
     const proc = muted ? 'notification_mute_set' : 'notification_mute_unset';
     const { ok, rows } = await this._optionalYpProcResult(proc, this.uid, hub_id);
+    // "Unmute all" clears everything — person mutes included.
+    let peers;
+    if (ok && !muted && hub_id === '') {
+      peers = await this._peerMutes(await this._optionalYpProc('notification_mute_peer_unset', this.uid, ''));
+    } else {
+      peers = await this._peerMutes();
+    }
     this.output.data({
       status: ok ? 'ok' : 'error',
       muted: muted ? 1 : 0,
       hub_id,
       ...this._muteState(rows),
+      peers,
+    });
+  }
+
+  /**
+   * Mute or unmute the direct messages from ONE person.
+   * Endpoint: POST /activity.mute_peer_set
+   * Input: peer_id (a user id, not the caller), muted (default true)
+   * Same scope as mute_set (notifications, push, feed rows, badges); answers
+   * the full state.
+   */
+  async mute_peer_set() {
+    const peer_id = String(this.input.use('peer_id') || '');
+    if (!/^[0-9a-zA-Z]{1,16}$/.test(peer_id) || peer_id === String(this.uid)) {
+      return this.exception.user('INVALID_PEER');
+    }
+    const muted = this._muteFlag(this.input.use('muted'));
+    const proc = muted ? 'notification_mute_peer_set' : 'notification_mute_peer_unset';
+    const { ok, rows } = await this._optionalYpProcResult(proc, this.uid, peer_id);
+    const hubRows = await this._optionalYpProc('notification_mute_state', this.uid);
+    this.output.data({
+      status: ok ? 'ok' : 'error',
+      muted: muted ? 1 : 0,
+      peer_id,
+      ...this._muteState(hubRows),
+      peers: await this._peerMutes(rows),
     });
   }
   // ── Daily reminder card (Round 3 / Sprint 1 row 7) ───────────────

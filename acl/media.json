@@ -169,7 +169,7 @@
         },
         "chunk_size": {
           "type": "number",
-          "doc": "Bytes per chunk (16 MB)"
+          "doc": "Bytes per chunk (4 MB)"
         },
         "total": {
           "type": "number",
@@ -1448,6 +1448,11 @@
           "type": "string",
           "required": false,
           "doc": "Relative path from nid (e.g., 'subfolder/file.txt')"
+        },
+        "modifier": {
+          "type": "number",
+          "required": false,
+          "doc": "1 = also return who last modified the file (modified_by, modified_by_name), for the Details card. Ignored for a guest."
         }
       },
       "returns": {

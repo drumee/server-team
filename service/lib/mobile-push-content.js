@@ -37,6 +37,11 @@ const EXCERPT_LIMIT = 140;
  * sentinel gets its own sentence.
  */
 const MEETING_SENTINEL = /^\[\[MEETING:(start|end):/i;
+/** Whether a chat message body is an instant-meeting start/end card. */
+function isMeetingCard(message) {
+  return MEETING_SENTINEL.test(String(message == null ? '' : message));
+}
+
 const MEETING_BODY = {
   start: 'Started an instant meeting',
   end: 'Ended the meeting',
@@ -219,4 +224,5 @@ module.exports = {
   composeNotification,
   createMobilePushContent,
   excerptOf,
+  isMeetingCard,
 };

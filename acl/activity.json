@@ -26,7 +26,7 @@
     },
 
     "unread_counts": {
-      "doc": "Unread notification count per Notification Center tab, for the tab-bar badges. Counts one per notification row the user sees - not the sum of each rollup's event count - so the tab badges agree with the bell badge. Every underlying source is best-effort: one that fails or is not yet deployed contributes zero instead of failing the call.",
+      "doc": "Unread notification count per Notification Center tab, for the tab-bar badges. Counts one per notification row the user sees - not the sum of each rollup's event count - so the tab badges agree with the bell badge. Chats the user muted are not counted. Every underlying source is best-effort: one that fails or is not yet deployed contributes zero instead of failing the call.",
       "scope": "hub",
       "permission": {
         "src": "read"
@@ -252,6 +252,7 @@
             "link_label": { "type": "string" },
             "task_title": { "type": "string" },
             "meeting_action": { "type": "string" },
+            "muted": { "type": "integer", "description": "1 on a meeting start or end rollup kept from a chat the user muted. Its cnt is then 1, and the chat rows of that chat are not listed." },
             "history_id": { "type": "integer" },
             "bookmark_key": { "type": "string" },
             "is_saved": { "type": "integer" },
@@ -606,6 +607,7 @@
             "item_filetype": { "type": "string" },
             "last_id": { "type": "integer" },
             "cnt": { "type": "integer" },
+            "muted": { "type": "integer", "description": "1 on a meeting start or end rollup kept from a chat the user muted. Its cnt is then 1, and the chat rows of that chat are not listed." },
             "ctime": { "type": "integer" }
           }
         }
@@ -874,7 +876,7 @@
       ]
     },
     "mute_state": {
-      "doc": "The caller's notification POPUP mute state. Affects the real-time popup channel only - a muted user still receives every row in the Notification Center and still gets the unread badge. Answers global 0 with an empty hubs list when nothing is muted, which is also what it answers before the schema is applied, so popups keep working rather than falling silent on a missing routine.",
+      "doc": "The caller's chat mute state. A muted chat (a workspace, a person, or everything) raises no popup, OS notification, sound or mobile push, and its new notifications leave the Notification Center and every unread badge; meeting start and end notices and bookmarked rows stay, and already-read chat history still lists under Unread OFF. Answers global 0 with an empty hubs list when nothing is muted, which is also what it answers before the schema is applied, so nothing is hidden on a missing routine.",
       "scope": "hub",
       "permission": {
         "src": "read"
@@ -888,6 +890,11 @@
             "description": "1 when popups are muted for every workspace, 0 otherwise",
             "example": 0
           },
+          "peers": {
+            "type": "array",
+            "description": "Person ids whose DM popups are muted (activity.mute_peer_set)",
+            "items": { "type": "string" }
+          },
           "hubs": {
             "type": "array",
             "description": "Workspace ids muted individually. Empty when global is 1 - the two do not layer.",
@@ -899,7 +906,7 @@
     },
 
     "mute_set": {
-      "doc": "Mute or unmute the notification popups for one workspace or for all of them. Popup channel only - the feed and the unread badge are never affected. Muting globally clears the per-workspace mutes, and unmuting globally clears everything, so the stored state always has one interpretation. Returns the full resulting state so the client can refresh its cache from the write itself. Allowed to all members, like dismiss_rollup: this writes the CALLER'S OWN preference row, keyed on the session uid, and changes nothing about the workspace - so a read-only member must still be able to silence a workspace that is shouting at them.",
+      "doc": "Mute or unmute the chat notifications for one workspace or for all of them: popups, OS notifications, mobile push, and its new chat notifications in the feed and the unread badges (meeting start and end notices and bookmarks stay). Muting globally clears the per-workspace mutes, and unmuting globally clears everything, so the stored state always has one interpretation. Returns the full resulting state so the client can refresh its cache from the write itself. Allowed to all members, like dismiss_rollup: this writes the CALLER'S OWN preference row, keyed on the session uid, and changes nothing about the workspace - so a read-only member must still be able to silence a workspace that is shouting at them.",
       "scope": "hub",
       "permission": {
         "src": "read"
@@ -940,6 +947,11 @@
             "description": "Resulting global flag",
             "example": 1
           },
+          "peers": {
+            "type": "array",
+            "description": "Person ids whose DM popups are muted (activity.mute_peer_set)",
+            "items": { "type": "string" }
+          },
           "hubs": {
             "type": "array",
             "description": "Resulting list of individually muted workspace ids",
@@ -948,6 +960,24 @@
         }
       },
       "errors": []
+    },
+    "mute_peer_set": {
+      "doc": "Mute or unmute the direct messages from one person: popups, OS notifications, mobile push, and their new notifications in the feed and the unread badges. Writes the caller's own preference row (notification_mute_peer). Answers the full state, like mute_set. The caller sends their own hub (Visitor.id) as hub_id.",
+      "scope": "hub",
+      "permission": { "src": "read" },
+      "params": {
+        "peer_id": { "type": "string", "required": true, "description": "The person to mute (a user id, never the caller)." },
+        "muted": { "type": "boolean", "required": false, "default": true, "description": "true or absent mutes; explicit false, 0 or the string false unmutes." }
+      },
+      "returns": { "type": "object", "properties": {
+        "status": { "type": "string", "example": "ok" },
+        "muted": { "type": "integer", "example": 1 },
+        "peer_id": { "type": "string" },
+        "global": { "type": "integer" },
+        "hubs": { "type": "array", "items": { "type": "string" } },
+        "peers": { "type": "array", "description": "Person ids whose DM popups are muted", "items": { "type": "string" } }
+      } },
+      "errors": [ { "code": "INVALID_PEER", "message": "peer_id is missing, malformed or the caller", "http_status": 400 } ]
     }
   },
 

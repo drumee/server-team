@@ -246,6 +246,8 @@ test('mark-all fails closed before the global pointer after a rollup failure', a
   const calls = [];
   const failure = {status: 'error'};
   const context = {
+    // No chat is muted in this case (see activity-muted-chat-rows.test.js).
+    async _chatMutes() { return {global: 0, hubs: new Set(), peers: new Set()}; },
     uid: 'current-user',
     // `use('bucket')` returns undefined -> unscoped clear, the path this test pins.
     input: {get: () => 0, use: () => undefined},
@@ -360,6 +362,8 @@ test('Mark as all read on Other clears every Other source it counts', async () =
   const yp = [];
   let refusedReads = 0;
   const context = {
+    // No chat is muted in this case (see activity-muted-chat-rows.test.js).
+    async _chatMutes() { return {global: 0, hubs: new Set(), peers: new Set()}; },
     uid: 'me',
     input: {get: () => 0, use: (k) => (k === 'bucket' ? 'other' : undefined)},
     debug: () => undefined,

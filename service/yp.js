@@ -35,6 +35,7 @@ const publicKey = readFileSync(keyFile);
 const { butlerFrom } = require("./lib/mail-sender");
 const Crypto = require('crypto');
 const {createDeviceRegistrationV2} = require('./lib/device-registration-v2');
+const { retryAfter, recordFailure } = require('./lib/dmz-password-attempts');
 
 
 //########################################
@@ -418,8 +419,14 @@ class __yp extends Entity {
    */
   async guest_login() {
     let token = this.input.need(Attr.token);
+    // The same pause as dmz.login: this is the other way a link's password is tried.
+    const wait = await retryAfter(token);
+    if (wait) {
+      return this.output.data({ status: 'TOO_MANY_ATTEMPTS', validity: 'TOO_MANY_ATTEMPTS', retry_after: wait });
+    }
     let res = await this.session.dmz_login(token, this.input.get(Attr.password));
     if (res.failed) {
+      if (res.error === 'INVALID_CREDENTIAL') await recordFailure(token);
       res.validity = res.error;
     }
     let info = await this.yp.await_proc("dmz_info_next", token);
@@ -430,8 +437,12 @@ class __yp extends Entity {
       "dmz_settings",
       ``
     );
-    info.hours = rows[0].hours;
-    info.days = rows[0].days;
+    // dmz_settings exists only in a workspace's database; a member's personal
+    // space answers no rows.
+    if (rows && rows[0]) {
+      info.hours = rows[0].hours;
+      info.days = rows[0].days;
+    }
     if (info.is_public && !res.guest_name) {
       res.require_name = 1;
     }

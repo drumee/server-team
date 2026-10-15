@@ -7,6 +7,7 @@ const {
   composeNotification,
   createMobilePushContent,
   excerptOf,
+  isMeetingCard,
 } = require('../service/lib/mobile-push-content');
 
 function fakeYp(rows = {}) {
@@ -88,6 +89,10 @@ test('turns stored message text into a bounded one-line excerpt', () => {
   // An instant meeting is a channel.post carrying a sentinel, not typed text.
   assert.equal(excerptOf('[[MEETING:start:{"room_id":"r1","filename":"Standup"}]]'), 'Started an instant meeting');
   assert.equal(excerptOf('[[MEETING:end:{"room_id":"r1"}]]'), 'Ended the meeting');
+  assert.equal(isMeetingCard('[[MEETING:start:{"room_id":"r1"}]]'), true);
+  assert.equal(isMeetingCard('[[MEETING:end:{"room_id":"r1"}]]'), true);
+  assert.equal(isMeetingCard('see [[MEETING:start:x]]'), false);
+  assert.equal(isMeetingCard(null), false);
   assert.equal(excerptOf('', '[{"nid":"n1"}]'), 'Sent an attachment');
   assert.equal(excerptOf(null, []), '');
   const long = Array.from({length: 60}, (_, i) => `word${i}`).join(' ');

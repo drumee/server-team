@@ -1,0 +1,222 @@
+/**
+ * Cover for a meeting link's guest side: dmz.meeting_files, the password gate
+ * in front of it (dmz.login), and dmz.signup refusing a meeting link.
+ * Run: node test/dmz-meeting-files.test.js
+ */
+const assert = require("assert");
+const path = require("path");
+const fs = require("fs");
+
+// dmz.js has a heavy require graph; slice the one method out and run it
+// against a stub `this` (the ui-team tests/helpers/slice-method technique).
+const SRC = fs.readFileSync(path.join(__dirname, "../service/dmz.js"), "utf8");
+function slice(sig) {
+  const start = SRC.indexOf(`\n  ${sig} {`);
+  if (start < 0) throw new Error(`${sig} not found`);
+  const end = SRC.indexOf("\n  }\n", start);
+  return SRC.slice(start, end + 4).trim().replace(/^async\s+([A-Za-z_]\w*)\s*\(/, "async function $1(");
+}
+const lib = require("../service/lib/meeting-attachments");
+const toArray = (v) => (Array.isArray(v) ? v : v == null ? [] : [v]);
+const { sqlString } = require("../service/lib/sql-literal");
+const meeting_files = new Function("toArray", "attachmentsOf", "isMeetingNode", "Attr", "sqlString",
+  `return ${slice("async meeting_files()")}`)(toArray, lib.attachmentsOf, lib.isMeetingNode, { token: "token" }, sqlString);
+
+// The real share resolver, so the password gate is the one production runs.
+const shareByToken = new Function("toArray", `return ${slice("async _shareByToken(token, tag)")}`)(toArray);
+
+const MEET = "aaaaaaaaaaaaaaaa", F1 = "1111111111111111";
+function make({ share, legacy, nodes = {}, viewerPriv = 0, marked = false }) {
+  const out = {};
+  const self = {
+    uid: "vvvvvvvvvvvvvvvv",
+    input: { need: () => "tok" },
+    _shareByToken: legacy ? shareByToken : async () => share,
+    _isSharePasswordOk: async () => marked,
+    yp: { await_proc: async (name, _hub, proc, args) => {
+      if (name === "secure_share_info") return [];
+      if (name === "dmz_info_next") return legacy;
+      // The session's own access to the node, in the token's hub.
+      if (proc === "mfs_access_node") return [{ privilege: viewerPriv }];
+      const id = String(args).replace(/'/g, "");
+      return proc === "mfs_node_attr" ? [nodes[id] || {}] : [];
+    } },
+    db: { await_proc: async () => ({ privilege: viewerPriv }) },
+    output: { data: (d) => { out.data = d; } },
+    warn: () => {},
+  };
+  return { run: () => meeting_files.call(self), out };
+}
+const meetingNode = (attachments) => ({ id: MEET, filetype: "schedule",
+  metadata: JSON.stringify({ content: JSON.stringify({ attachments }) }) });
+
+(async () => {
+  {
+    const t = make({ share: { info: { hub_id: "h", nid: MEET } },
+      nodes: { [MEET]: meetingNode([F1]), [F1]: { id: F1, filename: "a", ext: "pdf", filetype: "document", filesize: 9, owner_id: "secret" } } });
+    await t.run();
+    assert.deepStrictEqual(t.out.data, { status: "TICKET_OK", hub_id: "h",
+      items: [{ nid: F1, filename: "a", ext: "pdf", filetype: "document", filesize: 9 }] });
+  }
+  {
+    const t = make({ share: { status: "TICKET_INVALID" } });
+    await t.run();
+    assert.deepStrictEqual(t.out.data, { status: "TICKET_INVALID", items: [] });
+  }
+  {
+    const t = make({ share: { info: { hub_id: "h", nid: F1 } }, nodes: { [F1]: { id: F1, filetype: "folder" } } });
+    await t.run();
+    assert.deepStrictEqual(t.out.data, { status: "NOT_A_MEETING", items: [] });
+  }
+  // A password-protected link lists nothing until this session gave the
+  // password. Access to the node is not that: every session that opened some
+  // other open link holds the shared public identity the node was granted to.
+  {
+    const t = make({ legacy: { hub_id: "h", nid: MEET, validity: "TICKET_OK", require_password: 1 },
+      nodes: { [MEET]: meetingNode([F1]) }, viewerPriv: 15 });
+    await t.run();
+    assert.deepStrictEqual(t.out.data, { status: "REQUIRED_PASSWORD", items: [] });
+  }
+  // ...and once it did (dmz.login marked token + session), the files show.
+  {
+    const t = make({ legacy: { hub_id: "h", nid: MEET, validity: "TICKET_OK", require_password: 1 },
+      nodes: { [MEET]: meetingNode([F1]), [F1]: { id: F1, filename: "a", ext: "pdf", filetype: "document", filesize: 9 } },
+      marked: true });
+    await t.run();
+    assert.deepStrictEqual(t.out.data, { status: "TICKET_OK", hub_id: "h",
+      items: [{ nid: F1, filename: "a", ext: "pdf", filetype: "document", filesize: 9 }] });
+  }
+  // A JSON column the driver already parsed reads the same as a string.
+  {
+    const node = { id: MEET, filetype: "schedule", metadata: { content: JSON.stringify({ attachments: [F1] }) } };
+    const t = make({ share: { info: { hub_id: "h", nid: MEET } },
+      nodes: { [MEET]: node, [F1]: { id: F1, filename: "a", ext: "pdf", filetype: "document", filesize: 9 } } });
+    await t.run();
+    assert.deepStrictEqual(t.out.data.items.map((i) => i.nid), [F1]);
+  }
+
+  // dmz.login, the gate itself.
+  // The attempt counter, per case: `paused` seconds left, failures recorded.
+  const attempts = { paused: 0, failures: 0 };
+  const login = new Function("Attr", "Cache", "isEmpty", "toArray", "sqlString", "isMeetingNode", "ID_NOBODY", "RedisStore",
+    "retryAfter", "recordFailure",
+    `return ${slice("async login()")}`)(
+    { token: "token", password: "password", cookie: "cookie", area: "area" },
+    { getSysConf: () => "gggggggggggggggg" },
+    (v) => v == null || (typeof v === "object" && !Object.keys(v).length),
+    toArray, sqlString, lib.isMeetingNode, "ffffffffffffffff", { sendData: async () => {} },
+    async () => attempts.paused, async () => { attempts.failures++; });
+  function gate({ info, password, marked = false, node = {} }) {
+    const calls = { touched: [], marked: 0, tried: 0 };
+    attempts.paused = 0; attempts.failures = 0;
+    const out = {};
+    const self = {
+      uid: "pppppppppppppppp", // a session holding the shared public identity
+      input: { need: () => "tok", get: (k) => (k === "password" ? password : k === "cookie" ? {} : undefined),
+        use: () => undefined, sid: () => "sid" },
+      user: { toJSON: () => ({ id: "pppppppppppppppp" }) },
+      hub: { get: () => "dmz" },
+      session: { dmz_login: async (_t, pw) => { calls.tried++;
+        return pw === "right" ? { is_verified: 1 } : { failed: 1, error: "INVALID_CREDENTIAL" }; } },
+      _isSharePasswordOk: async () => marked,
+      _markSharePasswordOk: async () => { calls.marked++; },
+      yp: { await_proc: async (name, _hub, proc) => {
+        if (name === "secure_share_info") return [];
+        if (name === "dmz_info_next") return { ...info };
+        if (name === "cookie_touch") { calls.touched.push(_hub.uid); return []; }
+        if (proc === "mfs_access_node") return [{ privilege: 15, ...node }];
+        return [];
+      } },
+      db: { await_proc: async () => ({ privilege: 15, ...node }) },
+      output: { data: (d) => { out.data = d; } },
+      warn: () => {},
+    };
+    return { run: () => login.call(self), out, calls };
+  }
+  const LINK = { hub_id: "h", nid: MEET, uid: "pppppppppppppppp", validity: "TICKET_OK", require_password: 1 };
+  {
+    // Access to the node does not open the gate; a meeting's gate names it.
+    const t = gate({ info: LINK, node: { filetype: "schedule", filename: "Weekly retro" } });
+    await t.run();
+    assert.strictEqual(t.out.data.status, "REQUIRED_PASSWORD");
+    assert.strictEqual(t.out.data.filename, "Weekly retro");
+    assert.deepStrictEqual(t.calls.touched, []);
+  }
+  {
+    // Any other share keeps its name behind the password.
+    const t = gate({ info: LINK, node: { filetype: "folder", filename: "Contracts" } });
+    await t.run();
+    assert.strictEqual(t.out.data.status, "REQUIRED_PASSWORD");
+    assert.strictEqual(t.out.data.filename, undefined);
+  }
+  {
+    // The right password marks this session; a wrong one does not.
+    const right = gate({ info: LINK, password: "right" });
+    await right.run();
+    assert.strictEqual(right.out.data.is_verified, 1);
+    assert.strictEqual(right.calls.marked, 1);
+    const wrong = gate({ info: LINK, password: "nope" });
+    await wrong.run();
+    assert.strictEqual(wrong.calls.marked, 0);
+    assert.strictEqual(attempts.failures, 1, "a wrong password counts");
+  }
+  {
+    // A link that took too many wrong passwords pauses: the password is not
+    // even tried, and the page is told how long to wait.
+    const t = gate({ info: LINK, password: "right" });
+    attempts.paused = 600;
+    await t.run();
+    assert.deepStrictEqual(t.out.data, { status: "TOO_MANY_ATTEMPTS", retry_after: 600 });
+    assert.strictEqual(t.calls.tried, 0);
+    assert.strictEqual(t.calls.marked, 0);
+  }
+  {
+    // A marked session goes through to the link.
+    const t = gate({ info: LINK, marked: true });
+    await t.run();
+    assert.strictEqual(t.out.data.status, undefined);
+    assert.strictEqual(t.out.data.validity, "TICKET_OK");
+    assert.deepStrictEqual(t.calls.touched, ["pppppppppppppppp"]);
+  }
+  {
+    // An expired protected link says so instead of asking for its password.
+    const t = gate({ info: { ...LINK, validity: "TICKET_EXPIRED" } });
+    await t.run();
+    assert.strictEqual(t.out.data.status, undefined);
+    assert.strictEqual(t.out.data.validity, "TICKET_EXPIRED");
+    assert.deepStrictEqual(t.calls.touched, []);
+  }
+
+  // dmz.signup: a meeting's link mails no signup and copies nothing.
+  const signup = new Function("Attr", "Cache", "Messenger", "isEmpty", "toArray", "sqlString", "isMeetingNode", "RedisStore",
+    `return ${slice("async signup()")}`)(
+    { token: "token", socket_id: "socket_id" }, { message: () => "" }, function () {},
+    (v) => v == null || (typeof v === "object" && !Object.keys(v).length),
+    toArray, sqlString, lib.isMeetingNode, { sendData: async () => {} });
+  async function signupFor(shared) {
+    const procs = [];
+    const out = {};
+    const self = {
+      input: { need: () => "tok", sid: () => null, get: () => undefined },
+      yp: { await_proc: async (name, _hub, proc) => {
+        procs.push(proc || name);
+        if (name === "dmz_info_next") return { hub_id: "h", nid: MEET, email: "guest@example.com", privilege: 3 };
+        if (proc === "mfs_node_attr") return [shared];
+        return [];
+      } },
+      output: { data: (d) => { out.data = d; } },
+      warn: () => {},
+    };
+    await signup.call(self);
+    return { out: out.data, procs };
+  }
+  {
+    const meeting = await signupFor({ id: MEET, filetype: "schedule" });
+    assert.deepStrictEqual(meeting.out, { status: "NOT_A_SHAREBOX" });
+    assert.ok(!meeting.procs.includes("token_generate_next") && !meeting.procs.includes("dmz_update_sync"));
+    // A folder share goes on as before (here: no guest session yet).
+    const folder = await signupFor({ id: MEET, filetype: "folder" });
+    assert.strictEqual(folder.out.status, "REQUIRED_PASSWORD");
+  }
+  console.log("dmz-meeting-files: ok");
+})().catch((e) => { console.error(e); process.exit(1); });
