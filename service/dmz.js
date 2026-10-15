@@ -163,6 +163,15 @@ class __dmz extends Mfs {
       res.status = 'WRONG_TICKET'
       return this.output.data(res);
     }
+    // Signing up from a link copies what it shares into the new account
+    // (media.dmz_copy). A meeting's invite shares a meeting, not files to keep:
+    // the meeting page never offers it, and the link must not mail a signup.
+    const shared = toArray(await this.yp.await_proc(
+      'forward_proc', res.hub_id, 'mfs_node_attr', `${sqlString(res.nid)}`
+    ))[0];
+    if (isMeetingNode(shared)) {
+      return this.output.data({ status: 'NOT_A_SHAREBOX' });
+    }
     let is_verified = 0
 
     if (sid) {

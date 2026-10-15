@@ -1,5 +1,6 @@
 /**
- * Cover for dmz.meeting_files and the password gate in front of it (dmz.login).
+ * Cover for a meeting link's guest side: dmz.meeting_files, the password gate
+ * in front of it (dmz.login), and dmz.signup refusing a meeting link.
  * Run: node test/dmz-meeting-files.test.js
  */
 const assert = require("assert");
@@ -186,5 +187,36 @@ const meetingNode = (attachments) => ({ id: MEET, filetype: "schedule",
     assert.deepStrictEqual(t.calls.touched, []);
   }
 
+  // dmz.signup: a meeting's link mails no signup and copies nothing.
+  const signup = new Function("Attr", "Cache", "Messenger", "isEmpty", "toArray", "sqlString", "isMeetingNode", "RedisStore",
+    `return ${slice("async signup()")}`)(
+    { token: "token", socket_id: "socket_id" }, { message: () => "" }, function () {},
+    (v) => v == null || (typeof v === "object" && !Object.keys(v).length),
+    toArray, sqlString, lib.isMeetingNode, { sendData: async () => {} });
+  async function signupFor(shared) {
+    const procs = [];
+    const out = {};
+    const self = {
+      input: { need: () => "tok", sid: () => null, get: () => undefined },
+      yp: { await_proc: async (name, _hub, proc) => {
+        procs.push(proc || name);
+        if (name === "dmz_info_next") return { hub_id: "h", nid: MEET, email: "guest@example.com", privilege: 3 };
+        if (proc === "mfs_node_attr") return [shared];
+        return [];
+      } },
+      output: { data: (d) => { out.data = d; } },
+      warn: () => {},
+    };
+    await signup.call(self);
+    return { out: out.data, procs };
+  }
+  {
+    const meeting = await signupFor({ id: MEET, filetype: "schedule" });
+    assert.deepStrictEqual(meeting.out, { status: "NOT_A_SHAREBOX" });
+    assert.ok(!meeting.procs.includes("token_generate_next") && !meeting.procs.includes("dmz_update_sync"));
+    // A folder share goes on as before (here: no guest session yet).
+    const folder = await signupFor({ id: MEET, filetype: "folder" });
+    assert.strictEqual(folder.out.status, "REQUIRED_PASSWORD");
+  }
   console.log("dmz-meeting-files: ok");
 })().catch((e) => { console.error(e); process.exit(1); });
