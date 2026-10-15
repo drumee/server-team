@@ -95,14 +95,19 @@ const meetingNode = (attachments) => ({ id: MEET, filetype: "schedule",
   }
 
   // dmz.login, the gate itself.
+  // The attempt counter, per case: `paused` seconds left, failures recorded.
+  const attempts = { paused: 0, failures: 0 };
   const login = new Function("Attr", "Cache", "isEmpty", "toArray", "sqlString", "isMeetingNode", "ID_NOBODY", "RedisStore",
+    "retryAfter", "recordFailure",
     `return ${slice("async login()")}`)(
     { token: "token", password: "password", cookie: "cookie", area: "area" },
     { getSysConf: () => "gggggggggggggggg" },
     (v) => v == null || (typeof v === "object" && !Object.keys(v).length),
-    toArray, sqlString, lib.isMeetingNode, "ffffffffffffffff", { sendData: async () => {} });
+    toArray, sqlString, lib.isMeetingNode, "ffffffffffffffff", { sendData: async () => {} },
+    async () => attempts.paused, async () => { attempts.failures++; });
   function gate({ info, password, marked = false, node = {} }) {
-    const calls = { touched: [], marked: 0 };
+    const calls = { touched: [], marked: 0, tried: 0 };
+    attempts.paused = 0; attempts.failures = 0;
     const out = {};
     const self = {
       uid: "pppppppppppppppp", // a session holding the shared public identity
@@ -110,7 +115,8 @@ const meetingNode = (attachments) => ({ id: MEET, filetype: "schedule",
         use: () => undefined, sid: () => "sid" },
       user: { toJSON: () => ({ id: "pppppppppppppppp" }) },
       hub: { get: () => "dmz" },
-      session: { dmz_login: async (_t, pw) => (pw === "right" ? { is_verified: 1 } : { failed: 1, error: "INVALID_CREDENTIAL" }) },
+      session: { dmz_login: async (_t, pw) => { calls.tried++;
+        return pw === "right" ? { is_verified: 1 } : { failed: 1, error: "INVALID_CREDENTIAL" }; } },
       _isSharePasswordOk: async () => marked,
       _markSharePasswordOk: async () => { calls.marked++; },
       yp: { await_proc: async (name, _hub, proc) => {
@@ -151,6 +157,17 @@ const meetingNode = (attachments) => ({ id: MEET, filetype: "schedule",
     const wrong = gate({ info: LINK, password: "nope" });
     await wrong.run();
     assert.strictEqual(wrong.calls.marked, 0);
+    assert.strictEqual(attempts.failures, 1, "a wrong password counts");
+  }
+  {
+    // A link that took too many wrong passwords pauses: the password is not
+    // even tried, and the page is told how long to wait.
+    const t = gate({ info: LINK, password: "right" });
+    attempts.paused = 600;
+    await t.run();
+    assert.deepStrictEqual(t.out.data, { status: "TOO_MANY_ATTEMPTS", retry_after: 600 });
+    assert.strictEqual(t.calls.tried, 0);
+    assert.strictEqual(t.calls.marked, 0);
   }
   {
     // A marked session goes through to the link.
@@ -168,5 +185,6 @@ const meetingNode = (attachments) => ({ id: MEET, filetype: "schedule",
     assert.strictEqual(t.out.data.validity, "TICKET_EXPIRED");
     assert.deepStrictEqual(t.calls.touched, []);
   }
+
   console.log("dmz-meeting-files: ok");
 })().catch((e) => { console.error(e); process.exit(1); });

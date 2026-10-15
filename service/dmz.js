@@ -23,6 +23,7 @@ const {
 const { verifyPassword: verifySecureSharePassword } = require('./lib/secure-share-password');
 const { secureShareCapPrivilege } = require('./lib/secure-share-write-guard');
 const { attachmentsOf, isMeetingNode } = require('./lib/meeting-attachments');
+const { retryAfter, recordFailure } = require('./lib/dmz-password-attempts');
 const Jwt = require('jsonwebtoken');
 const { resolve: _resolvePath } = require('path');
 const { existsSync, readFileSync, statSync } = require('fs');
@@ -1081,6 +1082,10 @@ class __dmz extends Mfs {
       if (!password) {
         return this.output.data(info);
       }
+      const wait = await retryAfter(token);
+      if (wait) {
+        return this.output.data({ status: 'TOO_MANY_ATTEMPTS', retry_after: wait });
+      }
       let res = await this.session.dmz_login(token, password);
       if (res.is_verified) {
         try { await this._markSharePasswordOk(token); } catch (e) { /* the gate asks again */ }
@@ -1091,6 +1096,7 @@ class __dmz extends Mfs {
       }
 
       if (res.failed) {
+        if (res.error === 'INVALID_CREDENTIAL') await recordFailure(token);
         info.status = 'WRONG_PASSWORD';
         res.validity = res.error;
         this.output.data(res);
