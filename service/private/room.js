@@ -689,6 +689,10 @@ class __private_room extends __public_room {
       await this.db.await_proc('permission_revoke', file_nid, public_id);
     }
     await this.db.await_proc('permission_revoke', nid, "meeting");
+    // The invite links go too. A dmz_token outlives its node otherwise, and a
+    // guest link to a meeting that no longer exists must stop opening anything
+    // (null guest = every token on this node, as transfer does).
+    await this.yp.await_proc('dmz_revoke', this.hub.get(Attr.id), nid, null);
     await this._unindex_meeting(nid);
     await this._broadcast('room.remove', nid);
     this.output.data({ nid });

@@ -166,6 +166,9 @@ const fileNode = (id) => ({ id, filetype: "document", filename: "f" });
     await self.remove();
     const revokes = calls.filter((c) => c[0] === "permission_revoke").map((c) => c.slice(1));
     assert.deepStrictEqual(revokes, [[F1, PUBLIC], [MEET, "meeting"]]);
+    // ...and its invite links: every dmz_token on the meeting's node.
+    const tokens = calls.filter((c) => c[0] === "dmz_revoke").map((c) => c.slice(1));
+    assert.deepStrictEqual(tokens, [["hhhhhhhhhhhhhhhh", MEET, null]]);
   }
   console.log("room-link-files: ok");
 })().catch((e) => { console.error(e); process.exit(1); });
