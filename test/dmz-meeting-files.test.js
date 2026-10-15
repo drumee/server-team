@@ -23,6 +23,8 @@ const meeting_files = new Function("toArray", "attachmentsOf", "isMeetingNode", 
 
 // The real share resolver, so the password gate is the one production runs.
 const shareByToken = new Function("toArray", `return ${slice("async _shareByToken(token, tag)")}`)(toArray);
+const passedPasswordGate = new Function("toArray", "sqlString",
+  `return ${slice("async _passedPasswordGate(info)")}`)(toArray, sqlString);
 
 const MEET = "aaaaaaaaaaaaaaaa", F1 = "1111111111111111";
 function make({ share, legacy, nodes = {}, viewerPriv = 0 }) {
@@ -31,9 +33,12 @@ function make({ share, legacy, nodes = {}, viewerPriv = 0 }) {
     uid: "vvvvvvvvvvvvvvvv",
     input: { need: () => "tok" },
     _shareByToken: legacy ? shareByToken : async () => share,
+    _passedPasswordGate: passedPasswordGate,
     yp: { await_proc: async (name, _hub, proc, args) => {
       if (name === "secure_share_info") return [];
       if (name === "dmz_info_next") return legacy;
+      // The session's own access to the node, in the token's hub.
+      if (proc === "mfs_access_node") return [{ privilege: viewerPriv }];
       const id = String(args).replace(/'/g, "");
       return proc === "mfs_node_attr" ? [nodes[id] || {}] : [];
     } },
@@ -64,13 +69,30 @@ const meetingNode = (attachments) => ({ id: MEET, filetype: "schedule",
     await t.run();
     assert.deepStrictEqual(t.out.data, { status: "NOT_A_MEETING", items: [] });
   }
-  // Review Focus 4: password-protected link without access lists nothing
+  // A password-protected link lists nothing until this session gave the
+  // password: the token alone must not leak the names it protects.
   {
-    // viewerPriv 15: even a session holding the meeting grant gets nothing.
     const t = make({ legacy: { hub_id: "h", nid: MEET, validity: "TICKET_OK", require_password: 1 },
-      nodes: { [MEET]: meetingNode([F1]) }, viewerPriv: 15 });
+      nodes: { [MEET]: meetingNode([F1]) }, viewerPriv: 0 });
     await t.run();
     assert.deepStrictEqual(t.out.data, { status: "REQUIRED_PASSWORD", items: [] });
+  }
+  // ...and once it did (dmz.login granted the session the node), the files show.
+  {
+    const t = make({ legacy: { hub_id: "h", nid: MEET, validity: "TICKET_OK", require_password: 1 },
+      nodes: { [MEET]: meetingNode([F1]), [F1]: { id: F1, filename: "a", ext: "pdf", filetype: "document", filesize: 9 } },
+      viewerPriv: 15 });
+    await t.run();
+    assert.deepStrictEqual(t.out.data, { status: "TICKET_OK", hub_id: "h",
+      items: [{ nid: F1, filename: "a", ext: "pdf", filetype: "document", filesize: 9 }] });
+  }
+  // A JSON column the driver already parsed reads the same as a string.
+  {
+    const node = { id: MEET, filetype: "schedule", metadata: { content: JSON.stringify({ attachments: [F1] }) } };
+    const t = make({ share: { info: { hub_id: "h", nid: MEET } },
+      nodes: { [MEET]: node, [F1]: { id: F1, filename: "a", ext: "pdf", filetype: "document", filesize: 9 } } });
+    await t.run();
+    assert.deepStrictEqual(t.out.data.items.map((i) => i.nid), [F1]);
   }
   console.log("dmz-meeting-files: ok");
 })().catch((e) => { console.error(e); process.exit(1); });

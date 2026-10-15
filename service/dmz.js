@@ -1051,15 +1051,26 @@ class __dmz extends Mfs {
     // days/hours are NULL — duration_hours() returns NULL for an *expired*
     // share, and the old `hours !== null` guard dropped the status exactly
     // when it mattered. days/hours being null is tolerated downstream.
-    if (rows[0]) {
+    // No rows at all on a member's personal space: dmz_settings exists only in
+    // a workspace's database, and a personal meeting's invite link lives there.
+    if (rows && rows[0]) {
       info.hours = rows[0].hours;
       info.days = rows[0].days;
       info.dmz_expiry = rows[0].dmz_expiry;
     }
     info.require_pwd = info.require_password;
-    let node = await this.db.await_proc('mfs_access_node', this.uid, info.nid) || {};
+    // In the token's own hub, like every other lookup here: this.db is the
+    // request's vhost, which is not a member's personal space — there the
+    // node came back empty, so the gate had no title and a right password
+    // never showed up as privilege.
+    let node = toArray(await this.yp.await_proc(
+      'forward_proc', info.hub_id, 'mfs_access_node', `${sqlString(this.uid)},${sqlString(info.nid)}`
+    ))[0] || {};
     if (info.require_pwd && !node.privilege) {
       info.status = 'REQUIRED_PASSWORD';
+      // The gate names what it guards (a meeting's title), as the invite card
+      // already did for whoever received the link.
+      info.filename = node.filename || '';
       if (!password) {
         return this.output.data(info);
       }
@@ -1343,6 +1354,18 @@ class __dmz extends Mfs {
    * @returns {Promise<{info: object, viewerUid: ?string, legacyPrivilege: ?number}
    *                  |{status: string}>} `status` set means REFUSED, no data.
    */
+  async _passedPasswordGate(info) {
+    try {
+      const rows = await this.yp.await_proc(
+        'forward_proc', info.hub_id, 'mfs_access_node',
+        `${sqlString(this.uid)},${sqlString(info.node_id || info.nid)}`
+      );
+      return (parseInt((toArray(rows)[0] || {}).privilege, 10) || 0) > 0;
+    } catch (e) {
+      return false;
+    }
+  }
+
   async _shareByToken(token, tag) {
     let info = null;
     let viewerUid = null;
@@ -1373,9 +1396,15 @@ class __dmz extends Mfs {
     if (info.validity && info.validity !== 'TICKET_OK') {
       return { status: info.validity };
     }
-    // Gated shares are the gate's business, not these endpoints'.
+    // Gated shares are the gate's business, not these endpoints'. A legacy
+    // link whose password this session already gave (dmz.login then grants
+    // the session the node, the same test it uses to skip the gate) is past
+    // the gate: without this a password-protected meeting never listed its
+    // files.
     if (info.is_locked) return { status: 'TICKET_LOCKED' };
-    if (info.require_password) return { status: 'REQUIRED_PASSWORD' };
+    if (info.require_password && (info.is_secure || !(await this._passedPasswordGate(info)))) {
+      return { status: 'REQUIRED_PASSWORD' };
+    }
     if (info.require_email) return { status: 'REQUIRED_EMAIL' };
     return { info, viewerUid, legacyPrivilege };
   }
@@ -1509,9 +1538,12 @@ class __dmz extends Mfs {
       return deny('TICKET_INVALID');
     }
     if (!isMeetingNode(node)) return deny('NOT_A_MEETING');
+    // The driver can hand a JSON column back already parsed; JSON.parse on that
+    // object threw, and the catch turned every meeting's files into none.
     let meta = {};
     try {
-      meta = JSON.parse(node.metadata || '{}') || {};
+      const raw = node.metadata;
+      meta = (raw && typeof raw === 'object' ? raw : JSON.parse(raw || '{}')) || {};
     } catch (e) {
       meta = {};
     }
