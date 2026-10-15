@@ -88,6 +88,8 @@ class conference extends __yp {
     // know `waiting` stops at its permission check instead of entering.
     const early = await earlyArrival(this, {
       hub_id, uid: metadata.uid, type: metadata.type, socket_id,
+      schedule_id: this.input.get("schedule_id"),
+      schedule_at: this.input.get("schedule_at"),
     });
     if (early) {
       return this.output.data({ status: "waiting", reason: "MEETING_NOT_STARTED", ...early });
