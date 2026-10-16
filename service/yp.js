@@ -32,10 +32,10 @@ const { credential_dir } = sysEnv();
 let keyFile = resolve(credential_dir, `crypto/public.pem`);
 const publicKey = readFileSync(keyFile);
 
-const { butlerFrom } = require("./lib/mail-sender");
 const Crypto = require('crypto');
 const {createDeviceRegistrationV2} = require('./lib/device-registration-v2');
 const { retryAfter, recordFailure } = require('./lib/dmz-password-attempts');
+const { sendMail } = require("./lib/send-mail");
 
 
 //########################################
@@ -376,7 +376,7 @@ class __yp extends Entity {
     // Display-name From ("Drumee" <contact@drumee.org>) so the inbox shows
     // "Drumee" instead of the raw sender address, matching otp.js.
     try {
-      await msg.send({ html, from: butlerFrom() });
+      await sendMail(msg, { html });
     } catch (e) {
       this.warn("2FA OTP email send failed", e);
     }

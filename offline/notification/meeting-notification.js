@@ -17,6 +17,7 @@
  * =============================================================================
  */
 const Minimist = require("minimist");
+const { sendMail } = require("../../service/lib/send-mail");
 const {
   Messenger,
   Mariadb,
@@ -88,7 +89,7 @@ class __offline_meeting_notification_mail extends Offline {
         ...opt.data,
       },
     });
-    await msg.send();
+    await sendMail(msg);
     process.exit(0);
   }
 }

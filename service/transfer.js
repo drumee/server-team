@@ -35,6 +35,7 @@ const { stringify } = JSON;
 const { resolve, join } = require("path");
 const Script = require("@drumee/server-essentials/lex/script");
 const Spawn = require("child_process").spawn;
+const { sendMail } = require("./lib/send-mail");
 
 class __transfer extends Mfs {
 
@@ -136,7 +137,7 @@ class __transfer extends Mfs {
         message,
       },
     });
-    await msg.send();
+    await sendMail(msg);
     this.output.data({ nid });
   }
 
@@ -697,7 +698,7 @@ class __transfer extends Mfs {
         message,
       },
     });
-    await msg.send();
+    await sendMail(msg);
   }
 
     /**
