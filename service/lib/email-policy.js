@@ -56,4 +56,24 @@ async function shouldSendNotification(yp, email) {
   return !!parseInt(settings.email_notifications);
 }
 
-module.exports = { shouldSendNotification, parseSettings: _parseSettings };
+/**
+ * Whether `email` belongs to a Drumee account. Notification mail offers
+ * one-click unsubscribe only to account holders: the link turns an ACCOUNT
+ * setting off, so a guest's link could only promise something it cannot do.
+ * False on a lookup error — the safe answer is "no header".
+ *
+ * @param {object} yp     `await_proc`-capable yellow_page connection
+ * @param {string} email
+ * @returns {Promise<boolean>}
+ */
+async function hasAccount(yp, email) {
+  if (!yp || isEmpty(email) || typeof email !== "string") return false;
+  try {
+    const row = await yp.await_proc("email_exists", email);
+    return !!(row && row.id);
+  } catch (_) {
+    return false;
+  }
+}
+
+module.exports = { shouldSendNotification, hasAccount, parseSettings: _parseSettings };

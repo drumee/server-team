@@ -66,3 +66,19 @@ test('invalid signature changes nothing', async () => {
     token._setSecretForTest(undefined);
   }
 });
+
+// List-Unsubscribe flips an ACCOUNT setting, so only account holders may be
+// offered it; a guest's link would promise something that cannot happen.
+test('hasAccount: true only for a found account, false on miss or error', async () => {
+  const { hasAccount } = require('../service/lib/email-policy');
+  assert.equal(await hasAccount(fakeYp({ account: 'u1' }), 'ann@example.com'), true);
+  assert.equal(await hasAccount(fakeYp({ account: null }), 'guest@example.com'), false);
+  assert.equal(await hasAccount({ await_proc: async () => { throw new Error('db'); } }, 'a@b.c'), false);
+  assert.equal(await hasAccount(fakeYp({ account: 'u1' }), ''), false);
+});
+
+test('an address with no account is told so, not told it unsubscribed', () => {
+  const page = unsubscribePage('no_account');
+  assert.match(page, /no Drumee account/i);
+  assert.doesNotMatch(page, /no longer receive/i);
+});

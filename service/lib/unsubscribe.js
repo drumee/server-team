@@ -36,11 +36,13 @@ const MESSAGES = {
   done: "You will no longer receive notification emails from Drumee. "
     + "Security emails such as sign-in codes are still sent. "
     + "You can turn notifications back on in your account settings.",
+  no_account: "There is no Drumee account for this address, so there is "
+    + "nothing to unsubscribe from.",
   invalid: "This unsubscribe link is not valid.",
   error: "Something went wrong. Please try again later.",
 };
 
-/** @param {string} state "done" | "invalid" | "error" @returns {string} */
+/** @param {string} state "done" | "no_account" | "invalid" | "error" @returns {string} */
 function unsubscribePage(state) {
   const text = MESSAGES[state] || MESSAGES.invalid;
   return "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"UTF-8\">"

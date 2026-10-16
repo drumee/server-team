@@ -132,13 +132,15 @@ class __callback extends Entity {
     if (!email || !verify(email, sig)) {
       return this.output.html(unsubscribePage('invalid'));
     }
+    let result;
     try {
-      await unsubscribeEmail(this.yp, email);
+      result = await unsubscribeEmail(this.yp, email);
     } catch (e) {
       this.warn('[callback] unsubscribe failed', e && e.message);
       return this.output.html(unsubscribePage('error'));
     }
-    this.output.html(unsubscribePage('done'));
+    const noAccount = result && result.reason === 'no_account';
+    this.output.html(unsubscribePage(noAccount ? 'no_account' : 'done'));
   }
 
   async portal_return() {
