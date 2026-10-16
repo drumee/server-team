@@ -35,6 +35,7 @@ const { purge_account } = require("../lib/account-purge");
 const { missingPasswordRules } = require("../lib/password-policy");
 const { sqlString } = require("../lib/sql-literal");
 const pins = require("../lib/workspace-pins");
+const { sendMail } = require("../lib/send-mail");
 // drumate.pinned_workspaces: one in-flight change per user in this process.
 const __pinQueue = new Map();
 
@@ -351,7 +352,7 @@ class __private_drumate extends Entity {
       });
       tips = email.match(/(^.+)(@)(.+)$/)
       tips = tips[3];
-      await msg.send();
+      await sendMail(msg);
     } else {
       this.exception.user("Invalid profile");
       return;
@@ -976,7 +977,7 @@ class __private_drumate extends Entity {
       },
       handler: this.exception.email
     });
-    await msg.send();
+    await sendMail(msg);
     this.session.logout({ redirect: "#/welcome/checkout" });
   }
 

@@ -31,6 +31,7 @@ const {
   INVALID_EMAIL_FORMAT,
 } = Constants;
 const { Mfs } = require("@drumee/server-core");
+const { sendMail } = require("./lib/send-mail");
 
 const { stringify } = JSON;
 
@@ -213,7 +214,7 @@ class __butler extends Mfs {
       },
       handler: this.exception.email,
     });
-    await msg.send();
+    await sendMail(msg);
     this.output.data({ email });
   }
 
@@ -683,7 +684,7 @@ class __butler extends Mfs {
           handler: this.exception.email,
         });
         let html = msg.renderFrom(tpl, mailData);
-        await msg.send({ html });
+        await sendMail(msg, { html });
 
         // Resolve pending hub invitations registered before account existed
         try {

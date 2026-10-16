@@ -27,6 +27,7 @@ const { Mfs } = require("@drumee/server-core");
 // Password policy — shared with drumate.change_password; see the lib for the
 // UI copies it must stay in step with.
 const { missingPasswordRules } = require("./lib/password-policy");
+const { sendMail } = require("./lib/send-mail");
 
 class __signup extends Mfs {
 
@@ -142,7 +143,7 @@ class __signup extends Mfs {
         handler: this.exception.email,
       });
       const html = msg.renderFrom(tpl, mailData);
-      await msg.send({ html });
+      await sendMail(msg, { html });
     } catch (e) {
       this.warn("[signup.create_account] Welcome email failed", e && e.message);
     }

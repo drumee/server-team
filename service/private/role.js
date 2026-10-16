@@ -23,6 +23,7 @@ const { stringify } = JSON;
 const { isEmpty, isArray } = require('lodash');
 const Crypto = require("crypto");
 const Uniqid = require('uniqid');
+const { sendMail } = require("../lib/send-mail");
 class __private_adminpanel extends Mfs {
 
 
@@ -652,7 +653,7 @@ class __private_adminpanel extends Mfs {
       },
       handler: this.exception.email
     });
-    let body = await msg.send();
+    let body = await sendMail(msg);
     if (_.isString(body)) {
       return {
         subject,
@@ -700,7 +701,7 @@ class __private_adminpanel extends Mfs {
       },
       handler: this.exception.email
     });
-    let body = await msg.send();
+    let body = await sendMail(msg);
     if (_.isString(body)) {
       return {
         subject,
@@ -738,7 +739,7 @@ class __private_adminpanel extends Mfs {
       },
       handler: this.exception.email
     });
-    let body = await msg.send();
+    let body = await sendMail(msg);
     if (_.isString(body)) {
       return {
         subject,

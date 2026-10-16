@@ -12,15 +12,6 @@ const ALLOWED = new Set(['service/lib/send-mail.js', 'service/devel.js']);
 // Files not migrated yet. Each migration task DELETES its lines; when the plan
 // is done only ALLOWED remains. Never add to this list.
 const PENDING = new Set([
-  // Task 5 — auth & account
-  'service/otp.js',
-  'service/lobby.js',
-  'service/butler.js',
-  'service/signup.js',
-  'service/yp.js',
-  'service/dmz.js',
-  'service/private/drumate.js',
-  'service/private/role.js',
   // Task 6 — invites, contacts, billing, forms
   'service/private/hub.js',
   'service/private/contact.js',
