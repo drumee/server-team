@@ -18,6 +18,7 @@
  */
 const Minimist  = require('minimist');
 const {Messenger, Cache, Mariadb, Offline} = require('@drumee/server-essentials');
+const { sendMail } = require("../../service/lib/send-mail");
 
 /**
  * 
@@ -85,7 +86,7 @@ class __offline_meeting_notification_mail extends Offline {
         ...opt.data
       },
     });
-    await msg.send();
+    await sendMail(msg);
 
   }
 

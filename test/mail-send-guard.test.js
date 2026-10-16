@@ -9,19 +9,9 @@ const DIRECT_SEND = /\bmsg\.(send|dispatch)\(|\bmta\.sendMail\(/;
 // The one sanctioned sender, and the developer-only test mailer.
 const ALLOWED = new Set(['service/lib/send-mail.js', 'service/devel.js']);
 
-// Files not migrated yet. Each migration task DELETES its lines; when the plan
-// is done only ALLOWED remains. Never add to this list.
-const PENDING = new Set([
-  // Task 8 — offline workers
-  'offline/drumate/backup.js',
-  'offline/mail/index.js',
-  'offline/notification/sharebox-notification.js',
-  'offline/notification/sendmail.js',
-  'offline/notification/meeting-notification.js',
-  'offline/subscription/downgrade.js',
-  'offline/media/transfer.js',
-  'offline/workers/rewardExpiryWorker.js',
-]);
+// Files allowed to send directly while a migration is in progress. Empty:
+// everything goes through send-mail. Never add to this list.
+const PENDING = new Set();
 
 function filesOf(dir, ext) {
   const out = [];
