@@ -968,6 +968,18 @@
         }
       }
     },
+    "attachment_location": {
+      "doc": "Resolve a chat attachment card (the message's sandbox copy) to the workspace file it came from, for 'Show in folder': the promoted folder file, the node itself when outside /__chat__/, else the live non-chat file in this hub with the same content hash, preferring the conversation's folder. Returns the mfs_access_node row of a file the caller can read, or status NOT_FOUND.",
+      "scope": "hub",
+      "permission": { "src": "read" },
+      "params": {
+        "attachment_nid": { "type": "string", "required": false, "doc": "Node ID of the attachment card (the sandbox copy)" },
+        "attachment_hub_id": { "type": "string", "required": false, "doc": "Hub that holds the attachment card's node" },
+        "folder_nid": { "type": "string", "required": false, "doc": "Promoted folder file, when the attachment row carries one" },
+        "scope_nid": { "type": "string", "required": false, "doc": "Folder the conversation is scoped to; preferred when several files match" }
+      },
+      "returns": { "type": "object", "doc": "mfs_access_node row of the workspace file, or { status: 'NOT_FOUND' }" }
+    },
     "file_thread_info": {
       "doc": "Lookup a file chat through the canonical file-thread resolver. Dual selectors must agree; the backing media must be active and currently readable through mfs_access_node.",
       "scope": "hub",
