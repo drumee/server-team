@@ -116,7 +116,12 @@ class __private_task extends Entity {
       socket_id ? e.socket_id != socket_id : e.uid != this.uid,
     );
     if (isEmpty(dest)) return;
-    await RedisStore.sendData(this.payload(data, { service }), dest);
+    // Name the workspace in the envelope. A member of several workspaces hears
+    // all of them on one socket, and a task row carries no hub_id — without
+    // this a board open on workspace B took workspace A's task.create as its
+    // own and drew A's task on B. In `options`, not the row, so the row the
+    // client merges stays exactly what the SPs return.
+    await RedisStore.sendData(this.payload(data, { service, hub_id }), dest);
   }
 
   /**
