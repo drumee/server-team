@@ -75,8 +75,7 @@ test('notification without a secret still sends, without the header', async () =
   assert.equal(o.headers, undefined);
 });
 
-test('missing subject or body, or an unknown kind, throws', () => {
-  assert.throws(() => buildMailOptions({ to: 'a@b.c', html: HTML }), /subject/);
+test('missing body or an unknown kind throws', () => {
   assert.throws(() => buildMailOptions({ to: 'a@b.c', subject: 'x' }), /html or text/);
   assert.throws(() => buildMailOptions({ to: 'a@b.c', subject: 'x', html: HTML, kind: 'promo' }), /kind/);
 });
@@ -106,7 +105,27 @@ test('no MTA: returns what Messenger.send returns (NO_MTA string)', async () => 
 });
 
 test('a bad request throws before anything is sent', async () => {
-  const msg = fakeMsg({ subject: '' });
-  await assert.rejects(sendMail(msg), /subject/);
+  const msg = fakeMsg();
+  msg._html = undefined;
+  await assert.rejects(sendMail(msg), /html or text/);
   assert.equal(msg.sent.length, 0);
+});
+
+// A missing lexicon key used to send with an empty subject; refusing would
+// turn a cosmetic gap into a 500 on password reset.
+test('a missing subject still sends (empty subject), never throws', async () => {
+  const msg = fakeMsg({ subject: null });
+  const res = await sendMail(msg);
+  assert.deepEqual(res, { recipient: ['ann@example.com'], error: null });
+  assert.equal(msg.sent[0].subject, '');
+});
+
+// No address at all (a null row.email) must read as a failure, not a delivery.
+test('no recipient is reported as a failure, nothing sent', async () => {
+  for (const recipient of [null, '', [], ['  ']]) {
+    const msg = fakeMsg({ recipient });
+    const res = await sendMail(msg);
+    assert.equal(msg.sent.length, 0);
+    assert.ok(res && Array.isArray(res.error) && res.error.length, JSON.stringify(res));
+  }
 });

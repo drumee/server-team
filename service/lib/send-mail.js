@@ -56,13 +56,14 @@ function _recipients(value) {
 
 /**
  * Nodemailer options for ONE recipient. Pure, so the rules are testable.
+ * A missing subject sends as "" rather than throwing: refusing would turn a
+ * missing lexicon key into a failed password-reset request.
  * @param {{to:string, subject:string, html?:string, text?:string,
  *          kind?:string, appBase?:string}} p
  * @returns {Object}
  */
 function buildMailOptions({ to, subject, html, text, kind = TRANSACTIONAL, appBase } = {}) {
   if (!to || typeof to !== "string") throw new Error("send-mail: one recipient address required");
-  if (!subject) throw new Error("send-mail: subject required");
   if (!html && !text) throw new Error("send-mail: html or text required");
   if (kind !== TRANSACTIONAL && kind !== NOTIFICATION) {
     throw new Error(`send-mail: unknown kind ${JSON.stringify(kind)}`);
@@ -71,7 +72,7 @@ function buildMailOptions({ to, subject, html, text, kind = TRANSACTIONAL, appBa
     from: butlerFrom(),
     replyTo: MAIL_SENDER_ADDRESS,
     to,
-    subject: String(subject),
+    subject: String(subject == null ? "" : subject),
     text: text || textFromHtml(html),
   };
   if (html) opts.html = html;
@@ -99,6 +100,9 @@ async function sendMail(msg, parts = {}) {
   const subject = parts.subject || msg.get("subject");
   const kind = parts.kind || TRANSACTIONAL;
   const recipients = _recipients(parts.recipient || msg.get("recipient"));
+  // No address at all (a null row.email, an empty batch) is a failure, not a
+  // delivery: report it the way mail-result reads a rejection.
+  if (!recipients.length) return { recipient: [], error: ["(no recipient)"] };
   // Validate once, before the first transaction: a malformed request must not
   // half-send.
   const prepared = recipients.map((to) => buildMailOptions({ to, subject, html, text, kind }));
