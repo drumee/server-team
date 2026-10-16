@@ -29,7 +29,7 @@ const {
 } = Constants;
 const { resolve } = require("path");
 const { notifyMemberJoined, notifyMembersChanged, notifyInvitationsChanged } = require("../lib/notify-member-joined");
-const { butlerFrom } = require("../lib/mail-sender");
+const { sendMail } = require("../lib/send-mail");
 const { bounceLink } = require("../lib/email-link");
 const { mailFailure } = require("../lib/mail-result");
 const { resolveHubInviteName } = require("../lib/hub-invite-name");
@@ -2582,10 +2582,7 @@ class __private_hub extends Hub {
       handler,
     });
     const html = msg.renderFrom(tplPath, data);
-    // Display-name From ("Drumee" <contact@drumee.org>) so the inbox shows
-    // "Drumee", matching the contact-add emails.
-    const from = butlerFrom();
-    const result = await msg.send({ html, from });
+    const result = await sendMail(msg, { html });
     const perRecipient = !!(result && Array.isArray(result.error));
     const reason = mailFailure(result);
     if (reason && !perRecipient) {
