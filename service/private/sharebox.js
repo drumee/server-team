@@ -27,6 +27,7 @@ const { bounceLink } = require("../lib/email-link");
 
 
 const __public = require('../sharebox.js');
+const { sendMail, NOTIFICATION } = require("../lib/send-mail");
 class __private_sharebox extends __public {
 
   constructor(...args) {
@@ -426,7 +427,7 @@ class __private_sharebox extends __public {
       },
       handler: this.exception.email
     });
-    await msg.send();
+    await sendMail(msg, { kind: NOTIFICATION });
   }
 
   /**
@@ -470,7 +471,7 @@ class __private_sharebox extends __public {
         },
         handler: this.exception.email
       });
-      await msg.send();
+      await sendMail(msg, { kind: NOTIFICATION });
     }
     this.output.data(node);
   }
@@ -784,7 +785,7 @@ class __private_sharebox extends __public {
           },
           handler: this.exception.email
         });
-         await msg.send();
+         await sendMail(msg);
       }
     }
     return 1;

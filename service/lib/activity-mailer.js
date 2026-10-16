@@ -42,7 +42,7 @@ const { resolve } = require("path");
 const { isEmpty } = require("lodash");
 const { Messenger, RedisStore, sysEnv, Attr, toArray } = require("@drumee/server-essentials");
 const { shouldSendNotification } = require("./email-policy");
-const { butlerFrom } = require("./mail-sender");
+const { sendMail, NOTIFICATION } = require("./send-mail");
 const { bounceLink } = require("./email-link");
 
 // Dedup window, NOT a throttle: every offline-recipient event mails; the
@@ -118,7 +118,7 @@ async function _sendOne(ctx, redis, opt) {
     filename,
     link,
   });
-  await msg.send({ html, from: butlerFrom() });
+  await sendMail(msg, { html, kind: NOTIFICATION });
 }
 
 function _redis() {
