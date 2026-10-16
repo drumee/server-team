@@ -24,6 +24,7 @@ const { copyNodeStorage } = require("./_node-storage");
 const { stampAuthorIdentity } = require("../lib/message-author");
 const { pruneToCurrentReaders } = require("../lib/seen-readers");
 const { movePlanRows } = require("./_move-plan");
+const AttachmentSource = require("../lib/attachment-source");
 const { memberCan, CAN_CHAT } = require("../lib/member-capability");
 const {admit: admitMobilePush} = require('../lib/mobile-push');
 const { markFeatureUsage } = require("../lib/feature-usage");
@@ -1917,6 +1918,69 @@ class __private_channel extends Entity {
    * metadata plus the thread summary when a thread already exists. Opening a
    * file chat is side-effect free; the thread is created only by file_thread_post.
    */
+  /**
+   * "Show in folder" on a chat attachment card: the workspace file it stands
+   * for, readable by the caller, or { status: "NOT_FOUND" }.
+   *
+   * The card is the message's own copy (sandbox, /__chat__/), so the file is
+   * resolved in this order — see lib/attachment-source:
+   *  1. `folder_nid`: the promoted upload, tagged at post time.
+   *  2. the copy itself, when it is not in a chat sandbox (legacy rows).
+   *  3. the live non-chat file in this hub with the copy's content (md5),
+   *     preferring the conversation's folder (`scope_nid`).
+   */
+  async attachment_location() {
+    const attachment_nid = `${this.input.use("attachment_nid") || ""}`;
+    const attachment_hub_id = `${this.input.use("attachment_hub_id") || ""}`;
+    const folder_nid = `${this.input.use("folder_nid") || ""}`;
+    const scope_nid = `${this.input.use("scope_nid") || ""}`;
+    const notFound = () => this.output.data({ status: "NOT_FOUND" });
+    const readable = (node, nid) => {
+      const privilege = Number((node && (node.privilege || node.permission)) || 0);
+      return (
+        !isEmpty(node) &&
+        `${node.nid || node.id || ""}` === `${nid}` &&
+        `${node.status || ""}` === "active" &&
+        (privilege & MFS_PERMISSION_READ) === MFS_PERMISSION_READ
+      );
+    };
+    const local = async (nid) => {
+      const node = toArray(
+        await this.db.await_proc("mfs_access_node", this.uid, `${nid}`),
+      )[0];
+      return readable(node, nid) ? node : null;
+    };
+
+    if (folder_nid) {
+      const node = await local(folder_nid);
+      if (node) return this.output.data(node);
+    }
+    if (!attachment_nid || !attachment_hub_id) return notFound();
+
+    const copy = toArray(
+      await this.yp.await_proc(
+        "forward_proc",
+        attachment_hub_id,
+        "mfs_access_node",
+        `${sqlString(this.uid)}, ${sqlString(attachment_nid)}`,
+      ),
+    )[0];
+    // The caller must be able to read the card they clicked; otherwise its
+    // content hash would let anyone probe this hub for a file.
+    if (!readable(copy, attachment_nid)) return notFound();
+    if (!AttachmentSource.isChatSandbox(copy.ownpath)) {
+      return this.output.data(copy);
+    }
+
+    const q = AttachmentSource.sourceQuery(copy, scope_nid);
+    if (!q) return notFound();
+    const hit = toArray(await this.db.await_query(q.sql, ...q.args))[0];
+    if (!hit || !hit.id) return notFound();
+    const node = await local(hit.id);
+    if (!node) return notFound();
+    this.output.data(node);
+  }
+
   async file_thread_info() {
     const file_nid = this.input.use("file_nid");
     const file_thread_id = this.input.use("file_thread_id");
