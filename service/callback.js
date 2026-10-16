@@ -16,6 +16,8 @@
  */
 
 const {Entity} = require('@drumee/server-core');
+const { verify } = require('./lib/unsubscribe-token');
+const { unsubscribeEmail, unsubscribePage } = require('./lib/unsubscribe');
 
 // The Stripe webhook now lives in service/public/stripe_webhook.js (signature
 // verified, idempotent, no secret logging). callback.js keeps only the two
@@ -116,6 +118,29 @@ class __callback extends Entity {
 
   // Stripe Billing Portal return_url, and the "Open Drumee" target in outgoing
   // emails. See _deskPath above for why this is a bounce and why it is relative.
+  // One-click unsubscribe (RFC 8058): the List-Unsubscribe target that
+  // service/lib/send-mail.js puts on NOTIFICATION mail. Gmail/Yahoo POST
+  // "List-Unsubscribe=One-Click" here; other clients open it as a GET after
+  // the user presses their Unsubscribe button. Both act — the URL only ever
+  // appears in a header, which link scanners do not prefetch.
+  //
+  // `sig` is the authorisation (lib/unsubscribe-token): no session, and an
+  // unsigned or mismatched request changes nothing.
+  async unsubscribe() {
+    const email = String(this.input.use('email', '')).trim().toLowerCase();
+    const sig = String(this.input.use('sig', ''));
+    if (!email || !verify(email, sig)) {
+      return this.output.html(unsubscribePage('invalid'));
+    }
+    try {
+      await unsubscribeEmail(this.yp, email);
+    } catch (e) {
+      this.warn('[callback] unsubscribe failed', e && e.message);
+      return this.output.html(unsubscribePage('error'));
+    }
+    this.output.html(unsubscribePage('done'));
+  }
+
   async portal_return() {
     this.output.html(`<script> window.location.href = '${this._deskPath()}#/desk/' </script>`);
   }

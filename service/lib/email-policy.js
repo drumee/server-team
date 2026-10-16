@@ -56,4 +56,4 @@ async function shouldSendNotification(yp, email) {
   return !!parseInt(settings.email_notifications);
 }
 
-module.exports = { shouldSendNotification };
+module.exports = { shouldSendNotification, parseSettings: _parseSettings };
