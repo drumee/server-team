@@ -450,43 +450,6 @@ class __private_task extends Entity {
   }
 
   /**
-   * Parent auto-complete. Run after a subtask's status changed: task_rollup_parent
-   * applies the all-siblings-done rule and returns the updated PARENT row, or
-   * nothing when the rollup did not fire (not a subtask, no done column on the
-   * board, parent already complete or parked in a later column, siblings still
-   * open — see the proc for the full ordering).
-   *
-   * Returns the parent row when it fired, else null. Best-effort: a rollup
-   * failure must never fail the status change the user actually asked for.
-   */
-  async _rollupParent(subtask_id) {
-    let row = null;
-    try {
-      const data = await this.db.await_proc('task_rollup_parent', subtask_id);
-      row = (Array.isArray(data) ? data[0] : data) || null;
-      if (!row || !row.id) return null;
-    } catch (e) {
-      this.warn('[task._rollupParent] failed:', e && e.message);
-      return null;
-    }
-    // Attributed to whoever completed the last subtask — they caused it, and an
-    // unattributed entry reads as a system glitch in the task's History tab.
-    // `auto` marks it as a rollup rather than a manual move.
-    await this._logActivity(row.id, 'complete', {
-      title: row.title,
-      status: row.status,
-      auto: 1,
-    });
-    // Peers reload their whole task set on this service, so the parent's new
-    // status reaches them without a second broadcast shape.
-    await this._broadcast('task.update_status', row);
-    // Deliberately NOT calling _notifyColumnWatchers: nobody moved this task by
-    // hand, and mailing a column's watchers about a move the server made turns
-    // one user's checkbox into a burst of notifications.
-    return row;
-  }
-
-  /**
    * Append a row to the folder-scoped task activity feed (Project Health).
    * Best-effort: a logging failure must never break the mutation it follows.
    * For deletions call BEFORE the row is removed (the proc snapshots task.nid).
@@ -877,18 +840,9 @@ class __private_task extends Entity {
       });
     }
 
-    // Parent auto-complete. Returned alongside the moved row rather than left
-    // to a client reload: peers pick the change up from the broadcast above,
-    // but the user who ticked the last subtask merges only the row this call
-    // answers with — without `parent` they are the one person who doesn't see
-    // the parent flip.
-    const parent = row && row.parent_task_id
-      ? await this._rollupParent(id)
-      : null;
-    if (parent) {
-      this.output.data({ ...row, parent });
-      return;
-    }
+    // No parent auto-complete: finishing the last subtask leaves the parent in
+    // its own column — moving it is the user's call. The response therefore
+    // never carries `parent`, and the client's `row.parent` merges stay inert.
     this.output.data(data);
   }
 
