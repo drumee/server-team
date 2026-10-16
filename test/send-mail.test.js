@@ -40,6 +40,20 @@ test('text part is generated from the HTML, headings not shouted', () => {
   assert.match(text, /https:\/\/drumee\.test\/-\/#\/desk/);
 });
 
+// Email layouts use &nbsp; spacer cells; they must not become runs of blank,
+// space-only lines in the text part (the invite mail had a dozen).
+test('text part has no space-only lines and no double blank lines', () => {
+  const html = '<p>Top</p><table><tr><td>&nbsp;</td></tr></table><div>&nbsp;</div>'
+    + '<table><tr><td> &nbsp; </td></tr></table><p>Bottom</p>';
+  const text = textFromHtml(html);
+  assert.match(text, /Top/);
+  assert.match(text, /Bottom/);
+  for (const line of text.split('\n')) {
+    assert.ok(line === '' || /\S/.test(line.replace(/\u00a0/g, ' ')), JSON.stringify(line));
+  }
+  assert.doesNotMatch(text, /\n\s*\n\s*\n/);
+});
+
 test('every mail: one brand From, Reply-To, a text part', () => {
   const o = buildMailOptions({ to: 'ann@example.com', subject: 'Hi', html: HTML });
   assert.equal(o.from, '"Drumee" <contact@drumee.org>');

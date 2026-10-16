@@ -44,7 +44,14 @@ const TEXT_OPTIONS = {
 
 /** @param {string} html @returns {string} */
 function textFromHtml(html) {
-  return convert(String(html || ""), TEXT_OPTIONS).trim();
+  return convert(String(html || ""), TEXT_OPTIONS)
+    // Layout spacer cells (&nbsp;) leave lines of only spaces/NBSPs: empty
+    // them, then keep at most one blank line between blocks.
+    .split("\n")
+    .map((line) => (/\S/.test(line.replace(/\u00a0/g, " ")) ? line.replace(/[ \u00a0]+$/, "") : ""))
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 function _recipients(value) {
