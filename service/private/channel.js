@@ -27,6 +27,7 @@ const { movePlanRows } = require("./_move-plan");
 const { memberCan, CAN_CHAT } = require("../lib/member-capability");
 const {admit: admitMobilePush} = require('../lib/mobile-push');
 const { markFeatureUsage } = require("../lib/feature-usage");
+const { meetingCardAction, pushExclude } = require("../lib/meeting-card-push");
 
 const { stringify, parse: jsonParse } = JSON;
 const { isEmpty } = require("lodash");
@@ -1861,11 +1862,11 @@ class __private_channel extends Entity {
     // client keeps its own fallbacks for a server that predates this.
     data.folder_name = await this._chat_folder_name(nid);
     data.echoId = this.input.get("echoId");
-    const meetingMatch = /^\[\[MEETING:\s*(start|end)\s*:/.exec(data.message);
-    if (meetingMatch) data.message_type = `meeting.${meetingMatch[1]}`;
+    const meetingAction = meetingCardAction(data.message);
+    if (meetingAction) data.message_type = `meeting.${meetingAction}`;
     let hub_id = this.hub.get(Attr.id);
     let recipients = await this.yp.await_proc("entity_sockets", {
-      exclude,
+      exclude: pushExclude(data.message, exclude),
       hub_id,
     });
     await RedisStore.sendData(this.payload(data), recipients);
