@@ -225,6 +225,30 @@
       "errors": []
     },
 
+    "cancel_invite": {
+      "doc": "Withdraw invitations to this workspace - the Cancel button on a Pending Invitations row of the Access panel, for one address or a selection. Removes every active or declined hub_invite token of each address for this workspace, whoever sent it, and its pending_invitation row, so the invitee can neither accept nor join on signup and the seat is released. Accepted invitations are untouched. The invitee's notification is dismissed and then reads as no longer valid.",
+      "scope": "hub",
+      "permission": {
+        "src": "admin"
+      },
+      "params": {
+        "emails": {
+          "type": "array",
+          "required": true,
+          "minItems": 1,
+          "doc": "Addresses whose invitation to withdraw",
+          "items": { "type": "string" }
+        }
+      },
+      "returns": {
+        "results": {
+          "type": "array",
+          "doc": "Per address: email, status - cancelled, not_found when nothing was left to withdraw, or failed"
+        }
+      },
+      "errors": []
+    },
+
     "invite": {
       "doc": "Invite one or more emails into this workspace. Mints an invitation the recipient answers with Accept or Decline - it does NOT add anybody. An address that already has an account additionally gets a notification row carrying the token; every address gets the email. Membership is written by accept_invite.",
       "scope": "hub",
@@ -357,7 +381,7 @@
       }
     },
     "delete_contributor": {
-      "doc": "Remove members from hub (broadcasts removal notification)",
+      "doc": "Remove members from hub (broadcasts removal notification). The workspace owner is never removed; when the owner is the only one asked for, the answer is error OWNER_CANNOT_BE_REMOVED in the response body and nothing is changed.",
       "scope": "hub",
       "permission": {
         "src": "admin"
@@ -605,6 +629,14 @@
       }
     },
     "change_owner": {
+      "doc": "Hand the workspace over to another member. The new owner must be an active account that is already a member of this workspace.",
+      "errors": [
+        {
+          "code": "NEW_OWNER_MUST_BE_ACTIVE_MEMBER",
+          "message": "The new owner must be an active member of this workspace",
+          "http_status": 400
+        }
+      ],
       "scope": "hub",
       "permission": {
         "src": "admin"

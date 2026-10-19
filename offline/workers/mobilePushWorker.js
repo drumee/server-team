@@ -14,14 +14,17 @@ const {
   activeHubMemberUids,
   eligibleRecipientUids,
   hubMemberPageArguments,
+  MUTABLE_EVENTS,
   pagedHubMembers,
   privilegeAllows,
+  unmutedUids,
 } = require('../../service/lib/mobile-push-recipients');
 const {
   createMobilePushAuthorization,
 } = require('../../service/lib/mobile-push-authorization');
 const {
   createMobilePushContent,
+  isMeetingCard,
 } = require('../../service/lib/mobile-push-content');
 const { sqlString } = require('../../service/lib/sql-literal');
 
@@ -53,6 +56,46 @@ function logError(event, error, fields = {}) {
   console.error(JSON.stringify({event, code: errorCode(error), ...fields}));
 }
 
+// Recipients who muted this chat (workspace, person, or everything) get no
+// push. One query per event, at admission; a missing proc or a failed query
+// returns nothing and so filters nothing.
+async function withoutMuted(event, uids) {
+  if (!uids.length || !MUTABLE_EVENTS.has(event.type)) return uids;
+  let rows;
+  try {
+    rows = toArray(await yp.await_proc(
+      'notification_muted_uids',
+      JSON.stringify(uids),
+      event.hub_id || '',
+      event.actor_id || '',
+    ));
+  } catch (error) {
+    logError('mobile_push_mute_lookup_failed', error, {event_id: event.event_id});
+    return uids;
+  }
+  if (!rows.some(row => row && row.uid)) return uids;
+  return unmutedUids(event, uids, rows, await isMeetingEvent(event));
+}
+
+// An instant-meeting start/end is a channel.post whose body is the
+// [[MEETING:…]] card; it still rings for a muted chat. Read only when someone
+// muted, so a plain event costs nothing extra. A failed read counts as a chat
+// message (still filtered): a missed meeting ring is better than a leaked chat.
+async function isMeetingEvent(event) {
+  if (event.type !== 'channel.post' || !event.hub_id || !event.key_id) return false;
+  try {
+    const row = toArray(await yp.await_proc(
+      'forward_proc',
+      event.hub_id,
+      'channel_get_message',
+      `${sqlString(event.key_id)}`,
+    ))[0];
+    return !!row && isMeetingCard(row.message);
+  } catch (_) {
+    return false;
+  }
+}
+
 async function eligibleUids(event) {
   if (!event.hub_id) {
     const candidates = eligibleRecipientUids(event);
@@ -60,7 +103,7 @@ async function eligibleUids(event) {
     for (const uid of candidates) {
       if (await recipientAllowed(event, uid)) allowed.push(uid);
     }
-    return allowed;
+    return withoutMuted(event, allowed);
   }
   const currentMembers = await pagedHubMembers(async page => toArray(
     await yp.await_proc(
@@ -92,7 +135,7 @@ async function eligibleUids(event) {
   for (const uid of candidates) {
     if (await recipientAllowed(event, uid)) allowed.push(uid);
   }
-  return allowed;
+  return withoutMuted(event, allowed);
 }
 
 async function registrationsFor(uids) {

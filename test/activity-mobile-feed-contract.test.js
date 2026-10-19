@@ -246,6 +246,8 @@ test('mark-all fails closed before the global pointer after a rollup failure', a
   const calls = [];
   const failure = {status: 'error'};
   const context = {
+    // No chat is muted in this case (see activity-muted-chat-rows.test.js).
+    async _chatMutes() { return {global: 0, hubs: new Set(), peers: new Set()}; },
     uid: 'current-user',
     // `use('bucket')` returns undefined -> unscoped clear, the path this test pins.
     input: {get: () => 0, use: () => undefined},
@@ -284,6 +286,9 @@ test('Unread OFF shows a contact row as unread only when the badge counts it', a
   activity._optionalYpProc = async (proc) => (
     proc === 'contact_invite_accepted_unread' ? [{id: 726}] : []
   );
+  // contact_unread_ids not deployed yet: the contact_*_unread procedures decide
+  // (the deployed path is covered in notification-unread-uncapped.test.js).
+  activity._optionalYpProcResult = async () => ({ok: false, rows: []});
   activity._callUserProc = async (proc) => {
     calls.push(proc);
     if (proc === 'notification_hub_invites') return [{id: 784}];
@@ -357,6 +362,8 @@ test('Mark as all read on Other clears every Other source it counts', async () =
   const yp = [];
   let refusedReads = 0;
   const context = {
+    // No chat is muted in this case (see activity-muted-chat-rows.test.js).
+    async _chatMutes() { return {global: 0, hubs: new Set(), peers: new Set()}; },
     uid: 'me',
     input: {get: () => 0, use: (k) => (k === 'bucket' ? 'other' : undefined)},
     debug: () => undefined,
@@ -368,6 +375,9 @@ test('Mark as all read on Other clears every Other source it counts', async () =
     },
     async _optionalYpProcResult(proc, ...args) {
       yp.push([proc, ...args]);
+      // contact_unread_mark_read not deployed yet: the per-row loop runs (the
+      // deployed path is covered in notification-unread-uncapped.test.js).
+      if (proc === 'contact_unread_mark_read') return {ok: false, rows: []};
       return {ok: true, rows: [{status: 'ok'}]};
     },
     _markContactRead: Activity.prototype._markContactRead,

@@ -37,6 +37,7 @@ const { resolveHubDisplayName } = require("../lib/hub-display-name");
 const {
   CAN_CHAT, CHAT_UPLOAD_GRANT, privilegeAllows
 } = require("../lib/member-capability");
+const { hubWildcardPermission, holdsHubOwner } = require("../lib/hub-owner");
 const { MfsTools } = require("@drumee/server-core");
 const { remove_dir } = MfsTools;
 const { toArray } = utils;
@@ -66,6 +67,10 @@ const WORKSPACE_INVITE_TPL = "workspace-invite-member";
 // calls (the popup fires one per selected workspace) under Postfix's default
 // 50 connections per client IP.
 const INVITE_MAIL_BATCH = 25;
+
+// Most addresses one hub.cancel_invite call withdraws. A selection in the
+// Access panel is bounded by what is on screen; this bounds a scripted call.
+const CANCEL_INVITE_MAX = 200;
 
 /**
  * True when a workspace area is shared outside the member circle.
@@ -180,8 +185,72 @@ class __private_hub extends Hub {
     const type = this.input.need(Attr.type);
     const page = this.input.use(Attr.page, 1);
     let members = await this._members_by_type(type, page);
+    // Opt-in: the caller wants each member's OWN profile name, not the label
+    // the viewer's contact book holds for them (see _applyProfileNames).
+    if (this.input.use("names") === "profile") {
+      members = await this._applyProfileNames(members);
+    }
     members = await this._hydrateMemberProfileNames(members, { type, page });
     this.output.list(members);
+  }
+
+  /**
+   * Replace contact-book names with the members' live profile names.
+   *
+   * hub_get_members_by_type overwrites firstname / lastname / fullname /
+   * surname from the REQUESTING user's contact book. A contact keeps a copy of
+   * the name taken when it was created — contact_sync only refreshes the
+   * admin-assigned ones — so after a member renames their profile, everyone
+   * holding them as a contact keeps seeing the old name. In a meeting that is
+   * visible next to the live one: the video tile carries the name the member
+   * broadcasts from their own profile, the roster row the stale contact copy.
+   *
+   * Opt-in (`names: "profile"`) so every other surface keeps its current
+   * contact-book naming. One query for the whole page. A member whose profile
+   * has no name keeps the row as it was (contact name, then the email
+   * fallbacks _hydrateMemberProfileNames already provides).
+   */
+  async _applyProfileNames(members) {
+    const rows = toArray(members);
+    const ids = [
+      ...new Set(rows.map((m) => this._cleanMemberName(m && m.id)).filter(Boolean)),
+    ];
+    if (!ids.length) return rows;
+    let profiles;
+    try {
+      profiles = toArray(
+        await this.yp.await_query(
+          `SELECT id, firstname, lastname FROM yp.drumate WHERE id IN (${ids
+            .map(() => "?")
+            .join(",")})`,
+          ...ids
+        )
+      );
+    } catch (e) {
+      this.syslog(
+        "get_members_by_type profile names lookup failed",
+        stringify({ uid: this.uid, error: e && e.message })
+      );
+      return rows;
+    }
+    const byId = new Map(
+      profiles.filter((p) => p && p.id).map((p) => [`${p.id}`, p])
+    );
+    return rows.map((member) => {
+      const profile = byId.get(this._cleanMemberName(member && member.id));
+      if (!profile) return member;
+      const firstname = this._cleanMemberName(profile.firstname);
+      const lastname = this._cleanMemberName(profile.lastname);
+      const name = [firstname, lastname].filter(Boolean).join(" ");
+      if (!name) return member;
+      return {
+        ...member,
+        firstname: firstname || null,
+        lastname: lastname || null,
+        fullname: name,
+        surname: name,
+      };
+    });
   }
 
   _cleanMemberName(value) {
@@ -1092,6 +1161,9 @@ class __private_hub extends Hub {
    * buttons on.
    */
   async _grantMembership(uid, privilege, expiry, message, mfs_home, hub_name, from_fullname) {
+    // Already the owner: nothing to grant, and add_member would overwrite the
+    // owner bit (see _holdsOwner).
+    if (await this._holdsOwner(this.hub.get(Attr.db_name), uid)) return null;
     const r = await this.db.await_proc("add_member", uid, privilege, expiry);
     if (!r || !r.db_name) return null;
     await this.db.await_proc(
@@ -1117,22 +1189,27 @@ class __private_hub extends Hub {
       entity_id: uid,
       log: `Member added to workspace '${hub_name || this.hub.get(Attr.id)}'`,
     });
-    try {
-      await this.yp.await_proc(
-        "contact_log_activity", this.uid, uid, "hub_invite_received",
-        {
-          hub_id: this.hub.get(Attr.id),
-          hub_name: hub_name,
-          message: message,
-          from_fullname: from_fullname,
-          privilege: privilege,
-        }
-      );
-    } catch (err) {
-      this.warn(
-        "[hub] _grantMembership: log activity failed for", uid,
-        err && err.message
-      );
+    // No "<you> added you to team …" receipt to somebody who added
+    // THEMSELF: the notification panel hides one's own actions, so such a row
+    // was counted by the Other badge yet never listed (prod audit 2026-10-12).
+    if (String(uid) !== String(this.uid)) {
+      try {
+        await this.yp.await_proc(
+          "contact_log_activity", this.uid, uid, "hub_invite_received",
+          {
+            hub_id: this.hub.get(Attr.id),
+            hub_name: hub_name,
+            message: message,
+            from_fullname: from_fullname,
+            privilege: privilege,
+          }
+        );
+      } catch (err) {
+        this.warn(
+          "[hub] _grantMembership: log activity failed for", uid,
+          err && err.message
+        );
+      }
     }
     // Notify online members (admins with the Folder settings permission matrix
     // open) so the new member appears immediately without a manual reload.
@@ -1432,18 +1509,23 @@ class __private_hub extends Hub {
    * the safe direction for a lookup that could not answer.
    */
   async _hubPermission(db_name, uid) {
-    try {
-      if (!/^[A-Za-z0-9_]+$/.test(String(db_name || ''))) return 0;
-      let row = await this.yp.await_query(
-        `SELECT permission FROM \`${db_name}\`.permission
-          WHERE resource_id='*' AND entity_id=? LIMIT 1`,
-        uid
-      );
-      if (isArray(row)) row = row[0];
-      return ~~(row && row.permission);
-    } catch (e) {
-      return 0;
-    }
+    return hubWildcardPermission(this.yp, db_name, uid);
+  }
+
+  /**
+   * Does `uid` hold the OWNER bit on this workspace's '*' row?
+   *
+   * Every member-management path below (add_member, permission_grant,
+   * permission_set) writes that row unconditionally, so pointing one of them
+   * at the owner — re-inviting their address, picking a role on their row in
+   * the Access panel — rewrote 63 into 7 or 31. yp.hub.owner_id still named
+   * them, but nobody held the bit any more: the owner was offered "Leave
+   * workspace" and the workspace had no owner left (seen on stage, 2026-10).
+   * Only change_owner may move ownership, so these paths leave an owner's row
+   * alone instead.
+   */
+  async _holdsOwner(db_name, uid) {
+    return holdsHubOwner(this.yp, db_name, uid);
   }
 
   async invite() {
@@ -1721,6 +1803,15 @@ class __private_hub extends Hub {
       await this._rememberInvitee(email, drumate, contactBook);
     }
 
+    // Everybody else's view of this workspace's pending invitations (the
+    // Access panel's Pending section, the admin console's Pending card and
+    // its Active directory rows) re-reads on hub.invitations_changed, which
+    // was sent when an invitation was answered or withdrawn but never when
+    // one was SENT, so they sat on the old list until reopened. Before the
+    // reply: entity_sockets is read through this.yp, closed with the request.
+    // Never throws.
+    if (mailQueue.length) await notifyInvitationsChanged(this, hubId);
+
     this.output.data({ results: results.filter(Boolean) });
 
     if (mailQueue.length) {
@@ -1764,10 +1855,11 @@ class __private_hub extends Hub {
         });
       }
       if (!failed.length || !inviterSockets || !template) return;
+      // payload() wraps the data as `model` (the desk receives it as `data`);
+      // the failed list goes into that body, not next to it.
       const notice = JSON.parse(JSON.stringify(template));
-      if (notice.data && Array.isArray(notice.data.emails)) notice.data.emails = failed;
-      else if (Array.isArray(notice.emails)) notice.emails = failed;
-      else notice.emails = failed;
+      const body = notice.model || notice.data || notice;
+      body.emails = failed;
       await RedisStore.sendData(notice, inviterSockets);
     };
     run().catch((err) => warn("[hub] invite mail step crashed", err && err.message));
@@ -2240,6 +2332,99 @@ class __private_hub extends Hub {
   }
 
   /**
+   * Withdraw invitations to this workspace — the Cancel button on a row of the
+   * Access panel's Pending Invitations section, one address or a selection.
+   *
+   * WHY IT EXISTS. An invitation used to stay there until it was answered or
+   * lapsed: a mistyped address, or one the org has no seat left for, sat as
+   * Pending with nothing the admin could do about it.
+   *
+   * WHAT IS WITHDRAWN (token_hub_invite_cancel): every active or declined
+   * hub_invite token of the address for THIS workspace, whoever sent it, and
+   * its pending_invitation row — the row signup grants from and the seat count
+   * reads. An accepted token is untouched: that person is a member, and
+   * removing a member is a different act behind its own button.
+   *
+   * THE INVITEE IS NOT PUSHED ANYTHING. The token being gone is enough: their
+   * notification row reads `invalid` on the next feed (hub-invite-status) and
+   * the email's links answer `invalid`. The row is dismissed so it does not
+   * keep counting as unread. `hub.invite_received` is deliberately NOT sent —
+   * the desk treats it as "you were invited" (sound, sidebar refresh).
+   *
+   * Per-address and best-effort after the withdrawal itself: a dismissal
+   * that fails must not report a cancelled invitation as failed.
+   *
+   * 🚨 THE AUDIT LINES ARE WRITTEN LAST, after every withdrawal and the push.
+   * 'invite_cancelled' needs the action_log enum widened on every hub db
+   * (schemas common/patches/alter_action_log_add_invite_answer_actions.sql).
+   * On a db that has not had it, the insert raises under
+   * STRICT_TRANS_TABLES, and the mariadb wrapper answers an SQL error by
+   * ending the request's shared yp connection while swallowing the error —
+   * interleaved with the withdrawals, every later address would silently
+   * "cancel" nothing. Last, the worst case is a missing log line.
+   */
+  async cancel_invite() {
+    const hub_id = this.hub.get(Attr.id);
+    const seen = new Set();
+    const emails = toArray(this.input.need("emails"))
+      .map((e) => String(e || "").trim())
+      .filter((e) => {
+        const key = e.toLowerCase();
+        if (!e || seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })
+      .slice(0, CANCEL_INVITE_MAX);
+    const results = [];
+    const withdrawn = [];
+    let changed = false;
+    for (const email of emails) {
+      try {
+        let row = await this.yp.await_proc("token_hub_invite_cancel", hub_id, email);
+        if (isArray(row)) row = row[0];
+        const cancelled = parseInt(row && row.cancelled, 10) || 0;
+        if (!cancelled) {
+          results.push({ email, status: "not_found" });
+          continue;
+        }
+        changed = true;
+        withdrawn.push(email);
+        results.push({ email, status: "cancelled" });
+      } catch (err) {
+        this.warn("[hub] cancel_invite failed for", email, err && err.message);
+        results.push({ email, status: "failed" });
+        continue;
+      }
+      try {
+        let drumate = await this.yp.await_proc("drumate_exists", email);
+        if (isArray(drumate)) drumate = drumate[0];
+        if (drumate && drumate.id) {
+          await this.yp.await_proc(
+            "contact_activity_dismiss_hub_invite", drumate.id, hub_id
+          );
+        }
+      } catch (err) {
+        this.warn("[hub] cancel_invite: notification", err && err.message);
+      }
+    }
+    // Other admins with the panel open re-read their Pending Invitations.
+    if (changed) await notifyInvitationsChanged(this, hub_id);
+    const db_name = this.hub.get(Attr.db_name);
+    for (const email of withdrawn) {
+      await writeAudit(this, {
+        db: db_name,
+        uid: this.uid,
+        action: "invite_cancelled",
+        category: "member",
+        notify_to: "admin",
+        entity_id: hub_id,
+        log: `Invite cancelled — the invitation to ${email} was withdrawn`,
+      });
+    }
+    this.output.data({ results });
+  }
+
+  /**
    * Top-3 workspace items (folders first, then files) for the invite email
    * previews. Listing is read from the inviter's perspective (this.uid) since a
    * not-yet-existing invitee has no permission on the workspace yet. Each item
@@ -2647,6 +2832,8 @@ class __private_hub extends Hub {
 
       // Add confirmed members
       for (const uid of members) {
+        // Never over the owner's row (see _holdsOwner).
+        if (await this._holdsOwner(hub_db, uid)) continue;
         // Grant membership in hub DB
         const r = await this.yp.await_proc(`${hub_db}.add_member`, uid, privilege, expiry);
         if (!r || !r.db_name) continue;
@@ -3167,16 +3354,28 @@ class __private_hub extends Hub {
   async delete_contributor() {
     let users = this.input.need(Attr.users);
     users = toArray(users);
+    const hub_db = this.hub.get(Attr.db_name);
+    // The owner is never removed: leave_hub drops their row and the workspace
+    // is left with no owner (see _holdsOwner). Ownership moves by change_owner.
     let members = [];
+    let owners = 0;
     for (let uid of users) {
-      if (uid != this.uid) {
-        members.push(uid);
+      if (uid == this.uid) continue;
+      if (await this._holdsOwner(hub_db, uid)) {
+        owners++;
+        continue;
       }
+      members.push(uid);
+    }
+    if (owners && !members.length) {
+      return this.output.data({
+        error: "OWNER_CANNOT_BE_REMOVED",
+        reason: "The workspace owner cannot be removed.",
+      });
     }
 
     let service = "media.remove";
     let hub_id = this.hub.get(Attr.id);
-    const hub_db = this.hub.get(Attr.db_name);
     // A workspace's display name lives in its profile (same source as
     // conference.hubDisplayName). `Attr.name` is often unset, and falling back
     // to the id put a raw id in front of the user — the removal notice named
@@ -3347,7 +3546,20 @@ class __private_hub extends Hub {
 
     let mfs_home = await this.db.await_proc("mfs_home");
 
-    users = toArray(users);
+    // The owner's role is not one of the roles this sets: permission_set would
+    // strip the owner bit (see _holdsOwner). Ownership moves by change_owner.
+    const requested = toArray(users);
+    const db_name = this.hub.get(Attr.db_name);
+    users = [];
+    for (let uid of requested) {
+      if (!(await this._holdsOwner(db_name, uid))) users.push(uid);
+    }
+    if (requested.length && !users.length) {
+      return this.output.data({
+        error: "OWNER_PRIVILEGE_LOCKED",
+        reason: "The owner's role cannot be changed.",
+      });
+    }
     let hub;
 
     for (let uid of users) {
@@ -3404,6 +3616,10 @@ class __private_hub extends Hub {
       this.input.use(Attr.permission) ||
       this.hub.get(Attr.settings).default_privilege ||
       1;
+    // Same rule as set_privilege: never over the owner's row (_holdsOwner).
+    if (await this._holdsOwner(this.hub.get(Attr.db_name), uid)) {
+      return this.output.list(await this._members_by_type("not_owner", 1));
+    }
     await this.db.await_proc(
       "permission_grant",
       '*',
@@ -3429,8 +3645,22 @@ class __private_hub extends Hub {
   /**
    * 
    */
-  change_owner() {
+  async change_owner() {
     const new_owner = this.input.need(Attr.id);
+    // The SP demotes every current owner before it promotes `new_owner`, and
+    // takes any id it is given: an id that is not an active member here
+    // handed ownership to nobody and left the real owner on 31. Only an
+    // active account already in this workspace may receive it.
+    let row = await this.yp.await_query(
+      "SELECT status FROM entity WHERE id=? AND type='drumate' LIMIT 1",
+      new_owner
+    );
+    if (isArray(row)) row = row[0];
+    const active = row && row.status === "active";
+    const member = await this._hubPermission(this.hub.get(Attr.db_name), new_owner);
+    if (!active || !member) {
+      return this.exception.user("NEW_OWNER_MUST_BE_ACTIVE_MEMBER");
+    }
     this.db.call_proc("change_owner", new_owner, this.output.data);
   }
 

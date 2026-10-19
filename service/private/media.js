@@ -2882,12 +2882,21 @@ class __private_media extends Media {
       this.exception.user(UNABLE_TO_RENAME_INBOUND, "", node.filename);
       return;
     }
+    // Renaming a WORKSPACE is for its admins and owner only (Duy 2026-10-07):
+    // their rename reaches every member (renameHubForMembers), and a member
+    // below admin renaming it for themselves only made one workspace go by
+    // several names.
+    if (node[FILETYPE] == Attr.hub && !(await this.isWorkspaceAdmin(nid))) {
+      return this.exception.forbiden();
+    }
     let res;
     let oldItems = {};
     let newItems = {};
     let recipients;
 
-    /**  Renaming hubname must not change other's name*/
+    /** A hub row lives on the caller's desk: start with the caller's own
+     *  sockets. A hub admin's rename widens this to every member in
+     *  renameHubForMembers; anyone else renames only their own label. */
     if (node[FILETYPE] == Attr.hub) {
       recipients = await this.yp.await_proc(
         "entity_sockets",
@@ -2939,6 +2948,16 @@ class __private_media extends Media {
           await this.changelog_write({ src: old, dest: attr });
         }
     }
+    if (node[FILETYPE] == Attr.hub) {
+      // The caller's own rename has already landed; a failure here must not
+      // turn it into an error, so it degrades to the personal rename.
+      try {
+        const members = await this.renameHubForMembers(nid, filename, oldItems, newItems);
+        if (members) recipients = members;
+      } catch (e) {
+        this.warn("media.rename: could not rename the workspace for its members", e);
+      }
+    }
     for (let r of toArray(recipients)) {
       let dest;
       if (newItems[r.uid] && newItems[r.uid].filename) {
@@ -2984,6 +3003,61 @@ class __private_media extends Media {
   }
 
   /**
+   * Whether the caller is an admin (or owner) of the workspace `hub_id`, read
+   * from the workspace's own permission table. A workspace rename arrives
+   * scoped to the caller's desk (hub_id = their own id), so the ACL check on
+   * media.rename says nothing about their role in the workspace itself.
+   */
+  async isWorkspaceAdmin(hub_id) {
+    const hub = firstRow(
+      await this.yp.await_query("SELECT db_name FROM entity WHERE id=?", hub_id)
+    );
+    if (!hub || !hub.db_name) return false;
+    const privilege = await this.yp.await_func(
+      `${hub.db_name}.user_permission`, this.uid, "*"
+    );
+    return !!(Number(privilege) & Permission.ADMIN);
+  }
+
+  /**
+   * A hub admin's rename reaches EVERY member of the workspace.
+   *
+   * Each member's desk holds its own row for the workspace and the desk lists
+   * that row's name, so renaming only the caller's row (above) left everyone
+   * else on the old name. yp.hub_rename_for_members writes yp.hub.name and
+   * every member's row; each member's node is then read back from THEIR own
+   * db, because this.db is the caller's desk and answers the caller's name.
+   *
+   * Anyone below admin keeps the personal rename: only their own label moves.
+   *
+   * @returns the hub's member sockets to push to, or null for a personal rename
+   */
+  async renameHubForMembers(hub_id, filename, oldItems, newItems) {
+    if (!(await this.isWorkspaceAdmin(hub_id))) return null;
+
+    const members = toArray(
+      await this.yp.await_proc("hub_rename_for_members", hub_id, filename)
+    );
+    for (const m of members) {
+      if (!m || !m.uid || !m.db_name) continue;
+      // The caller's row was renamed and read back by the main path.
+      if (m.uid == this.uid && newItems[m.uid]) continue;
+      const dest = await this.yp.await_proc(
+        `${m.db_name}.mfs_access_node`, m.uid, hub_id
+      );
+      if (!dest || !dest.filename) continue;
+      dest.hub_id = dest.actual_hub_id;
+      dest.privilege = dest.permission;
+      dest.home_id = dest.actual_home_id;
+      newItems[m.uid] = dest;
+      if (!oldItems[m.uid]) {
+        oldItems[m.uid] = { ...dest, filename: m.old_filename, fname: m.old_filename };
+      }
+    }
+    return this.yp.await_proc("entity_sockets", hub_id);
+  }
+
+  /**
    * Not used
    */
   share_media() {
@@ -3006,6 +3080,7 @@ class __private_media extends Media {
       let { metadata } = node;
       metadata = cleanSeen(metadata);
       metadata.md5Hash = md5Hash;
+      metadata.modified_by = this.uid;
       let { mtime } = await this.db.await_proc("mfs_set_metadata", node.id, metadata, 1);
       node.mtime = mtime;
       node.metadata = metadata;
@@ -3115,7 +3190,8 @@ class __private_media extends Media {
       }
 
       const hash = createHash("md5").update(readFileSync(filepath)).digest("hex");
-      const merged = cleanSeen({ ...metadata, md5Hash: hash });
+      // modified_by: who last changed the content, for the Details card.
+      const merged = cleanSeen({ ...metadata, md5Hash: hash, modified_by: this.uid });
 
       const old_filesize = attr.filesize || 0;
       const old_category = attr.category || attr.filetype;
@@ -3264,6 +3340,7 @@ class __private_media extends Media {
     let { metadata } = node;
     metadata = cleanSeen(metadata);
     metadata.md5Hash = md5Hash;
+    metadata.modified_by = this.uid;
 
     // Snapshot the pre-replace blob into file_version before the new
     // upload overwrites it. Skipped automatically when md5 matches.

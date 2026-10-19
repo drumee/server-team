@@ -7,6 +7,7 @@
         "src": "read"
       },
       "params": {
+        "topic_id": { "type": "string", "required": false, "doc": "Read inside a folder chat topic: moves only that topic's cursor (and receipts); the message must belong to it" },
         "message_id": {
           "type": "string",
           "required": false,
@@ -174,6 +175,7 @@
         "src": "read"
       },
       "params": {
+        "topic_id": { "type": "string", "required": false, "doc": "Folder chat topic: absent or all = the whole folder chat, general = without topic messages, a topic id = that topic (must belong to nid)" },
         "order": {
           "type": "string",
           "required": false,
@@ -230,6 +232,7 @@
         "src": "read"
       },
       "params": {
+        "topic_id": { "type": "string", "required": false, "doc": "Post into this folder chat topic (must exist and belong to nid); absent = no topic" },
         "message": {
           "type": "string",
           "required": false,
@@ -922,7 +925,7 @@
       }
     },
     "search": {
-      "doc": "Full-text (LIKE) search over the current hub's channel messages, scoped to ONE conversation. With no file_thread_id it searches the workspace/folder team chat (file_thread_id IS NULL); with file_thread_id it searches that file thread's child messages. Returns up to 45 matching previews newest-first via channel_search_scoped. Powers the chat-header search field.",
+      "doc": "Full-text (LIKE) search over the current hub's channel messages, scoped to ONE conversation. A message matches on its text OR on the filename of one of its attachments. With no file_thread_id it searches the workspace/folder team chat (file_thread_id IS NULL); with file_thread_id it searches that file thread's child messages. The pattern is literal (% and _ are not wildcards). Returns up to 45 matching previews newest-first via channel_search_scoped. Powers the chat-header search field.",
       "scope": "hub",
       "permission": {
         "src": "read"
@@ -956,6 +959,7 @@
             "author_id": { "type": "string", "doc": "UID of the message author" },
             "ctime": { "type": "number", "doc": "Unix timestamp when the message was posted" },
             "preview": { "type": "string", "doc": "First 150 chars of the message body" },
+            "match_filename": { "type": "string", "doc": "Filename of the first attachment that matched, or null when the message text matched" },
             "firstname": { "type": "string", "doc": "Author first name" },
             "lastname": { "type": "string", "doc": "Author last name" },
             "fullname": { "type": "string", "doc": "Author full name" },
@@ -1018,6 +1022,7 @@
       "scope": "hub",
       "permission": { "src": "read" },
       "params": {
+        "topic_id": { "type": "string", "required": false, "doc": "Folder chat topic the thread is started from (must belong to the file folder); only read when the first message creates the thread. Absent = no topic" },
         "file_nid": { "type": "string", "required": true, "doc": "Media node ID of the target file" },
         "message": { "type": "string", "required": false, "doc": "Text content. Defaults to empty string." },
         "attachment": { "type": "array", "required": false, "doc": "File node IDs to attach to this message" },
@@ -1040,11 +1045,49 @@
       "scope": "hub",
       "permission": { "src": "read" },
       "params": {
+        "topic_id": { "type": "string", "required": false, "doc": "Folder chat topic to list the threads of: general = threads started outside any topic, a topic id = threads started in it; absent or all = every thread of the folder" },
         "folder_nid": { "type": "string", "required": true, "doc": "Media node ID of the folder" },
         "order": { "type": "string", "required": false, "doc": "Sort order: asc or desc. Defaults to desc." },
         "page": { "type": "number", "required": false, "doc": "Page number for pagination (default 1)" }
       },
       "returns": { "type": "array", "doc": "File-thread summaries with current file metadata" },
+      "errors": []
+    },
+    "topic_list": {
+      "doc": "Folder chat topics of one folder, oldest first, each with the caller's unread (other people's messages after the caller's per-topic read cursor). Empty for a member without chat access.",
+      "scope": "hub",
+      "permission": { "src": "read" },
+      "params": {
+        "folder_nid": { "type": "string", "required": true, "doc": "Media node ID of the folder" }
+      }
+    },
+    "topic_create": {
+      "doc": "Create a topic in a folder's team chat. Name 1-60 characters after trim, unique per folder (case-insensitive) -> TOPIC_EXISTS; emoji one picker glyph (<= 16 bytes). Requires chat access (CAN_CHAT) -> FORBIDDEN. Invalid input -> INVALID_TOPIC.",
+      "scope": "hub",
+      "permission": { "src": "read" },
+      "params": {
+        "folder_nid": { "type": "string", "required": true, "doc": "Media node ID of the folder" },
+        "name": { "type": "string", "required": true, "doc": "Topic name" },
+        "emoji": { "type": "string", "required": true, "doc": "Topic icon (an emoji)" }
+      }
+    },
+    "details": {
+      "doc": "Chat details overview for the workspace team chat: photo/video/file/link counts and the hub's members with presence (online, last_seen). Team chat only (file threads excluded).",
+      "scope": "hub",
+      "permission": { "src": "read" },
+      "params": {},
+      "returns": { "type": "object", "doc": "{ stats: {photos, videos, files, links}, members: [...] }" },
+      "errors": []
+    },
+    "media_list": {
+      "doc": "One page of the team chat's shared photos, videos, files (60/page) or link messages (30/page), newest first.",
+      "scope": "hub",
+      "permission": { "src": "read" },
+      "params": {
+        "kind": { "type": "string", "required": true, "doc": "photo | video | file | link" },
+        "page": { "type": "number", "required": false, "doc": "Page number (default 1)" }
+      },
+      "returns": { "type": "array", "doc": "Media rows {nid, category, filename, extension, filesize, duration, ctime, message_id} or link rows {message_id, ctime, preview, url}" },
       "errors": []
     },
     "file_thread_acknowledge": {

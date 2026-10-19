@@ -461,6 +461,42 @@ function stampBuckets(rows) {
   return rows;
 }
 
+// Is this rollup a chat the viewer muted (a workspace, a person, or
+// everything — `mutes` from _chatMutes)? A muted chat leaves the feed and every
+// badge (Aaron 2026-10-13). Meeting start/end rollups bucket as Meeting and
+// are kept. Works on raw notification_center_next rows, mapped rollups and
+// stored copies alike:
+//   teamchat  — by hub_id
+//   chat (DM) — by the peer, rollupDismissKey (drumate_id); never key_id
+//               alone, which is a contact id on copies stored under the
+//               earlier keying
+// Not applied to get_feed's base rows (read chat history, DM @-mentions): they
+// are paged by activity_get_feed_all/_bucket, and dropping rows after the page
+// is read ends paging early on web and mobile. Hiding those belongs in SQL.
+function isMutedChatRow(row, mutes) {
+  if (!row || !mutes) return false;
+  const all = !!mutes.global;
+  if (bucketOf(row) !== BUCKET.chat) return false;
+  if (row.category === 'teamchat') return all || mutes.hubs.has(String(row.hub_id));
+  if (row.category === 'chat') return all || mutes.peers.has(String(rollupDismissKey(row)));
+  return false;
+}
+
+// A stored rollup is a snapshot, so a row at a workspace ROOT (parent_id '0')
+// keeps the workspace name it had when captured. Name it with the viewer's
+// current desk label (notification_rollup_list's hub_label) instead. Only the
+// fields that carried that old name are replaced: a folder below the root, or
+// a single-file upload's own name, is never touched.
+function relabelWorkspaceRoot(row, label) {
+  if (!row || !label || String(row.parent_id) !== '0') return row;
+  const old = row.filename;
+  if (!old || old === label) return row;
+  for (const k of ['filename', 'folder_name', 'link_label']) {
+    if (row[k] === old) row[k] = label;
+  }
+  return row;
+}
+
 // The key notification_dismiss / notification_read act on for a rollup row.
 // It is NOT the rollup's display `key_id`: notification_center_next coalesces
 // key_id from the contact / drumate first, so a media rollup's key_id is the
@@ -479,6 +515,31 @@ function rollupDismissKey(r) {
     case 'ticket':   return r.key_id || r.hub_id || null;
     default:         return null;
   }
+}
+
+// Stored rollup copies left behind by an EARLIER keying of the same
+// conversation / folder. notification_center_next now files chat by the
+// peer's drumate id and media by the folder nid (= rollupDismissKey); a copy
+// captured before that sits under its old key_id (drumee.in: chat with
+// 20cdcad3… stored once under a contact id on 2026-08-31 and once under
+// 20cdcad3… on 2026-09-30), so the panel showed one conversation twice.
+// A copy is superseded only when its key_id is NOT its dismiss key AND a row
+// filed under that dismiss key exists (live or stored): the same conversation
+// is then represented already. A lone old-keyed copy is the only record of
+// its notification and stays.
+function supersededRollups(live, stored) {
+  const out = new Set();
+  const filed = new Set();
+  for (const r of [...(live || []), ...(stored || [])]) {
+    if (r && r.category && r.key_id != null) filed.add(`${r.category}:${r.key_id}`);
+  }
+  for (const st of stored || []) {
+    if (!st || (st.category !== 'chat' && st.category !== 'media')) continue;
+    const key = rollupDismissKey(st);
+    if (!key || String(key) === String(st.key_id)) continue;
+    if (filed.has(`${st.category}:${key}`)) out.add(st);
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -656,8 +717,44 @@ const CONTACT_UNREAD_PROCS = [
   'contact_invite_accepted_unread',
 ];
 
+// The contact_activity event behind each CONTACT_UNREAD_PROCS entry. Every one
+// of those procedures stops at CONTACT_UNREAD_PAGE rows, so a user with more
+// unread rows than that (374 task notifications on prod, 2026-10-11) had a
+// badge stuck at 100, an Unread feed that never listed the rest, and a Mark as
+// all read that cleared 100 per click. The contact_unread_* routines (yp) take
+// the event instead and are uncapped or paged; while they are not deployed,
+// every caller falls back to exactly the procedure above.
+const CONTACT_UNREAD_EVENTS = {
+  contact_task_assigned_unread: 'task_assigned',
+  contact_task_mention_unread: 'task_mention',
+  contact_task_column_change_unread: 'task_column_change',
+  contact_storage_alert_unread: 'storage_alert',
+  contact_reward_expiry_unread: 'reward_expiry_warning',
+  contact_meeting_notice_unread: 'meeting_notice',
+  contact_invite_accepted_unread: 'invite_accepted',
+};
+const CONTACT_UNREAD_PAGE = 50; // = the LIMIT of every CONTACT_UNREAD_PROCS entry
+
+// Notification tabs whose unread rows come mostly from rollups and low-volume
+// contact events, and which therefore sit far down the full feed of a user
+// with many task notifications. See get_feed (scopedUnread).
+const SCOPED_UNREAD_BUCKETS = new Set([BUCKET.meeting, BUCKET.other]);
+// Contact events that the full feed represents with a rollup (contact,
+// hub_invite, contact_refused) rather than with the raw row.
+const ROLLUP_REPRESENTED_EVENTS = new Set(['invite_received', 'hub_invite_received', 'invite_refused']);
+
 const MISSING_PROCS = new Map(); // proc name -> epoch ms to retry after
 const PROC_RETRY_MS = 60 * 1000;
+// _chatMutes runs on every badge refresh, so it cannot share the cooldown
+// above as is: one failed query would un-hide every user's muted chats for a
+// minute. It counts consecutive failures per routine instead and only skips
+// one after MUTE_PROC_LATCH in a row — a routine that is really missing (a
+// schema not yet applied) still stops costing a dropped yp connection on
+// every refresh.
+const MUTE_PROC_FAILURES = new Map(); // proc name -> consecutive undefined
+const MUTE_PROC_SKIP_UNTIL = new Map(); // proc name -> epoch ms; not MISSING_PROCS,
+// which _optionalYpProc sets on a single failure of the same routines
+const MUTE_PROC_LATCH = 3;
 
 // unread_counts `files_since`: the web client's per-workspace "Files tab last
 // opened over" marks, { "<hub_id>": <unix ts> }. Only well-formed entries are
@@ -771,6 +868,37 @@ class MfsActivity extends Entity {
     return { ok: !MISSING_PROCS.has(name), rows };
   }
 
+  /**
+   * One page of the caller's unread contact_activity rows, CONTACT_UNREAD_PAGE
+   * per event, in the shape of the CONTACT_UNREAD_PROCS rows. Page 1 is what
+   * those procedures return (plus an id tie-break); page N carries the next
+   * CONTACT_UNREAD_PAGE of every event, so paging through the feed reaches
+   * every row the badge counts.
+   *
+   * Falls back per event: without contact_unread_rows, page 1 is the old
+   * procedure's rows and later pages are empty, i.e. exactly today's output.
+   * Each event is independently best-effort, as before.
+   */
+  async _contactUnreadRows(page) {
+    const offset = (Math.max(1, parseInt(page, 10) || 1) - 1) * CONTACT_UNREAD_PAGE;
+    const out = [];
+    for (const proc of CONTACT_UNREAD_PROCS) {
+      try {
+        const res = await this._optionalYpProcResult(
+          'contact_unread_rows', this.uid, CONTACT_UNREAD_EVENTS[proc], offset, CONTACT_UNREAD_PAGE
+        );
+        let rows = res.rows;
+        if (!res.ok) rows = offset ? [] : await this._optionalYpProc(proc, this.uid);
+        for (const r of rows) if (r) out.push(r);
+      } catch (e) {
+        // debug (not warn): a routine missing during a rollout window is
+        // expected and must not spam the alert bot.
+        this.debug(`[ACTIVITY] ${proc} rows skipped`, e && e.message);
+      }
+    }
+    return out;
+  }
+
   async _callUserProc(procName, ...args) {
     // const argsStr = args.map(arg => {
     //   if (typeof arg === 'string') return `'${arg}'`;
@@ -786,6 +914,26 @@ class MfsActivity extends Entity {
     // this.debug(`[MFS_ACTIVITY] Result from ${procName}:`, result);
 
     return result;
+  }
+
+  /**
+   * A user-DB routine that may not be in every database yet (the rollout
+   * window, or a pool DB provisioned before it). Answers { ok, rows }: ok is
+   * false when the call failed, and the routine is then skipped for
+   * PROC_RETRY_MS, keyed PER DATABASE so one stale DB never silences another.
+   */
+  async _optionalUserProc(name, ...args) {
+    const key = `user-db:${this.user.get(Attr.db_name)}:${name}`;
+    const now = Date.now();
+    const retryAfter = MISSING_PROCS.get(key);
+    if (retryAfter && now < retryAfter) return { ok: false, rows: [] };
+    const rows = await this._callUserProc(name, ...args);
+    if (rows === undefined) {
+      MISSING_PROCS.set(key, now + PROC_RETRY_MS);
+      return { ok: false, rows: [] };
+    }
+    if (retryAfter) MISSING_PROCS.delete(key);
+    return { ok: true, rows: toArray(rows) };
   }
 
   /**
@@ -826,6 +974,10 @@ class MfsActivity extends Entity {
     // The changelog read pointer and the share-open seen flag both back the Files
     // tab, so they are skipped when the user is clearing a different tab. Without
     // this, clearing "Chat" would silently mark every file notification read too.
+    // mfs_mark_all_read does more than move that pointer — it also marks every
+    // contact_activity row read and advances every p2p chat pointer — so only
+    // the unscoped call uses it; clearing Files alone goes through
+    // _markChangelogRead, or it would clear Task, Meeting, Other and Chat too.
     const clearFiles = !bucket || bucket === BUCKET.files;
 
     this.debug(`[MFS_ACTIVITY] Marking all read for user ${this.uid}, last_id: ${lastId}, bucket: ${bucket || 'all'}`);
@@ -842,9 +994,17 @@ class MfsActivity extends Entity {
     // Read-capable rollups snapshot privacy-safe history before advancing their
     // pointers; media/contact retain their existing clear behavior.
     try {
-      const rollups = toArray(await this._callUserProc('notification_center_next'));
+      const [rawRollups, mutes] = await Promise.all([
+        this._callUserProc('notification_center_next'),
+        this._chatMutes(),
+      ]);
+      const rollups = toArray(rawRollups);
       for (const r of rollups) {
         if (!r || !r.category) continue;
+        // A muted chat is hidden from every tab, so clearing a tab must not
+        // read it: notification_read stamps _seen_ on its messages, and the
+        // other members would see this user as having read what they never saw.
+        if (isMutedChatRow(r, mutes)) continue;
         // Same bucket rule the tabs are built from, so "clear this tab" clears
         // exactly the rows that tab shows — a teamchat rollup carrying a
         // meeting_action is cleared by Meeting, not by Chat.
@@ -883,7 +1043,9 @@ class MfsActivity extends Entity {
     // undefined last_read_id.
     let data = { status: 'ok', last_read_id: 0 };
     if (clearFiles) {
-      const result = await this._callUserProc('mfs_mark_all_read', this.uid, lastId);
+      const result = bucket === BUCKET.files
+        ? await this._markChangelogRead(lastId)
+        : await this._callUserProc('mfs_mark_all_read', this.uid, lastId);
       data = toArray(result)[0];
     }
 
@@ -931,6 +1093,12 @@ class MfsActivity extends Entity {
     if (bucket && lookup(CONTACT_CLEAR, bucket)) {
       for (const proc of lookup(CONTACT_CLEAR, bucket)) {
         try {
+          // Every unread row of the event in one statement. The loop below
+          // only reaches the procedure's 50 newest, so a Task tab with
+          // hundreds unread needed a click per 100 rows; it stays as the
+          // fallback while contact_unread_mark_read is not deployed.
+          const all = await this._optionalYpProcResult('contact_unread_mark_read', this.uid, CONTACT_UNREAD_EVENTS[proc]);
+          if (all.ok) continue;
           const rows = await this._optionalYpProc(proc, this.uid);
           for (const r of rows) {
             const activityId = parseInt(r && r.id);
@@ -1030,6 +1198,22 @@ class MfsActivity extends Entity {
     // Round 3: one of the 5 Notification Center tabs. null = unscoped, i.e. the
     // exact pre-existing behaviour for every caller that doesn't send it.
     const bucket = validBucket(this.input.use('bucket'));
+    // Unread OFF on the Meeting or Other tab. The full feed pages through
+    // activity_get_feed_all and only THEN keeps the tab's rows, so for a user
+    // with hundreds of task notifications every unread meeting notice or
+    // invitation sat pages deep, page 1 of the tab came back empty and the list
+    // stopped there: a badge of 1 or 2 over an empty tab (prod, 2026-10-11).
+    // These tabs therefore take their UNREAD rows the way Unread ON does --
+    // merged on page 1 -- and the raw copies of those rows are dropped from
+    // every page. Read rows page exactly as before.
+    const scopedUnread = !unreadOnly && SCOPED_UNREAD_BUCKETS.has(bucket);
+    // Unread OFF on All too, for the invitations only: a pending contact
+    // invitation, a workspace invitation or a refused invitation is counted
+    // from its rollup, and the raw activity_get_feed_all row it stands for can
+    // be missing (an invitation older than contact_activity logging) or sit
+    // pages deep. All therefore lists the rollup, like Unread ON and like the
+    // Other tab, and drops the raw unread copy (prod audit 2026-10-12).
+    const inviteRollups = !unreadOnly && (!bucket || scopedUnread);
     // unread_only=1 → unread-only feed (mfs_get_activity_feed, unchanged).
     // unread_only=0 → full feed (read + unread together) via
     // activity_get_feed_all, which returns the unified log with a correct
@@ -1044,9 +1228,24 @@ class MfsActivity extends Entity {
       // Full-feed callers require real read history. Failing closed is safer
       // than silently returning the legacy unread/dismissed log under an OFF
       // toggle, which would misrepresent the selected contract.
-      result = await this._callUserProc('activity_get_feed_all', this.uid, page);
+      //
+      // A tab pages its OWN rows (activity_get_feed_bucket filters before the
+      // LIMIT). Paging the whole feed and keeping the tab's rows afterwards
+      // left pages with nothing of the tab whenever other rows crowded them
+      // (hundreds of task notifications ahead of the file ones), and that
+      // empty page ended the list: the Files tab listed 7 of its 15 unread
+      // rows. Without the routine, the whole feed as before.
+      let scoped = null;
+      if (bucket && filter === 'all') {
+        const res = await this._optionalUserProc('activity_get_feed_bucket', this.uid, page, bucket);
+        if (res.ok) scoped = res.rows;
+      }
+      result = scoped || await this._callUserProc('activity_get_feed_all', this.uid, page);
     }
     result = toArray(result);
+    // Muted chats are hidden from the rollups merged below, never from these
+    // paged base rows (see isMutedChatRow).
+    const mutes = await this._chatMutes();
     for (const row of result) {
       if (row) row.feed_page_source = 'base';
     }
@@ -1065,6 +1264,15 @@ class MfsActivity extends Entity {
     if (filter !== 'mentions' && filter !== 'shares' && page <= 1) {
       try {
         const opens = toArray(await this.yp.await_proc('secure_share_open_feed', this.uid, unreadOnly));
+        // Unread OFF: the 50 newest opens, read or not, can leave out an older
+        // UNREAD one that the badge counts (it counts the unread list). Add the
+        // unread list's rows that are not there yet (prod audit 2026-10-12).
+        if (!unreadOnly) {
+          const have = new Set(opens.filter(Boolean).map((r) => String(r.id)));
+          for (const r of toArray(await this.yp.await_proc('secure_share_open_feed', this.uid, 1))) {
+            if (r && !have.has(String(r.id))) opens.push(r);
+          }
+        }
         // Identify who opened each share, for the row's name AND its avatar:
         // without this the row reads "Someone opened X" even when we know
         // exactly who it was, and shows the workspace icon rather than a face.
@@ -1140,6 +1348,12 @@ class MfsActivity extends Entity {
     // Kept for _alignContactReadState below, so it can reuse this call's
     // rollups instead of running notification_center_next a second time.
     let liveRollups = null;
+    // scopedUnread bookkeeping: whether page 1's unread rows were really merged
+    // (only then may the raw copies be dropped below), and the contact ids
+    // they carry.
+    let scopedMerged = false;
+    let invitesMerged = false;
+    const mergedContactIds = new Set();
     if (filter !== 'mentions' && filter !== 'shares' && page <= 1) {
       try {
         // chat/media/teamchat/ticket rollups are NOT returned by
@@ -1172,7 +1386,7 @@ class MfsActivity extends Entity {
             }
             continue;
           }
-          if (!ALWAYS.has(r.category) && !unreadOnly) continue;
+          if (!ALWAYS.has(r.category) && !unreadOnly && !inviteRollups) continue;
           // Item skeleton + sort read `timestamp` first, then `ctime`; rollups
           // only carry ctime, so mirror it to timestamp for correct ordering.
           if (r.timestamp == null) r.timestamp = r.ctime;
@@ -1181,6 +1395,7 @@ class MfsActivity extends Entity {
           if (r.is_read == null) r.is_read = 0;
           result.push(r);
         }
+        invitesMerged = inviteRollups;
         // The rollups that have ALREADY been read. A chat/teamchat/media/ticket
         // rollup is recomputed from unread state, so reading it makes
         // notification_center_next stop emitting it entirely -- there is no
@@ -1197,10 +1412,17 @@ class MfsActivity extends Entity {
             rollups.filter((r) => r && ROLLUP_CATEGORIES.has(r.category))
               .map((r) => `${r.category}:${r.key_id}`)
           );
-          for (const st of await this._storedRollups()) {
+          const stored = await this._storedRollups();
+          const superseded = supersededRollups(rollups, stored);
+          for (const st of stored) {
             if (live.has(`${st.category}:${st.key_id}`)) continue;
+            if (superseded.has(st)) continue;
+            // Skipped here, not in _storedRollups: supersede and
+            // _clickedRollup still need to see every stored copy.
+            if (isMutedChatRow(st, mutes)) continue;
             result.push({ ...st, is_read: 1 });
           }
+          await this._retireRollups(superseded);
         }
         // Task @-mentions / assignments and admin-console storage alerts live
         // in yp.contact_activity → under Unread OFF they already come from
@@ -1211,28 +1433,46 @@ class MfsActivity extends Entity {
         // no in-app notification (the panel opens on Unread ON). Each proc is
         // independently best-effort so a missing/failing one never sinks the
         // others.
-        if (unreadOnly) {
-          for (const proc of CONTACT_UNREAD_PROCS) {
-            try {
-              const rows = await this._optionalYpProc(proc, this.uid);
-              for (const r of rows) {
-                if (!r) continue;
-                if (r.timestamp == null) r.timestamp = r.ctime;
-                result.push(r);
-              }
-            } catch (e) {
-              // debug (not warn) on purpose: a missing proc during the rollout
-              // window (server deployed before the SQL is applied) is expected
-              // and degrades gracefully (task items still show under Unread OFF
-              // via activity_get_feed_all). warn would spam the Telegram alert
-              // bot every call until the proc lands.
-              this.debug(`[ACTIVITY] ${proc} merge skipped`, e && e.message);
-            }
+        // A missing proc during the rollout window (server deployed before the
+        // SQL is applied) degrades gracefully inside _contactUnreadRows (task
+        // items still show under Unread OFF via activity_get_feed_all).
+        if (unreadOnly || scopedUnread) {
+          for (const r of await this._contactUnreadRows(1)) {
+            if (r.timestamp == null) r.timestamp = r.ctime;
+            if (r.id != null) mergedContactIds.add(String(r.id));
+            result.push(r);
           }
+          scopedMerged = scopedUnread;
         }
         result.sort((a, b) => (Number(b.timestamp || b.ctime || 0) - Number(a.timestamp || a.ctime || 0)));
       } catch (e) {
         this.warn('[ACTIVITY] rollup merge failed', e && e.message);
+      }
+    }
+
+    if (filter !== 'mentions' && filter !== 'shares' && page > 1) {
+      if (unreadOnly) {
+        // Unread ON, later pages: the next CONTACT_UNREAD_PAGE unread rows of
+        // every contact event, so the feed reaches every row the badge counts
+        // instead of stopping at the first 50 per event merged on page 1.
+        const more = await this._contactUnreadRows(page);
+        if (more.length) {
+          for (const r of more) {
+            if (r.timestamp == null) r.timestamp = r.ctime;
+            result.push(r);
+          }
+          result.sort((a, b) => (Number(b.timestamp || b.ctime || 0) - Number(a.timestamp || a.ctime || 0)));
+        }
+      } else {
+        // Page 1 listed these unread rows already; their raw copies must not
+        // come back on a later page.
+        if (scopedUnread) {
+          for (const r of await this._contactUnreadRows(1)) {
+            if (r.id != null) mergedContactIds.add(String(r.id));
+          }
+          scopedMerged = true;
+        }
+        invitesMerged = inviteRollups;
       }
     }
 
@@ -1278,6 +1518,18 @@ class MfsActivity extends Entity {
     if (bucket) {
       result = result.filter((row) => row && row.bucket === bucket);
     }
+    if (scopedMerged || invitesMerged) {
+      // The raw activity_get_feed_all copy of a row merged on page 1: the same
+      // contact row by id, or an invitation the merged rollups stand for (the
+      // read-state alignment above leaves exactly those raw invitation rows
+      // unread). Read rows are untouched and keep their pagination.
+      result = result.filter((r) => !(
+        r && r.feed_page_source === 'base' && r.event_type === 'contact'
+        && Number(r.is_read) === 0
+        && ((scopedMerged && mergedContactIds.has(String(r.id)))
+          || (invitesMerged && ROLLUP_REPRESENTED_EVENTS.has(r.event)))
+      ));
+    }
 
     // Drop what the user removed with the trash button. Applied LAST so it
     // catches every source that fed `result`, and applied in both toggle states
@@ -1287,6 +1539,19 @@ class MfsActivity extends Entity {
     result = await this._dropDeleted(result);
 
     this.output.list(await this._decorateBookmarks(result));
+  }
+
+  /**
+   * The CONTACT_UNREAD_PROCS rows among `candidates`, as lists of rows with an
+   * id (the shape _alignContactReadState reads). contact_unread_ids checks the
+   * page's own ids, so a row past the procedures' 50-row cap is still found
+   * unread; without it, the procedures' own (capped) rows, as before.
+   */
+  async _countedContactIds(candidates) {
+    const ids = candidates.map((r) => parseInt(r.id, 10)).filter((n) => Number.isFinite(n) && n > 0);
+    const res = await this._optionalYpProcResult('contact_unread_ids', this.uid, JSON.stringify(ids));
+    if (res.ok) return [res.rows];
+    return Promise.all(CONTACT_UNREAD_PROCS.map((proc) => this._optionalYpProc(proc, this.uid)));
   }
 
   /**
@@ -1324,7 +1589,7 @@ class MfsActivity extends Entity {
     let pendingInviters;
     try {
       const [procRows, hubInvites, refused, pending] = await Promise.all([
-        Promise.all(CONTACT_UNREAD_PROCS.map((proc) => this._optionalYpProc(proc, this.uid))),
+        this._countedContactIds(candidates),
         this._callUserProc('notification_hub_invites'),
         this._callUserProc('notification_contact_refused'),
         // Page 1 already has the rollups, which respect a dismissed contact
@@ -1574,15 +1839,35 @@ class MfsActivity extends Entity {
     if (!wanted.size) return;
 
     const names = new Map();
+    const rootKeys = new Map(); // key -> hub_id, for parents that are the workspace root
     for (const [key, { hub_id, parent_id }] of wanted) {
       try {
         const a = toArray(
           await this.yp.await_proc('forward_proc', hub_id, 'mfs_node_attr', `${sqlString(parent_id)}`)
         )[0] || {};
         if (a.filename && !internal(a.filename)) names.set(key, a.filename);
+        if (a.filename && `${a.parent_id}` === '0') rootKeys.set(key, hub_id);
       } catch (e) {
         this.debug('[ACTIVITY] folder name lookup failed', key, e && e.message);
       }
+    }
+    // At the workspace root mfs_node_attr answers with the workspace's shared
+    // name (yp.hub.name), which a desk rename never writes. Name it the way the
+    // viewer's desk does: mfs_access_node on the viewer's own db returns the
+    // hub node's own label. One lookup per distinct workspace; on any failure
+    // the shared name stays.
+    const labels = new Map();
+    for (const hub_id of new Set(rootKeys.values())) {
+      try {
+        const node = toArray(await this._callUserProc('mfs_access_node', this.uid, hub_id))[0] || {};
+        if (node.filetype === 'hub' && node.filename) labels.set(hub_id, node.filename);
+      } catch (e) {
+        this.debug('[ACTIVITY] workspace label lookup failed', hub_id, e && e.message);
+      }
+    }
+    for (const [key, hub_id] of rootKeys) {
+      const label = labels.get(hub_id);
+      if (label) names.set(key, label);
     }
     for (const [row, key] of targets) {
       const name = names.get(key);
@@ -1835,6 +2120,28 @@ class MfsActivity extends Entity {
   }
 
   /**
+   * Keys (meetingNoticeKeys) of the user's recent meeting invitations, READ or
+   * not. An invitation stands in for its meeting's scheduled-meeting rollup
+   * whether or not it has been opened; checking only the invitations on the
+   * same page (or only the unread ones) let the badge count a rollup that the
+   * full feed dropped (prod audit 2026-10-12: Meeting badge 1 over an empty
+   * tab). The newest page of the Meeting tab, so one bounded read; empty when
+   * activity_get_feed_bucket is not deployed.
+   */
+  async _meetingInviteKeys() {
+    try {
+      const { ok, rows } = await this._optionalUserProc('activity_get_feed_bucket', this.uid, 1, BUCKET.meeting);
+      if (!ok) return new Set();
+      const notices = rows.filter((r) => r && r.event === 'meeting_notice');
+      flattenMeetingNotice(notices);
+      return meetingNoticeKeys(notices);
+    } catch (e) {
+      this.debug('[ACTIVITY] meeting invitations unavailable', e && e.message);
+      return new Set();
+    }
+  }
+
+  /**
    * Turn a scheduled meeting's rollup row into a MEETING row (Duy 2026-08-21,
    * issues 9 + 10).
    *
@@ -1872,6 +2179,9 @@ class MfsActivity extends Entity {
 
     // Meetings this user has already been told about by a targeted invitation.
     const covered = meetingNoticeKeys(rows);
+    if (pending.some((r) => !isCoveredByNotice(r, covered))) {
+      for (const k of await this._meetingInviteKeys()) covered.add(k);
+    }
     const drop = new Set(pending.filter((r) => isCoveredByNotice(r, covered)));
     // Only the survivors need a time resolved — a dropped row is never rendered.
     const needTime = pending.filter((r) => !drop.has(r));
@@ -2190,6 +2500,20 @@ class MfsActivity extends Entity {
   }
 
   /**
+   * Move only the changelog read pointer — the Files tab's own state. Until
+   * mfs_mark_changelog_read is applied to the user's database, falls back to
+   * mfs_mark_all_read, the previous and broader clear, so marking Files read
+   * still works during a rollout. The fallback also clears the other tabs
+   * again, and `undefined` cannot tell a missing routine from a transient
+   * failure, so drop it once every user database has the routine.
+   */
+  async _markChangelogRead(lastId) {
+    const rows = await this._callUserProc('mfs_mark_changelog_read', this.uid, lastId);
+    if (rows !== undefined) return rows;
+    return this._callUserProc('mfs_mark_all_read', this.uid, lastId);
+  }
+
+  /**
    * Hide a single contact_activity row (hub invite, contact invite, etc.)
    * from the user's activity feed. Underlying event stays around for audit.
    * Endpoint: POST /activity.dismiss_contact_event
@@ -2261,6 +2585,10 @@ class MfsActivity extends Entity {
    * the flagging then fails, the user is left with today's outcome (the row
    * returns as read) rather than a row that is flagged deleted while its
    * conversation is still unread and still counted by the badge.
+   *
+   * Both writes are for an UNREAD (live) row. A READ copy only gets the flag:
+   * its conversation may have newer unread messages under another row, which
+   * a dismiss would mark read (see _clickedRollup).
    * Endpoint: POST /activity.delete_rollup
    * Input: category (string), key_id (string), hub_id (string), last_id (integer)
    */
@@ -2270,10 +2598,58 @@ class MfsActivity extends Entity {
     const hub_id = String(this.input.use('hub_id') || '');
     const last_id = parseInt(this.input.use('last_id') || 0);
 
-    await this._callUserProc('notification_dismiss', category, key_id, hub_id, last_id);
-    const result = await this._callUserProc('notification_rollup_delete', this.uid, category, key_id);
-    const data = toArray(result)[0] || {};
-    this.output.data(data);
+    // The row the user pressed trash on, told apart by last_id from another
+    // row of the same conversation / folder stored under an older key_id.
+    const { live, stored } = await this._clickedRollup(category, key_id, last_id);
+    if (!live && !stored) {
+      // Not identifiable (not captured yet, or newer activity since the panel
+      // drew it): exactly the previous behaviour.
+      await this._callUserProc('notification_dismiss', category, key_id, hub_id, last_id);
+      const result = await this._callUserProc('notification_rollup_delete', this.uid, category, key_id);
+      return this.output.data(toArray(result)[0] || {});
+    }
+    // Only an unread (live) row moves the read pointer. Deleting a read copy
+    // must not mark the conversation's NEWER messages read under another row.
+    if (live) {
+      await this._callUserProc('notification_dismiss', category, key_id, hub_id, last_id);
+    }
+    // Flag the clicked row by its own stored key, which can differ from the
+    // key the client sends (rollupDismissKey); flagging the sent key missed a
+    // copy stored under an older key_id, so it came back as a read row.
+    const target = String((live || stored).key_id);
+    const result = await this._callUserProc('notification_rollup_delete', this.uid, category, target);
+    this.output.data(toArray(result)[0] || {});
+  }
+
+  /**
+   * The live rollup and / or stored copy the trash button was pressed on.
+   *
+   * The client sends rollupDismissKey (folder nid for media, peer drumate id
+   * for chat) plus the row's last_id. A stored copy can sit under another
+   * key_id for the same dismiss key (captured under an earlier keying; on
+   * drumee.in a chat with 20cdcad3… had one row under a contact id from
+   * 2026-08-31 and one under 20cdcad3… from 2026-09-30), so the key alone does
+   * not say WHICH row was pressed; last_id does. Best-effort: a failing read
+   * returns nothing found, i.e. the previous behaviour.
+   */
+  async _clickedRollup(category, keyId, lastId) {
+    const same = (r) => r && String(r.category || '') === category
+      && (String(r.key_id) === keyId || String(rollupDismissKey(r) || '') === keyId)
+      && Number(r.last_id || 0) === lastId;
+    let live = null;
+    let stored = null;
+    if (!lastId) return { live, stored };
+    try {
+      live = (await this._notificationRollups()).find(same) || null;
+    } catch (e) {
+      this.debug('[ACTIVITY] delete_rollup live lookup skipped', e && e.message);
+    }
+    try {
+      stored = (await this._storedRollups()).find(same) || null;
+    } catch (e) {
+      this.debug('[ACTIVITY] delete_rollup store lookup skipped', e && e.message);
+    }
+    return { live, stored };
   }
 
   /**
@@ -2355,12 +2731,17 @@ class MfsActivity extends Entity {
    * Best-effort: a failing sub-source degrades to [] rather than throwing.
    */
   async _notificationRollups() {
-    const [rollups, hubInvites] = await Promise.all([
+    const [rollups, hubInvites, mutes] = await Promise.all([
       this._callUserProc('notification_center_next'),
       this._callUserProc('notification_hub_invites'),
+      this._chatMutes(),
     ]);
     const rows = toArray(rollups);
-    const hubs = toArray(hubInvites);
+    // A workspace "invite" the user wrote to THEMSELF (they added themselves
+    // via add_contributors, before hub._grantMembership stopped writing that
+    // receipt) is their own action: activity_get_feed_all hides it, so it must
+    // not reach the badge or the tabs either.
+    const hubs = toArray(hubInvites).filter((r) => !r || String(r.author_id) !== String(this.uid));
     let refused = [];
     let workspaceMoves = [];
     try {
@@ -2376,12 +2757,27 @@ class MfsActivity extends Entity {
     // Stamp `bucket` here so BOTH consumers get it from one place: list() (the
     // badge / priority source) and get_feed()'s chronological merge. Purely
     // additive — an existing client that ignores the field is unaffected.
-    const items = stampBuckets([
+    //
+    // A muted chat leaves here, so it reaches no badge, no tab and no feed,
+    // and is not stored below. A meeting start/end posted in a muted
+    // workspace stays (bucket Meeting), but its rollup's `cnt` counts every
+    // unread message of that folder, which the web rail adds to the Chat pill:
+    // it is flagged `muted` and counted once.
+    const items = [];
+    for (const r of stampBuckets([
       ...rows.map(mapNotificationRow),
       ...hubs.map(mapHubInviteRow),
       ...refused.map(mapContactRefusedRow),
       ...workspaceMoves,
-    ]);
+    ])) {
+      if (isMutedChatRow(r, mutes)) continue;
+      if (r && r.category === 'teamchat' && r.bucket === BUCKET.meeting
+        && (mutes.global || mutes.hubs.has(String(r.hub_id)))) {
+        r.muted = 1;
+        r.cnt = 1;
+      }
+      items.push(r);
+    }
 
     // Capture the live rollups so they can still be rendered once they have
     // been read. Deliberately placed HERE and not in get_feed: this method is
@@ -2456,16 +2852,34 @@ class MfsActivity extends Entity {
         try { payload = JSON.parse(payload); } catch (e) { payload = null; }
       }
       if (!payload || typeof payload !== 'object') continue;
-      out.push({
+      out.push(relabelWorkspaceRoot({
         ...payload,
         category: r.category,
         key_id: r.key_id,
         hub_id: payload.hub_id != null ? payload.hub_id : r.hub_id,
         ctime: r.ctime,
         timestamp: r.ctime,
-      });
+      }, r.hub_label));
     }
     return stampBuckets(out);
+  }
+
+  /**
+   * Flag superseded stored copies (supersededRollups) as deleted, so they stay
+   * gone once the row that superseded them is itself trashed — hiding them
+   * alone would bring the old copy back at that moment. The flag keeps the
+   * payload (reversible: deleted = 0), and notification_rollup_put never
+   * writes an old key again. Best-effort: on failure they are still hidden
+   * and the next get_feed tries again.
+   */
+  async _retireRollups(rows) {
+    for (const st of rows || []) {
+      try {
+        await this._callUserProc('notification_rollup_delete', this.uid, st.category, String(st.key_id));
+      } catch (e) {
+        this.debug('[ACTIVITY] superseded rollup retire skipped', e && e.message);
+      }
+    }
   }
 
   /**
@@ -2511,6 +2925,28 @@ class MfsActivity extends Entity {
     }
     flattenMeetingNotice(contactRows);
     for (const r of contactRows) bump(r);
+    // Those procedures return at most CONTACT_UNREAD_PAGE rows per event, so a
+    // user past that read 50 + 50 on the Task badge whatever the real number.
+    // contact_unread_count has the real number per event (same rule); only the
+    // rows the procedures did not return are added, to the event's own tab.
+    // Without the routine the badge is what it was.
+    try {
+      const res = await this._optionalYpProcResult('contact_unread_count', this.uid);
+      if (res.ok) {
+        const listed = new Map();
+        for (const r of contactRows) listed.set(r.event, (listed.get(r.event) || 0) + 1);
+        for (const r of res.rows) {
+          if (!r || !r.event) continue;
+          const extra = (parseInt(r.cnt, 10) || 0) - (listed.get(r.event) || 0);
+          if (extra > 0) {
+            const bucket = bucketOf({ event: r.event, event_type: 'contact' });
+            if (Object.prototype.hasOwnProperty.call(counts, bucket)) counts[bucket] += extra;
+          }
+        }
+      }
+    } catch (e) {
+      this.debug('[ACTIVITY] unread_counts: contact_unread_count skipped', e && e.message);
+    }
 
     // 1. The rollup categories + hub invites + refused invitations + workspace
     //    moves. Already bucket-stamped; bucketOf is idempotent on them. A
@@ -2518,9 +2954,21 @@ class MfsActivity extends Entity {
     //    is skipped, exactly as get_feed drops it from the page.
     try {
       const covered = meetingNoticeKeys(contactRows);
-      for (const r of await this._notificationRollups()) {
-        if (!r) continue;
+      const rollups = toArray(await this._notificationRollups()).filter(Boolean);
+      // Read invitations cover their meeting's rollup too (_stampMeetingRollups).
+      if (rollups.some((r) => isScheduleRollup(r) && !isCoveredByNotice(r, covered))) {
+        for (const k of await this._meetingInviteKeys()) covered.add(k);
+      }
+      // get_feed lists a workspace-move rollup only when its changelog row is
+      // not already on the first page of the feed; that row is counted in 5.
+      // below, so the rollup is counted on the same condition, not twice
+      // (prod audit 2026-10-12: Files badge 7 over 6 rows).
+      const listedMoves = rollups.some((r) => r.category === 'workspace_move')
+        ? await this._firstPageWorkspaceMoveIds()
+        : new Set();
+      for (const r of rollups) {
         if (isCoveredByNotice(r, covered)) continue;
+        if (r.category === 'workspace_move' && listedMoves.has(String(r.key_id))) continue;
         bump(r);
       }
     } catch (e) {
@@ -2589,6 +3037,22 @@ class MfsActivity extends Entity {
   }
 
   /**
+   * Ids of the media.workspace_move rows on the first page of the Unread feed
+   * (mfs_get_activity_feed) -- the rows get_feed checks before adding a
+   * workspace-move rollup. Empty on any failure, i.e. the badge counts as
+   * before.
+   */
+  async _firstPageWorkspaceMoveIds() {
+    try {
+      const rows = toArray(await this._callUserProc('mfs_get_activity_feed', this.uid, 1));
+      return new Set(rows.filter((r) => r && r.event === 'media.workspace_move').map((r) => String(r.id)));
+    } catch (e) {
+      this.debug('[ACTIVITY] unread_counts: workspace moves unavailable', e && e.message);
+      return new Set();
+    }
+  }
+
+  /**
    * mfs_new_by_hub (drumate DB): [{ hub_id, cnt, last_ts }] of media.new
    * events — files and folders — per workspace, newer than the caller's marks.
    * Best-effort, never throws. A DB that does not have the routine yet (the
@@ -2596,17 +3060,9 @@ class MfsActivity extends Entity {
    * PROC_RETRY_MS, keyed PER DATABASE so one stale DB never silences another.
    */
   async _newFilesByHub(since) {
-    const key = `user-db:${this.user.get(Attr.db_name)}:mfs_new_by_hub`;
-    const now = Date.now();
-    const retryAfter = MISSING_PROCS.get(key);
-    if (retryAfter && now < retryAfter) return [];
     try {
-      const rows = await this._callUserProc('mfs_new_by_hub', this.uid, since);
-      if (rows === undefined) {
-        MISSING_PROCS.set(key, now + PROC_RETRY_MS);
-        return [];
-      }
-      if (retryAfter) MISSING_PROCS.delete(key);
+      const { ok, rows } = await this._optionalUserProc('mfs_new_by_hub', this.uid, since);
+      if (!ok) return [];
       const out = [];
       for (const r of toArray(rows)) {
         if (!r || !r.hub_id) continue;
@@ -2850,19 +3306,15 @@ class MfsActivity extends Entity {
   }
 
   // ============================================================
-  // Notification popup mute (Round 3 / Sprint 1 row 6)
+  // Chat mute — a workspace, a person, or everything
   //
-  // 🚨 THE POPUP CHANNEL ONLY. Nothing in this section may ever be read by
-  // list(), get_feed() or unread_counts(): a muted user keeps every row in the
-  // Notification Center and keeps the bell badge, they just stop being
-  // interrupted by a card. Muting is "stop talking to me", not "stop
-  // recording". Both feed paths are deliberately left untouched.
-  //
-  // The suppression itself happens on the CLIENT, which reads this state once
-  // and re-reads it from the return value of every mute_set. The chat push
-  // path is not touched at all — no per-message, per-recipient lookup is added
-  // to the hottest push we have, and no popup decision depends on a round trip
-  // that can fail silently mid-message.
+  // The popup card, OS notification and sound are suppressed on the CLIENT,
+  // which reads this state once and re-reads it from every mute_set; mobile
+  // push is filtered by the push worker (notification_muted_uids). Since Aaron's
+  // 2026-10-13 call a muted chat also leaves the Notification Center and every
+  // badge: list(), get_feed(), unread_counts() and mark_all_read() read the
+  // mutes through _chatMutes / isMutedChatRow. Meeting start/end and bookmarks
+  // stay. channel.js, the chat push path, still never reads them.
   // ============================================================
 
   /**
@@ -2875,6 +3327,29 @@ class MfsActivity extends Entity {
    * legitimately arrive together, but this does not assert on that — it
    * reports what is there.
    */
+  // Session-uid person mutes (notification_mute_peer). Fails open: an old
+  // schema without the routine answers none.
+  async _peerMutes(rows) {
+    const list = rows !== undefined ? rows : await this._optionalYpProc('notification_mute_peer_state', this.uid);
+    const peers = [];
+    for (const r of toArray(list)) {
+      const id = r && r.peer_id != null ? String(r.peer_id) : '';
+      if (id && !peers.includes(id)) peers.push(id);
+    }
+    return peers;
+  }
+
+  // '1'/'0'/true/false/absent → boolean. Absent means mute: the endpoints are
+  // named for what they usually do, and only the explicit falsey values
+  // unmute. Strings are checked because form and query payloads arrive as
+  // strings, where '0' and 'false' are both truthy in JS and would silently
+  // invert the caller's intent.
+  _muteFlag(raw) {
+    return raw === undefined || raw === null || raw === ''
+      ? true
+      : !(raw === 0 || raw === '0' || raw === false || raw === 'false');
+  }
+
   _muteState(rows) {
     let global = 0;
     const hubs = [];
@@ -2888,20 +3363,74 @@ class MfsActivity extends Entity {
   }
 
   /**
-   * The caller's current popup-mute state.
-   * Endpoint: POST /activity.mute_state
-   *
-   * Best-effort by design: before the schema is applied this answers "nothing
-   * muted", which is the safe direction — popups keep working exactly as they
-   * do today rather than everything falling silent on a missing routine.
+   * The caller's chat mutes, for hiding muted chats from the feed and the
+   * badges: { global, hubs: Set, peers: Set }. Read once per request (memo on
+   * the worker, which the router builds per request) and straight through
+   * await_proc, not _optionalYpProc: that helper's process-wide cooldown would
+   * let one failed query un-hide every user's muted chats for a minute. Fails
+   * open, for this request only.
    */
-  async mute_state() {
-    const rows = await this._optionalYpProc('notification_mute_state', this.uid);
-    this.output.data(this._muteState(rows));
+  _chatMutes() {
+    if (!this._chatMutesP) {
+      this._chatMutesP = (async () => {
+        try {
+          const [hubRows, peerRows] = await Promise.all([
+            this._muteProc('notification_mute_state'),
+            this._muteProc('notification_mute_peer_state'),
+          ]);
+          const { global, hubs } = this._muteState(hubRows);
+          const peers = await this._peerMutes(toArray(peerRows));
+          return { global, hubs: new Set(hubs), peers: new Set(peers) };
+        } catch (e) {
+          this.warn('[ACTIVITY] chat mute lookup failed', e && e.message);
+          return { global: 0, hubs: new Set(), peers: new Set() };
+        }
+      })();
+    }
+    return this._chatMutesP;
+  }
+
+  // One mute routine for _chatMutes. `undefined` (failed or not deployed)
+  // hides nothing for this request; MUTE_PROC_LATCH failures in a row skip the
+  // routine for PROC_RETRY_MS. Any answer clears both.
+  async _muteProc(name) {
+    const now = Date.now();
+    const skipUntil = MUTE_PROC_SKIP_UNTIL.get(name);
+    if (skipUntil && now < skipUntil) return undefined;
+    const rows = await this.yp.await_proc(name, this.uid);
+    if (rows !== undefined) {
+      MUTE_PROC_FAILURES.delete(name);
+      MUTE_PROC_SKIP_UNTIL.delete(name);
+      return rows;
+    }
+    const failures = (MUTE_PROC_FAILURES.get(name) || 0) + 1;
+    if (failures < MUTE_PROC_LATCH) {
+      MUTE_PROC_FAILURES.set(name, failures);
+      this.debug(`[ACTIVITY] ${name} failed; muted chats are not hidden for this request`);
+      return undefined;
+    }
+    MUTE_PROC_FAILURES.delete(name);
+    MUTE_PROC_SKIP_UNTIL.set(name, now + PROC_RETRY_MS);
+    this.warn(`[ACTIVITY] ${name} failed ${failures} times in a row; muted chats are not hidden for ${PROC_RETRY_MS / 1000}s`);
+    return undefined;
   }
 
   /**
-   * Mute or unmute the popups for one workspace, or for all of them.
+   * The caller's current mute state.
+   * Endpoint: POST /activity.mute_state
+   *
+   * A mute silences the chat's popup, OS notification, sound and mobile push,
+   * and hides its rows from the feed and every badge (_chatMutes); meeting
+   * start/end and bookmarks stay. Best-effort by design: before the schema is
+   * applied this answers "nothing muted", the safe direction.
+   */
+  async mute_state() {
+    const rows = await this._optionalYpProc('notification_mute_state', this.uid);
+    this.output.data({ ...this._muteState(rows), peers: await this._peerMutes() });
+  }
+
+  /**
+   * Mute or unmute the chat notifications of one workspace, or of all of them.
    * Endpoint: POST /activity.mute_set
    * Input: hub_id (string, empty or absent = all workspaces),
    *        muted (boolean, default true)
@@ -2917,22 +3446,47 @@ class MfsActivity extends Entity {
    */
   async mute_set() {
     const hub_id = String(this.input.use('hub_id') || '');
-    const raw = this.input.use('muted');
-    // Absent means mute: the endpoint is named for what it usually does, and
-    // only the explicit falsey values unmute. Strings are checked because form
-    // and query payloads arrive as strings, where '0' and 'false' are both
-    // truthy in JS and would silently invert the caller's intent.
-    const muted =
-      raw === undefined || raw === null || raw === ''
-        ? true
-        : !(raw === 0 || raw === '0' || raw === false || raw === 'false');
+    const muted = this._muteFlag(this.input.use('muted'));
     const proc = muted ? 'notification_mute_set' : 'notification_mute_unset';
     const { ok, rows } = await this._optionalYpProcResult(proc, this.uid, hub_id);
+    // "Unmute all" clears everything — person mutes included.
+    let peers;
+    if (ok && !muted && hub_id === '') {
+      peers = await this._peerMutes(await this._optionalYpProc('notification_mute_peer_unset', this.uid, ''));
+    } else {
+      peers = await this._peerMutes();
+    }
     this.output.data({
       status: ok ? 'ok' : 'error',
       muted: muted ? 1 : 0,
       hub_id,
       ...this._muteState(rows),
+      peers,
+    });
+  }
+
+  /**
+   * Mute or unmute the direct messages from ONE person.
+   * Endpoint: POST /activity.mute_peer_set
+   * Input: peer_id (a user id, not the caller), muted (default true)
+   * Same scope as mute_set (notifications, push, feed rows, badges); answers
+   * the full state.
+   */
+  async mute_peer_set() {
+    const peer_id = String(this.input.use('peer_id') || '');
+    if (!/^[0-9a-zA-Z]{1,16}$/.test(peer_id) || peer_id === String(this.uid)) {
+      return this.exception.user('INVALID_PEER');
+    }
+    const muted = this._muteFlag(this.input.use('muted'));
+    const proc = muted ? 'notification_mute_peer_set' : 'notification_mute_peer_unset';
+    const { ok, rows } = await this._optionalYpProcResult(proc, this.uid, peer_id);
+    const hubRows = await this._optionalYpProc('notification_mute_state', this.uid);
+    this.output.data({
+      status: ok ? 'ok' : 'error',
+      muted: muted ? 1 : 0,
+      peer_id,
+      ...this._muteState(hubRows),
+      peers: await this._peerMutes(rows),
     });
   }
   // ── Daily reminder card (Round 3 / Sprint 1 row 7) ───────────────

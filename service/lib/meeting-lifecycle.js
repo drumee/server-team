@@ -227,11 +227,13 @@ async function endLiveMeetingCards(yp, opt = {}) {
     let recipients = null;
     let flipped = 0;
     for (const r of rows) {
-      // Same targeted write as hub channel_meeting_end: only meeting_status
-      // changes, every other metadata key is kept.
+      // Same targeted write as hub channel_meeting_end: meeting_status, plus
+      // ended_at for the card's timeline (JSON_INSERT — the first end wins);
+      // every other metadata key is kept.
       await yp.await_query(
-        `UPDATE \`${db}\`.channel SET metadata = JSON_SET(` +
-        "COALESCE(NULLIF(metadata, ''), '{}'), '$.meeting_status', 'ended') " +
+        `UPDATE \`${db}\`.channel SET metadata = JSON_INSERT(JSON_SET(` +
+        "COALESCE(NULLIF(metadata, ''), '{}'), '$.meeting_status', 'ended'), " +
+        "'$.ended_at', UNIX_TIMESTAMP()) " +
         "WHERE message_id = ?",
         r.message_id
       );

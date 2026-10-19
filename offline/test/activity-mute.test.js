@@ -9,9 +9,9 @@
 //
 // The properties worth defending here are mostly about NOT doing things:
 //
-//   · the feed must never learn about mute — a muted user keeps every row in
-//     the Notification Center and keeps the bell badge, so the only thing that
-//     may change is whether a popup card appears;
+//   · a muted chat leaves the feed and the badges (Aaron 2026-10-13), but the
+//     mute lookup on that path never goes through the process-wide cooldown —
+//     one failed query must not un-hide every user's muted chats;
 //   · '0' and 'false' arrive from form and query payloads as STRINGS, and both
 //     are truthy in JS — reading them naively would turn every unmute into a
 //     mute, which is the failure the user would never report because the
@@ -95,6 +95,8 @@ const Holder = new Function(
      ${sliceMethod('_optionalYpProc')}
      ${sliceMethod('_optionalYpProcResult')}
      ${sliceMethod('_muteState')}
+     ${sliceMethod('_muteFlag')}
+     ${sliceMethod('_peerMutes')}
      ${sliceMethod('mute_state')}
      ${sliceMethod('mute_set')}
    }
@@ -208,7 +210,8 @@ const reset = () => MISSING_PROCS.clear();
     const h = new Holder({}, { hub_id: 'H1' });
     await h.mute_set();
     await h.mute_set();
-    eq(h.calls.length, 1, 'second call inside the cooldown does not reach the DB');
+    eq(h.calls.filter((c) => c.proc === 'notification_mute_set').length, 1,
+      'second call inside the cooldown does not reach the DB');
     eq(h.sent.status, 'error', 'and still reports honestly');
   }
   {
@@ -232,14 +235,14 @@ const reset = () => MISSING_PROCS.clear();
     await h.mute_state();
     eq(h.calls[0].proc, 'notification_mute_state', 'reads the state routine');
     deq(h.calls[0].args, ['U1'], 'for the caller only');
-    deq(h.sent, { global: 1, hubs: [] }, 'global mute reported');
+    deq(h.sent, { global: 1, hubs: [], peers: [] }, 'global mute reported');
   }
   {
     reset();
     const h = new Holder({}); // not deployed
     await h.mute_state();
-    deq(h.sent, { global: 0, hubs: [] },
-      'before the schema is applied it answers "nothing muted" — popups keep working');
+    deq(h.sent, { global: 0, hubs: [], peers: [] },
+      'before the schema is applied it answers "nothing muted" — nothing is hidden');
   }
 
   // ── 7. the refactored helper must not change for its existing callers ────
@@ -267,13 +270,16 @@ const reset = () => MISSING_PROCS.clear();
   }
 
   // ── 8. the feed must not know about mute ─────────────────────────────────
-  console.log('\n8. mute is invisible to the feed and the badge');
+  console.log('\n8. a muted chat leaves the feed and the badges');
   {
-    const feedMethods = ['list', 'get_feed', 'unread_counts', '_notificationRollups'];
-    for (const name of feedMethods) {
-      const body = sliceMethod(name);
-      ok(!/mute/i.test(body), `${name}() must never read the mute flags`);
+    // Every badge, tab and feed row is built from _notificationRollups; the
+    // feed's history rows, stored copies and "Mark all as read" filter too.
+    // Behaviour: test/activity-muted-chat-rows.test.js.
+    for (const name of ['_notificationRollups', 'get_feed', 'mark_all_read']) {
+      ok(/this\._chatMutes\(\)/.test(sliceMethod(name)), `${name}() reads the chat mutes`);
     }
+    ok(!/_optionalYpProc/.test(sliceMethod('_chatMutes')),
+      '_chatMutes() does not go through the process-wide cooldown');
     // And the popup suppression must not have been pushed onto the server's
     // chat push path either — that is the hottest push we have.
     ok(!/notification_mute/.test(readFileSync(join(__dirname, '../../service/private/channel.js'), 'utf8')),

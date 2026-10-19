@@ -78,6 +78,22 @@ if (!ROLLUP_LINE) {
 const dropDeletedSrc = sliceMethod('_dropDeleted');
 const storeRollupsSrc = sliceMethod('_storeRollups');
 const storedRollupsSrc = sliceMethod('_storedRollups');
+const clickedSrc = sliceMethod('_clickedRollup');
+const deleteRollupSrc = sliceMethod('delete_rollup');
+// Module-scope helper the alias sweep keys on.
+const dismissKeyStart = src.indexOf('\nfunction rollupDismissKey(r) {');
+if (dismissKeyStart < 0) {
+  console.error('FATAL: rollupDismissKey not found at module scope — fix this slicer');
+  process.exit(1);
+}
+const dismissKeySrc = sliceBraced(dismissKeyStart + 1, 'rollupDismissKey');
+const supersededStart = src.indexOf('\nfunction supersededRollups(live, stored) {');
+if (supersededStart < 0) {
+  console.error('FATAL: supersededRollups not found at module scope — fix this slicer');
+  process.exit(1);
+}
+const supersededSrc = sliceBraced(supersededStart + 1, 'supersededRollups');
+const retireSrc = sliceMethod('_retireRollups');
 
 // Sanity-check the slices, so a silent mis-slice can never masquerade as a pass.
 const guards = [
@@ -85,6 +101,11 @@ const guards = [
   [dropDeletedSrc, "row.event_type === 'mfs'", '_dropDeleted must discriminate on event_type'],
   [storeRollupsSrc, 'notification_rollup_put', '_storeRollups must call the put proc'],
   [storedRollupsSrc, 'notification_rollup_list', '_storedRollups must call the list proc'],
+  [clickedSrc, 'rollupDismissKey', '_clickedRollup must match on the dismiss key'],
+  [clickedSrc, 'last_id', '_clickedRollup must tell rows apart by last_id'],
+  [deleteRollupSrc, '_clickedRollup', 'delete_rollup must resolve the clicked row'],
+  [retireSrc, 'notification_rollup_delete', '_retireRollups must flag through the delete proc'],
+  [supersededSrc, 'rollupDismissKey', 'supersededRollups must key on the dismiss key'],
 ];
 for (const [blk, needle, why] of guards) {
   if (!blk.includes(needle)) { console.error(`FATAL: ${why}`); process.exit(1); }
@@ -93,10 +114,16 @@ for (const [blk, needle, why] of guards) {
 const helpers = (new Function('toArray', `
   ${ROLLUP_LINE[0]}
   ${bucketBlock}
+  ${dismissKeySrc}
+  ${supersededSrc}
   return {
+    supersededRollups,
     ${dropDeletedSrc},
     ${storeRollupsSrc},
-    ${storedRollupsSrc}
+    ${storedRollupsSrc},
+    ${clickedSrc},
+    ${deleteRollupSrc},
+    ${retireSrc}
   };
 `))(toArray);
 
@@ -287,6 +314,111 @@ function fakeCtx(procImpl) {
   out = await helpers._storedRollups.call(ctx);
   check('columns win over the snapshot for identity and time',
     [out[0].category, out[0].key_id, out[0].ctime], ['chat', 'RIGHT', 900]);
+
+  // ------------------------------------------------------------------
+  // delete_rollup — the trash button deletes exactly the row pressed
+  // (drumee.in 2026-09-30/10-01: a row stored under an older key_id came back;
+  // a chat had two rows, old key 7e4e53dc… and current key 20cdcad3…)
+  // ------------------------------------------------------------------
+  const delCtx = ({ input, live = [], stored = [], liveThrows, storedThrows }) => {
+    const c = fakeCtx(() => [{ status: 'ok' }]);
+    c.input = { need: (k) => input[k], use: (k) => input[k] };
+    c.output = { data: (d) => { c.out = d; } };
+    c._notificationRollups = async () => { if (liveThrows) throw new Error('boom'); return live; };
+    c._storedRollups = async () => { if (storedThrows) throw new Error('boom'); return stored; };
+    c._clickedRollup = helpers._clickedRollup;
+    return c;
+  };
+  const writes = (c) => c.calls.map(x => [x.name, ...(x.name === 'notification_rollup_delete' ? x.args.slice(1) : x.args)]);
+  const chatOld = { category: 'chat', key_id: '7e4e53dc7e4e53e2', drumate_id: '20cdcad320cdcad9', last_id: 1788172484 };
+  const chatNew = { category: 'chat', key_id: '20cdcad320cdcad9', drumate_id: '20cdcad320cdcad9', last_id: 1790767001 };
+
+  let dc = delCtx({
+    input: { category: 'chat', key_id: '20cdcad320cdcad9', hub_id: 'h', last_id: 1788172484 },
+    stored: [chatNew, chatOld],
+  });
+  await helpers.delete_rollup.call(dc);
+  check('trash on the OLD chat row flags only its own key and moves no read pointer',
+    writes(dc), [['notification_rollup_delete', 'chat', '7e4e53dc7e4e53e2']]);
+
+  dc = delCtx({
+    input: { category: 'chat', key_id: '20cdcad320cdcad9', hub_id: 'h', last_id: 1790767001 },
+    stored: [chatNew, chatOld],
+  });
+  await helpers.delete_rollup.call(dc);
+  check('trash on the NEW (read) chat row flags only its own key',
+    writes(dc), [['notification_rollup_delete', 'chat', '20cdcad320cdcad9']]);
+
+  dc = delCtx({
+    input: { category: 'chat', key_id: '20cdcad320cdcad9', hub_id: 'h', last_id: 1790767001 },
+    live: [chatNew], stored: [chatOld],
+  });
+  await helpers.delete_rollup.call(dc);
+  check('trash on an UNREAD row dismisses it, then flags it',
+    writes(dc), [['notification_dismiss', 'chat', '20cdcad320cdcad9', 'h', 1790767001], ['notification_rollup_delete', 'chat', '20cdcad320cdcad9']]);
+
+  dc = delCtx({
+    input: { category: 'media', key_id: '7def13177def131b', hub_id: '7d500ab67d500aba', last_id: 39 },
+    stored: [{ category: 'media', key_id: '7d500ab67d500aba', nid: '7def13177def131b', last_id: 39 }],
+  });
+  await helpers.delete_rollup.call(dc);
+  check('media copy stored under its hub key is flagged by that key',
+    writes(dc), [['notification_rollup_delete', 'media', '7d500ab67d500aba']]);
+
+  // Not identifiable -> byte-for-byte the previous behaviour.
+  const legacy = [['notification_dismiss', 'media', 'n9', 'h', 5], ['notification_rollup_delete', 'media', 'n9']];
+  dc = delCtx({ input: { category: 'media', key_id: 'n9', hub_id: 'h', last_id: 5 }, stored: [chatOld] });
+  await helpers.delete_rollup.call(dc);
+  check('nothing matches: previous behaviour', writes(dc), legacy);
+
+  dc = delCtx({ input: { category: 'media', key_id: 'n9', hub_id: 'h', last_id: 6 },
+    stored: [{ category: 'media', key_id: 'n9', nid: 'n9', last_id: 5 }] });
+  await helpers.delete_rollup.call(dc);
+  check('last_id moved on since the panel drew it: previous behaviour',
+    writes(dc), [['notification_dismiss', 'media', 'n9', 'h', 6], ['notification_rollup_delete', 'media', 'n9']]);
+
+  dc = delCtx({ input: { category: 'media', key_id: 'n9', hub_id: 'h', last_id: 5 }, liveThrows: true, storedThrows: true });
+  await helpers.delete_rollup.call(dc);
+  check('both lookups failing: previous behaviour', writes(dc), legacy);
+
+  dc = delCtx({ input: { category: 'media', key_id: 'n9', hub_id: 'h' }, stored: [{ category: 'media', key_id: 'n9', nid: 'n9', last_id: 0 }] });
+  await helpers.delete_rollup.call(dc);
+  check('no last_id sent: previous behaviour',
+    writes(dc), [['notification_dismiss', 'media', 'n9', 'h', 0], ['notification_rollup_delete', 'media', 'n9']]);
+  check('the response is still the proc result', dc.out, { status: 'ok' });
+
+  // ------------------------------------------------------------------
+  // supersededRollups / _retireRollups — one conversation shown twice
+  // ------------------------------------------------------------------
+  const keys = (set) => [...set].map(r => r.key_id).sort();
+  check('old chat copy is superseded by the stored copy under the peer id',
+    keys(helpers.supersededRollups([], [chatNew, chatOld])), ['7e4e53dc7e4e53e2']);
+  check('old chat copy is superseded by a LIVE row under the peer id',
+    keys(helpers.supersededRollups([chatNew], [chatOld])), ['7e4e53dc7e4e53e2']);
+  check('a lone old-keyed copy stays (only record of its notification)',
+    keys(helpers.supersededRollups([], [chatOld, { category: 'media', key_id: '7d500ab67d500aba', nid: '7def13177def131b' }])), []);
+  check('old media copy under the hub key is superseded by its folder row',
+    keys(helpers.supersededRollups([{ category: 'media', key_id: 'f1', nid: 'f1' }], [{ category: 'media', key_id: 'hub1', nid: 'f1', hub_id: 'hub1' }])), ['hub1']);
+  check('current-keyed rows are never superseded',
+    keys(helpers.supersededRollups([], [chatNew, { category: 'media', key_id: 'f1', nid: 'f1' }])), []);
+  check('teamchat / ticket are never touched (their dismiss key is the key_id)',
+    keys(helpers.supersededRollups([{ category: 'teamchat', key_id: 'x' }], [{ category: 'teamchat', key_id: 'y', nid: 'x' }, { category: 'ticket', key_id: 't', hub_id: 'x' }])), []);
+  check('another peer is not a duplicate',
+    keys(helpers.supersededRollups([], [chatOld, { category: 'chat', key_id: '70ba905970ba905d', drumate_id: '70ba905970ba905d' }])), []);
+  check('a media key that is another category is not a duplicate',
+    keys(helpers.supersededRollups([{ category: 'chat', key_id: 'f1' }], [{ category: 'media', key_id: 'hub1', nid: 'f1' }])), []);
+
+  let rc = fakeCtx(() => [{ status: 'ok' }]);
+  await helpers._retireRollups.call(rc, new Set([chatOld]));
+  check('a superseded copy is flagged by its own key',
+    rc.calls.map(c => [c.name, ...c.args]), [['notification_rollup_delete', 'u1', 'chat', '7e4e53dc7e4e53e2']]);
+  rc = fakeCtx(() => { throw new Error('boom'); });
+  threw = false;
+  try { await helpers._retireRollups.call(rc, new Set([chatOld])); } catch (e) { threw = true; }
+  check('a failing retire does not throw', threw, false);
+  rc = fakeCtx(() => [{ status: 'ok' }]);
+  await helpers._retireRollups.call(rc, new Set());
+  check('nothing superseded: no write', rc.calls.length, 0);
 
   // ------------------------------------------------------------------
   console.log(`\n${pass} passed, ${failures.length} failed`);

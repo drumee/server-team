@@ -19,6 +19,9 @@
 const { writeFileSync, readFileSync } = require('jsonfile');
 const { resolve, join, basename } = require('path');
 const { normalizeWideSections, isWordprocessing } = require('./normalize-docx-sections');
+// Sub-directory of a node holding the page-fitted copy of its document. Shared,
+// by name, with whatever reads it back (see normalizeInput).
+const FITTED_DIR = 'fitted';
 const { remove_dir } = require('@drumee/server-core').MfsTools;
 const { getPdfInfo } = require('@drumee/server-core').Document;
 const { rmSync, renameSync, mkdirSync, existsSync } = require("fs");
@@ -189,25 +192,52 @@ class __pdf_builder extends Offline {
    * For wordprocessing docs, rewrite any portrait section whose widest table or
    * inline image overflows the page into landscape BEFORE soffice runs — soffice
    * renders faithfully and would otherwise clip that content off the right edge.
-   * The normalized copy keeps the original basename (so the .pdf output name is
-   * unchanged) and lives in a throwaway `.norm` dir; the stored original is never
-   * touched. Any failure falls back to converting the original untouched.
+   * The stored original is never touched. Any failure falls back to converting
+   * the original untouched.
+   *
+   * THE FITTED COPY IS KEPT, in a `fitted/` sub-directory of the node, because
+   * the PDF preview is not the only surface that has to show those columns: the
+   * office editor loads the document straight from storage, where it was cutting
+   * exactly the same tables while the preview beside it showed them. Building it
+   * here means the geometry is decided in ONE place, by the module that already
+   * knows how, and the editor plugin only has to prefer this file when it is
+   * there.
+   *
+   * THE SUB-DIRECTORY AND THE `orig.<ext>` NAME ARE THE INTERFACE. Node content
+   * is addressed as `<mfs_root>/<nid>/<format>.<ext>`, and the reader resolves
+   * it through `get_node_content`, which honours `target_nid`. Keeping the file
+   * under `<nid>/fitted/` with its ordinary `orig.<ext>` name lets a reader
+   * point a node clone at it (`target_nid: "<nid>/fitted"`) and reuse the whole
+   * send path — headers, accel redirect, download name — instead of growing a
+   * second one.
+   *
+   * It is derived data like `preview.pdf`: rebuilt whenever a new version is
+   * converted, and REMOVED when the document no longer overflows, so a stale
+   * copy can never outlive the problem it solved.
+   *
+   * @param {String} inputFile the document to convert (upload temp or original)
+   * @param {String} mfsDir    the node's storage dir, where derived files live
    * @returns {Promise<string>} path of the file soffice should convert
    */
-  async normalizeInput(inputFile, outdir) {
+  async normalizeInput(inputFile, mfsDir) {
+    const node = this.node || {};
+    const ext = String(node.extension || node.ext || basename(inputFile).split('.').pop() || 'docx').toLowerCase();
+    const fittedDir = resolve(mfsDir, FITTED_DIR);
+    const fitted = resolve(fittedDir, `orig.${ext}`);
     try {
       if (!inputFile || !isWordprocessing(inputFile)) return inputFile;
-      const dir = resolve(outdir, '.norm');
-      mkdirSync(dir, { recursive: true });
-      const target = join(dir, basename(inputFile));
-      const res = await normalizeWideSections(inputFile, target);
+      mkdirSync(fittedDir, { recursive: true });
+      const res = await normalizeWideSections(inputFile, fitted);
       if (res && res.changed) {
-        this.syslog(`Normalized overflowing sections ${JSON.stringify(res.sections)} -> landscape`);
-        return target;
+        this.syslog(`Fitted overflowing sections ${JSON.stringify(res.sections)} -> ${fitted}`);
+        return fitted;
       }
+      // Nothing overflows: no fitted copy should exist for this version.
+      rmSync(fittedDir, { recursive: true, force: true });
       return inputFile;
     } catch (e) {
       this.syslog(`Section normalization skipped (non-fatal):`, (e && e.message) || e);
+      rmSync(fittedDir, { recursive: true, force: true });
       return inputFile;
     }
   }
@@ -225,7 +255,7 @@ class __pdf_builder extends Offline {
     mkdirSync(outdir, { recursive: true });
 
     // Build PDF from this.info.tmpfile into tmp_pdf
-    const src = await this.normalizeInput(this.info.tmpfile, outdir);
+    const src = await this.normalizeInput(this.info.tmpfile, mfs_dir);
     let cmd = `${Script.soffice} ${outdir} ${src}`;
     this.exec(cmd);
     if (!existsSync(tmp_pdf)) {
@@ -259,7 +289,6 @@ class __pdf_builder extends Offline {
     const src = await this.normalizeInput(this.info.origFile, mfs_dir);
     let cmd = `${Script.soffice} ${mfs_dir} ${src}`;
     this.exec(cmd);
-    rmSync(resolve(mfs_dir, '.norm'), { recursive: true, force: true });
 
     if (!existsSync(orig_pdf)) {
       throw `Failed to build preview with CMD=${cmd}`;

@@ -24,6 +24,10 @@ const { notifyMemberJoined } = require("./lib/notify-member-joined");
 const { bounceLink } = require("./lib/email-link");
 const { Mfs } = require("@drumee/server-core");
 
+// Password policy — shared with drumate.change_password; see the lib for the
+// UI copies it must stay in step with.
+const { missingPasswordRules } = require("./lib/password-policy");
+
 class __signup extends Mfs {
 
   /**
@@ -34,6 +38,13 @@ class __signup extends Mfs {
   async create_account() {
     const email = this.input.need(Attr.email).trim();
     const password = this.input.need(Attr.password).trim();
+
+    // Checked on the TRIMMED value — the one that is hashed and that login
+    // (yp.login, session.signin) compares against.
+    const missing = missingPasswordRules(password);
+    if (missing.length) {
+      return this.output.data({ status: "weak_password", missing });
+    }
 
     const existingUser = await this.yp.await_proc("drumate_exists", email);
     if (existingUser && existingUser.email) {

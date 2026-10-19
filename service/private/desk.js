@@ -18,9 +18,11 @@
 const { after, union, filter, isEmpty } = require('lodash');
 const Media = require('../media');
 const { writeAudit } = require('./_audit');
+const { holdsHubOwner } = require('../lib/hub-owner');
 const { pushReferralLive } = require('./_referral_live');
 const { markFeatureUsage } = require("../lib/feature-usage");
 const { ctaFeature } = require("../lib/cta-click");
+const { buildSeedInsert } = require("../lib/example-tasks");
 
 const {
   Attr, Privilege, toArray,
@@ -479,7 +481,65 @@ class __private_desk extends Media {
       log: `Workspace '${actual_filename}' created (area=${area})`,
     });
 
+    // A new workspace opens with two example tasks in To Do (best effort —
+    // see _seedExampleTasks). Before answering, so the Task tab's first
+    // task.list already sees them.
+    await this._seedExampleTasks(hub_db, media.actual_home_id);
+
     this.output.data(media);
+  }
+
+  /**
+   * The two example tasks a new workspace opens with (Figma Board 922:159854),
+   * inserted straight into the NEW hub's `task` table (lib/example-tasks.js).
+   * No stored procedure: it works on every workspace created after a deploy,
+   * pool hubs included, with nothing to patch in hub DBs or the factory's
+   * hub template.
+   *
+   * Best effort and silent: answers how many tasks it inserted (0 or 2) and
+   * never throws, so workspace creation behaves exactly as before when it is
+   * skipped — no task table in that hub, a table missing a needed column, or
+   * a workspace that already has tasks (the single INSERT … WHERE NOT EXISTS
+   * then inserts nothing).
+   *
+   * The driver does not reject on an SQL error: it logs "SQL failure", closes
+   * this request's db connection (the next query reconnects) and resolves
+   * undefined. So an undefined answer is the failure signal, and nothing after
+   * this call in create_hub should assume the same connection.
+   *
+   * @param {string} hub_db the new hub's database
+   * @param {string} nid    the hub's root node — root-level tasks' scope
+   * @returns {Promise<number>}
+   */
+  async _seedExampleTasks(hub_db, nid) {
+    if (!hub_db || !nid) return 0;
+    try {
+      const rows = await this.db.await_query(
+        "SELECT column_name AS c FROM information_schema.columns WHERE table_schema=? AND table_name='task'",
+        hub_db,
+      );
+      // The driver unwraps a single-row answer to an object.
+      const columns = toArray(rows).map((r) => r && r.c).filter(Boolean);
+      if (!columns.length) return 0;
+      const ids = [
+        await this.yp.await_func("uniqueId"),
+        await this.yp.await_func("uniqueId"),
+      ];
+      const insert = buildSeedInsert(hub_db, columns, ids, this.uid, nid);
+      if (!insert) {
+        this.warn("[desk.create_hub] example tasks not seeded: unusable task table in", hub_db);
+        return 0;
+      }
+      const res = await this.db.await_query(insert.sql, ...insert.params);
+      if (!res) {
+        this.warn("[desk.create_hub] example tasks not seeded: insert failed in", hub_db);
+        return 0;
+      }
+      return Number(res.affectedRows || 0);
+    } catch (e) {
+      this.warn("[desk.create_hub] example tasks not seeded:", e && e.message);
+      return 0;
+    }
   }
 
   /**
@@ -556,6 +616,18 @@ class __private_desk extends Media {
    */
   async leave_hub() {
     const hub_id = this.input.use(Attr.nid);
+    // The owner does not walk out: leave_hub drops their row and the workspace
+    // is left with no owner. They delete it, or hand it over by change_owner.
+    // Checked before anything is pushed, so a refused leave touches nothing.
+    if (hub_id && hub_id != this.uid) {
+      const hub_db = await this.yp.await_func('get_db_name', hub_id);
+      if (hub_db && await holdsHubOwner(this.yp, hub_db, this.uid)) {
+        return this.output.data({
+          error: "OWNER_CANNOT_LEAVE",
+          reason: "The workspace owner cannot leave it.",
+        });
+      }
+    }
     let sockets = await this.yp.await_proc('user_sockets', this.uid);
     let payload = { ...this.granted_node(), reason: 'leave', uid: this.uid };
     await this.changelog_write({ src: payload, event: "media.remove" });

@@ -378,6 +378,26 @@
       "errors": []
     },
 
+    "link_files": {
+      "doc": "Attach already-uploaded files (media nids in this hub) to a meeting the caller created. Appends to the meeting's attachment list (deduped, max 20) and, when the meeting already has a public link, grants that link download access to the new files. Returns the full list and any nids refused for the cap.",
+      "scope": "hub",
+      "permission": {
+        "src": "write",
+        "fast_check": "user_permission"
+      },
+      "params": {
+        "nid": {
+          "type": "string",
+          "required": true,
+          "description": "Meeting (schedule) node id"
+        },
+        "file_nids": {
+          "type": "array",
+          "required": true,
+          "description": "Media node ids to attach"
+        }
+      }
+    },
     "public_link": {
       "doc": "Generate a public shareable link for a meeting room node. Creates a DMZ grant token for the specified node, grants permission to the public_id system user, and returns a shareable URL containing the access token.",
       "scope": "hub",
