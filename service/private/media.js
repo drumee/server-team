@@ -50,6 +50,7 @@ const Media = require("../media");
 const { writeAudit } = require("./_audit");
 const { movePlanRows } = require("./_move-plan");
 const { createHub } = require("../lib/env");
+const { notifyFileOwner, FILE_EDITED } = require("../lib/file-owner-notify");
 const { showBinCall } = require("../lib/trash-sort");
 const {
   ARCHIVE_EXTENSIONS, SMALL_MAX_BYTES, SMALL_MAX_ENTRIES,
@@ -3249,6 +3250,13 @@ class __private_media extends Media {
         }
       }
 
+      // "<editor> edited <file>" for the file's owner. Only when the bytes
+      // really changed: editors autosave on a timer and resave identical
+      // content. Not awaited; it never throws.
+      if (!chatScoped && hash !== attr.md5Hash) {
+        notifyFileOwner(this, { event: FILE_EDITED, hub_id, nid: attr.id || nid, actor: this.uid, source: 'editor' });
+      }
+
       if ([Attr.document].includes(old_category)) {
         try {
           await this.db.await_proc('seo_delete_index', hub_id, nid);
@@ -3337,6 +3345,8 @@ class __private_media extends Media {
       return;
     }
     let md5Hash = this.input.get("md5Hash");
+    // What the file held before, for the owner notification below.
+    const previousMd5 = node.md5Hash;
     let { metadata } = node;
     metadata = cleanSeen(metadata);
     metadata.md5Hash = md5Hash;
@@ -3378,6 +3388,13 @@ class __private_media extends Media {
       ...node,
       replace: 1,
     });
+    // "<uploader> edited <file>" for the file's owner, when the bytes really
+    // changed and the file is not a chat attachment. Not awaited; it never
+    // throws.
+    const chatScoped = /^\/__chat__\//.test(String((node && (node.ownpath || node.file_path)) || ''));
+    if (node && node.hub_id && !chatScoped && !(md5Hash && md5Hash === previousMd5)) {
+      notifyFileOwner(this, { event: FILE_EDITED, hub_id: node.hub_id, nid: node.id || nid, actor: this.uid, source: 'upload' });
+    }
   }
 
   /**

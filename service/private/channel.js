@@ -42,6 +42,7 @@ const Spawn = require("child_process").spawn;
 const { DOWNLOAD_FOLDER } = Constants;
 const { FileIo } = require("@drumee/server-core");
 const { sqlLiteral, sqlString } = require("../lib/sql-literal");
+const { notifyFileOwner, FILE_COMMENTED } = require("../lib/file-owner-notify");
 const { tmp_dir, mfs_dir } = sysEnv();
 const SPAWN_OPT = { detached: true, stdio: ["ignore", "ignore", "ignore"] };
 const OFFLINE_DIR = pathResolve(__dirname, "..", "..", "offline", "media");
@@ -2582,6 +2583,18 @@ class __private_channel extends Entity {
     }
 
     this.output.data(data);
+    // "<author> commented on <file>" for the file's owner -- the comment
+    // itself rides along so the owner can read it from the notification and
+    // the click can open the thread on it. Not awaited; it never throws.
+    notifyFileOwner(this, {
+      event: FILE_COMMENTED,
+      hub_id,
+      nid: file_nid,
+      actor: this.uid,
+      comment: message,
+      message_id,
+      source: "thread",
+    });
     // Core function -> the Chat bar. A file-thread reply is a message and
     // counts here.
     markFeatureUsage(this, "chat");
