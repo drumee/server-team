@@ -26,6 +26,15 @@ const MAX_WORKSPACES = 200;
 const YMD = /^\d{4}-\d{2}-\d{2}$/;
 
 /**
+ * Is `uid` one of the task's assignees? task_list_range answers them as
+ * `assignee_uids`, a GROUP_CONCAT of uids (NULL when the task has none).
+ */
+function isAssignedTo(row, uid) {
+  if (!row || !row.assignee_uids) return false;
+  return String(row.assignee_uids).split(",").includes(String(uid));
+}
+
+/**
  * Personal Calendar — the aggregated read behind the desk's Calendar screen.
  *
  * READ-ONLY by construction. Every write the Calendar performs goes back to the
@@ -38,7 +47,8 @@ const YMD = /^\d{4}-\d{2}-\d{2}$/;
  *              room service already maintains write-through for the reminder
  *              worker. No fan-out at all.
  *   tasks    — task_list_range per database: the caller's own (personal tasks)
- *              plus every workspace they belong to. This is an N+1 by nature;
+ *              plus every workspace they belong to, keeping only the workspace
+ *              tasks assigned to the caller. This is an N+1 by nature;
  *              it is the price of tasks having no global index the way meetings
  *              do, and it is the thing a future yp.task_schedule would collapse.
  */
@@ -172,11 +182,15 @@ class __private_calendar extends Entity {
     for (const hub of capped) {
       attempted++;
       try {
-        const rows = await this.yp.await_proc(
-          `${hub.db_name}.task_list_range`,
-          from,
-          to
-        );
+        // A workspace task is listed only when it is assigned to the caller
+        // (Lexis, 2026-10-20): the board shows the whole team's work, the
+        // Personal Calendar shows the caller's own. Personal tasks are not
+        // filtered — they are the caller's by construction and carry no
+        // assignee. Same rule the Daily Reminder's due-task count already
+        // applies (hub_daily_counts joins task_assignee on the caller).
+        const rows = (toArray(
+          await this.yp.await_proc(`${hub.db_name}.task_list_range`, from, to)
+        ) || []).filter((r) => isAssignedTo(r, this.uid));
         collect(rows, {
           hub_id: hub.id,
           scope: "workspace",
