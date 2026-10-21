@@ -55,7 +55,9 @@ function makeCalendar() {
         const hub = byDb[db];
         if (!hub) throw new Error(`unexpected proc ${name}`);
         if (proc === "task_list_range") {
-          return hub.noTasks ? [] : [{ id: `task_${db}`, title: hub.name, due_date: "2026-10-12" }];
+          // Assigned to the caller: calendar.list lists only those (see
+          // calendar-assigned-tasks.test.js).
+          return hub.noTasks ? [] : [{ id: `task_${db}`, title: hub.name, due_date: "2026-10-12", assignee_uids: UID }];
         }
         if (proc === "mfs_home") return { hub_id: hub.id, home_id: homeOf(db) };
         if (proc === "mfs_access_node") {
