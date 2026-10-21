@@ -1558,6 +1558,7 @@ class MfsActivity extends Entity {
     await this._stampHubInvites(result);
     await this._stampInviteStatus(result);
     await this._stampChatMentions(result);
+    await this._stampChatTopics(result);
     result = await this._stampMeetingRollups(result);
     if (!unreadOnly) await this._alignContactReadState(result, liveRollups);
 
@@ -2330,6 +2331,75 @@ class MfsActivity extends Entity {
       // name for hub-level chat (notification_center_next COALESCEs h.name).
       r.mentioned_in = r.folder_name || r.filename || '';
       if (!r.mentioned_in) delete r.mentioned_in;
+    }
+  }
+
+  /**
+   * Tell each folder-chat rollup which topic its latest message is in, as
+   * `topic_id` ("general" for a message outside any topic).
+   *
+   * A folder chat opens on # General, which leaves topic messages out, and
+   * notification_center_next rolls team chat up per FOLDER with no topic — so
+   * "<A> sent a message" for a message posted in a topic opened a chat where
+   * that message was not shown. The client scopes the chat to `topic_id`.
+   *
+   * The rollup's `last_id` is its newest message's sys_id:
+   * channel_list_notifications names that message, channel_get reads its
+   * topic — no schema change. One list per DISTINCT hub, capped, best-effort:
+   * a row left without `topic_id` opens exactly as it does today.
+   */
+  async _stampChatTopics(rows) {
+    const MAX_HUBS = 8;
+    const MAX_MESSAGES = 20;
+    if (!Array.isArray(rows) || !rows.length) return;
+    const pending = rows.filter((r) => r && r.category === 'teamchat' && r.topic_id == null
+      && r.hub_id && Number(r.last_id) > 0);
+    if (!pending.length) return;
+
+    const hubs = [];
+    for (const r of pending) {
+      if (hubs.includes(r.hub_id)) continue;
+      if (hubs.length >= MAX_HUBS) break;
+      hubs.push(r.hub_id);
+    }
+
+    let lookups = 0;
+    for (const hubId of hubs) {
+      let bySysId;
+      try {
+        bySysId = new Map(toArray(
+          await this.yp.await_proc(
+            'forward_proc', hubId, 'channel_list_notifications',
+            `${sqlString(this.uid)},'all',0,1`
+          )
+        ).filter((m) => m && m.message_id).map((m) => [String(m.sys_id), m.message_id]));
+      } catch (e) {
+        this.debug('[ACTIVITY] topic lookup failed', hubId, e && e.message);
+        continue;
+      }
+      for (const r of pending) {
+        if (r.hub_id !== hubId || lookups >= MAX_MESSAGES) continue;
+        const messageId = bySysId.get(String(r.last_id));
+        if (!messageId) continue;
+        lookups++;
+        try {
+          const msg = toArray(
+            await this.yp.await_proc('forward_proc', hubId, 'channel_get', `${sqlString(messageId)}`)
+          )[0];
+          if (!msg) continue;
+          let topic = msg.topic_id;
+          if (topic == null) {
+            let meta = msg.metadata;
+            if (typeof meta === 'string') {
+              try { meta = JSON.parse(meta); } catch (e) { meta = null; }
+            }
+            topic = meta && meta._topic_id;
+          }
+          r.topic_id = topic ? String(topic) : 'general';
+        } catch (e) {
+          this.debug('[ACTIVITY] topic lookup failed', hubId, e && e.message);
+        }
+      }
     }
   }
 
