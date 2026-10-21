@@ -67,6 +67,16 @@ test('fresh paragraph ids and the empty paragraph Casual appends on open are not
   assert.strictEqual(await S.sameContent(udoc(one(a)), udoc(one(img)), 'udoc'), false);
 });
 
+test('renumbering a comment anchor (-1 -> 3) is no edit; adding one is', async () => {
+  const anchor = (id) => `<w:p><w:commentRangeStart w:id="${id}"/><w:r><w:t>x</w:t></w:r><w:commentRangeEnd w:id="${id}"/><w:r><w:commentReference w:id="${id}"/></w:r></w:p>`;
+  const one = (x) => ({ docx: x, tabs: [{ id: 't1', name: 'Tab 1', docx: x }], active: 't1' });
+  const provisional = await docx('hi', { tail: anchor('-1') });
+  const renumbered = await docx('hi', { tail: anchor('3') });
+  const none = await docx('hi', { tail: '<w:p><w:r><w:t>x</w:t></w:r></w:p>' });
+  assert.strictEqual(await S.sameContent(udoc(one(provisional)), udoc(one(renumbered)), 'udoc'), true);
+  assert.strictEqual(await S.sameContent(udoc(one(none)), udoc(one(provisional)), 'udoc'), false);
+});
+
 test('a real edit, a renamed tab or a new tab is a change', async () => {
   const a = await docx('hi');
   const b = await docx('hi there');

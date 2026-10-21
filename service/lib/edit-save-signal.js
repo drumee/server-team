@@ -38,17 +38,22 @@ function zipLib() {
 }
 
 // The body parts (word/*.xml) as a reader sees them. Casual stamps fresh
-// paragraph/text ids and revision ids on every export, and appends one empty
+// paragraph/text ids and revision ids on every export, renumbers comment
+// anchors, and appends one empty
 // paragraph each time the document is opened (measured on drumee.in
 // 2026-10-21: 2 -> 3 -> 4 paragraphs over two opens, text unchanged). Neither
 // is an edit anybody should be told about, so both are left out. The price:
 // adding or removing nothing but blank lines is not announced either -- the
 // bytes are still saved.
 const VOLATILE_ATTR_RE = /\s(?:w14:paraId|w14:textId|w:rsid[A-Za-z]*)="[^"]*"/g;
+// A new comment's anchors are saved with a provisional id (-1) and renumbered
+// on a later save (-1 -> 3): the comment was already announced, the
+// renumbering is no edit.
+const COMMENT_ANCHOR_ID_RE = /(<w:comment(?:RangeStart|RangeEnd|Reference)\b[^>]*?)\sw:id="[^"]*"/g;
 const EMPTY_PARAGRAPH_RE = /<w:p(?:\s[^>]*)?\/>|<w:p(?:\s[^>]*)?>(?:<w:pPr>(?:(?!<\/w:pPr>)[\s\S])*<\/w:pPr>)?<\/w:p>/g;
 function readable(name, xml) {
   if (!/^word\/[^/]+\.xml$/i.test(name)) return xml;
-  return xml.replace(VOLATILE_ATTR_RE, "").replace(EMPTY_PARAGRAPH_RE, "");
+  return xml.replace(VOLATILE_ATTR_RE, "").replace(COMMENT_ANCHOR_ID_RE, "$1").replace(EMPTY_PARAGRAPH_RE, "");
 }
 
 // Every part of a .docx except docProps/ (export time, app name), hashed by
