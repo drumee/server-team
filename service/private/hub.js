@@ -2425,10 +2425,10 @@ class __private_hub extends Hub {
   }
 
   /**
-   * Top-3 workspace items (folders first, then files) for the invite email
-   * previews. Listing is read from the inviter's perspective (this.uid) since a
+   * Workspace items (folders first, then files, up to 10) for the invite email
+   * previews; the template shows the first 3. Listing is read from the inviter's perspective (this.uid) since a
    * not-yet-existing invitee has no permission on the workspace yet. Each item
-   * is { name, date, icon, restricted }; `restricted` is false only for share/
+   * is { name, date, icon, restricted, ext }; `restricted` is false only for share/
    * dmz nodes (the "shared" mode in the app) — templates dim restricted rows and
    * leave shared rows clear. Returns [] on any error so the email renders no
    * preview rows.
@@ -2440,7 +2440,9 @@ class __private_hub extends Hub {
       const rows = await this.db.await_proc("mfs_show_node_by", "0", this.uid, params);
       const list = isArray(rows) ? rows : (rows ? [rows] : []);
       const isFolder = (it) => it.ftype === "folder" || it.ftype === "hub" || it.filetype === "folder";
-      const top = [...list.filter(isFolder), ...list.filter((it) => !isFolder(it))].slice(0, 3);
+      // Headroom past the 3 rows shown: the template drops .schedule files on
+      // external workspaces and then takes the first 3 of what is left.
+      const top = [...list.filter(isFolder), ...list.filter((it) => !isFolder(it))].slice(0, 10);
       return top.map((it) => {
         const base = it.ext ? `${it.filename}.${it.ext}` : it.filename;
         const name = base.length > 32 ? `${base.slice(0, 31)}…` : base;
@@ -2458,7 +2460,7 @@ class __private_hub extends Hub {
         if (ftype === "folder" || ftype === "hub") icon = restricted ? "restricted.png" : "shared.png";
         else if (ftype === "image") icon = "image.png";
         else icon = "files.png";
-        return { name, date, icon: `${ICON_BASE}/${icon}`, restricted };
+        return { name, date, icon: `${ICON_BASE}/${icon}`, restricted, ext: it.ext || "" };
       });
     } catch (err) {
       this.warn("[hub] invite: preview fetch failed", err && err.message);

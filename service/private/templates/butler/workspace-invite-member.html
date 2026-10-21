@@ -99,7 +99,10 @@ var _external = (typeof workspace_external !== 'undefined') && workspace_externa
                        redacted (names/dates hidden) with the badge centered over them -->
                   <div style="position:relative;">
                   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
-                    <% (typeof preview_items !== 'undefined' && preview_items ? preview_items : []).forEach(function (it) { %>
+                    <% (typeof preview_items !== 'undefined' && preview_items ? preview_items : [])
+                         .filter(function (it) { return !(_external && it.ext === 'schedule'); })
+                         .slice(0, 3)
+                         .forEach(function (it) { %>
                     <% if (it.restricted) { %>
                     <tr style="opacity:0.4;">
                       <td valign="middle" style="padding:8px 0 9px 0;width:36px;line-height:0;">
