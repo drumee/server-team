@@ -51,6 +51,7 @@ const { writeAudit } = require("./_audit");
 const { movePlanRows } = require("./_move-plan");
 const { createHub } = require("../lib/env");
 const { notifyFileOwner, FILE_EDITED } = require("../lib/file-owner-notify");
+const { sameContent, claimUpdatedNotice } = require("../lib/edit-save-signal");
 const { showBinCall } = require("../lib/trash-sort");
 const {
   ARCHIVE_EXTENSIONS, SMALL_MAX_BYTES, SMALL_MAX_ENTRIES,
@@ -3198,7 +3199,15 @@ class __private_media extends Media {
       const old_category = attr.category || attr.filetype;
       const hub_id = attr.hub_id;
 
-      await this._snapshot_version(attr, { newMd5: hash });
+      // Is this save news? The bytes are written either way. Same md5, or --
+      // for a Casual doc, which re-zips its .docx on every autosave -- same
+      // content (lib/edit-save-signal): no version snapshot, no "has been
+      // updated", no "<A> edited" for the owner. Read BEFORE the replace
+      // below overwrites the stored file.
+      const changed = hash !== attr.md5Hash
+        && !(await sameContent(resolve(attr.mfs_root, attr.id, `orig.${attr.extension}`), filepath, attr.extension));
+
+      if (changed) await this._snapshot_version(attr, { newMd5: hash });
       await this.db.await_proc("mfs_set_metadata", nid, merged, 0);
       await this.replace_content(attr, filepath, user_filename, hash);
 
@@ -3240,7 +3249,9 @@ class __private_media extends Media {
       // Best-effort: a logging failure must never fail a save the user has
       // already been told succeeded.
       const chatScoped = /^\/__chat__\//.test(String(attr.ownpath || attr.file_path || ''));
-      if (!chatScoped) {
+      // One "has been updated" per editor per file per window while they keep
+      // editing (lib/edit-save-signal), not one per autosave.
+      if (!chatScoped && changed && (await claimUpdatedNotice(hub_id, attr.id || nid, this.uid))) {
         try {
           // Shallow copy: changelog_write deletes `metadata` off the object it
           // is handed, and `attr` is still read below.
@@ -3250,10 +3261,10 @@ class __private_media extends Media {
         }
       }
 
-      // "<editor> edited <file>" for the file's owner. Only when the bytes
-      // really changed: editors autosave on a timer and resave identical
-      // content. Not awaited; it never throws.
-      if (!chatScoped && hash !== attr.md5Hash) {
+      // "<editor> edited <file>" for the file's owner. Only when the content
+      // really changed (see `changed`): editors autosave on a timer and resave
+      // identical content. Not awaited; it never throws.
+      if (!chatScoped && changed) {
         notifyFileOwner(this, { event: FILE_EDITED, hub_id, nid: attr.id || nid, actor: this.uid, source: 'editor' });
       }
 
