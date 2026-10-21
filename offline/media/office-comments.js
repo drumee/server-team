@@ -208,24 +208,24 @@ async function casualDocComments(json) {
     if (!t || !t.docx) continue;
     const zip = await JSZip.loadAsync(Buffer.from(String(t.docx), 'base64'));
     const tab = String(t.id || '');
-    // Keyed by ORDINAL within the tab, oldest first, whichever way the
-    // comments are stored: one more comment than before is one new comment
-    // (the newest). The integration now writes word/comments.xml (author,
-    // date, text); files saved before it carry only the anchors, whose ids
-    // Casual renumbers between saves (-1 became 2 on drumee.in). The same
-    // keys on both sides keep the first save that adds comments.xml to an
-    // anchor-only file from announcing every old comment as new.
-    let list;
+    // The integration now writes word/comments.xml (author, date, text):
+    // those comments are keyed by content, so a save that deletes one thread
+    // and adds another still finds the new one. Files saved before it carry
+    // only the anchors, whose ids Casual renumbers between saves (-1 became 2
+    // on drumee.in): those are keyed by ORDINAL, and a comments.xml comment
+    // also carries its ordinal (date order), so the first save that adds
+    // comments.xml to an anchor-only file announces only what it adds.
     if (zip.file('word/comments.xml')) {
-      list = (await wordComments(zip))
+      (await wordComments(zip))
         .map((c, i) => ({ c, i }))
         .sort((a, b) => String(a.c.date || '').localeCompare(String(b.c.date || '')) || a.i - b.i)
-        .map(({ c }) => c);
-    } else {
-      const body = await part(zip, 'word/document.xml');
-      list = elements(body, 'commentReference').map(() => comment('', '', ''));
+        // Matched by content against another comments.xml; by `ordinal`
+        // against an anchor-only file (newComments).
+        .forEach(({ c }, i) => out.push({ ...c, key: `x:${tab}|${c.key}`, ordinal: `a:${tab}:#${i + 1}` }));
+      continue;
     }
-    list.forEach((c, i) => out.push({ ...c, key: `a:${tab}:#${i + 1}` }));
+    const body = await part(zip, 'word/document.xml');
+    elements(body, 'commentReference').forEach((_, i) => out.push(comment(`a:${tab}:#${i + 1}`, '', '')));
   }
   return out;
 }
@@ -286,12 +286,17 @@ async function readComments(file, ext) {
  */
 function newComments(before, after) {
   if (!Array.isArray(before) || !Array.isArray(after)) return [];
+  // A Casual doc going from anchors only to word/comments.xml: compare by
+  // ordinal (see casualDocComments).
+  const byOrdinal = before.some((c) => /^a:/.test(String(c && c.key))) && after.some((c) => c && c.ordinal);
+  const keyOf = (c) => (byOrdinal && c.ordinal ? c.ordinal : c.key);
   const seen = new Map();
-  for (const c of before || []) seen.set(c.key, (seen.get(c.key) || 0) + 1);
+  for (const c of before) seen.set(c.key, (seen.get(c.key) || 0) + 1);
   const out = [];
-  for (const c of after || []) {
-    const n = seen.get(c.key) || 0;
-    if (n > 0) seen.set(c.key, n - 1);
+  for (const c of after) {
+    const k = keyOf(c);
+    const n = seen.get(k) || 0;
+    if (n > 0) seen.set(k, n - 1);
     else out.push(c);
   }
   return out;

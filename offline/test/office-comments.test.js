@@ -160,6 +160,20 @@ test('udoc: the first save that adds comments.xml to an anchor-only file announc
   assert.deepStrictEqual(added.map((c) => [c.author, c.text]), [['Ann', 'the new one']]);
 });
 
+test('udoc: with comments.xml on both sides, a save that drops one thread and adds another finds the new one', async () => {
+  const xml = async (list) => {
+    const zip = new JSZip();
+    zip.file('word/comments.xml', docxComments(list));
+    return readComments(casual('udoc', { tabs: [{ id: 't1', docx: (await zip.generateAsync({ type: 'nodebuffer' })).toString('base64') }] }), 'udoc');
+  };
+  const a = { author: 'Ann', date: '2026-10-21T05:00:00Z', text: 'old one' };
+  const b = { author: 'Bob', date: '2026-10-21T05:10:00Z', text: 'old two' };
+  const c = { author: 'Ann', date: '2026-10-21T06:00:00Z', text: 'brand new' };
+  const added = newComments(await xml([a, b]), await xml([b, c]));
+  assert.deepStrictEqual(added.map((x) => x.text), ['brand new']);
+  assert.deepStrictEqual(newComments(await xml([a, b]), await xml([a, b])), []);
+});
+
 test('udoc: a real word/comments.xml inside a tab is read like a docx', async () => {
   const zip = new JSZip();
   zip.file('word/comments.xml', docxComments([{ author: 'Ann Lee', date: '2026-10-21T05:00:00Z', text: 'tighten this' }]));
