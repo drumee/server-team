@@ -176,3 +176,43 @@ test('both events land in Files, are counted, and are cleared by the Files tab',
   const clear = SRC.slice(SRC.indexOf('const CONTACT_CLEAR'), SRC.indexOf('if (bucket && lookup(CONTACT_CLEAR'));
   assert.match(clear, /\[BUCKET\.files\]: \[\s*'contact_file_edited_unread',\s*'contact_file_commented_unread',/);
 });
+
+// ── notifyEditorSave / memberByDisplayName (Casual Docs / Sheets saves) ─────
+function editorSvc({ me = { firstname: 'Duy', lastname: 'Nguyen' }, members = [] } = {}) {
+  const svc = fakeSvc();
+  svc.uid = ACTOR;
+  const base = svc.yp.await_proc;
+  svc.yp.await_proc = async (name, ...args) => (name === 'get_user' ? [me] : base(name, ...args));
+  const baseQuery = svc.yp.await_query;
+  svc.yp.await_query = async (sql, ...args) => (/FROM `hubdb_1`.permission/.test(sql) ? members : baseQuery(sql, ...args));
+  return svc;
+}
+
+test("an anchor-only comment (no author) is the saver's, and the saver gets no edited", async () => {
+  const svc = editorSvc();
+  await lib.notifyEditorSave(svc, { hub_id: HUB, nid: NID, comments: [{ author: '', text: '' }] });
+  assert.deepStrictEqual(logged(svc).map((r) => [r[1], r[3]]), [[ACTOR, 'file_commented']]);
+});
+
+test('a comment signed by the saver: commented only; signed by another member: both', async () => {
+  let svc = editorSvc();
+  await lib.notifyEditorSave(svc, { hub_id: HUB, nid: NID, comments: [{ author: 'duy nguyen ', text: 'fix B2' }] });
+  assert.deepStrictEqual(logged(svc).map((r) => [r[1], r[3], r[4].comment]), [[ACTOR, 'file_commented', 'fix B2']]);
+
+  const BOB = 'bob0000000000001';
+  svc = editorSvc({ members: [{ id: BOB, firstname: 'Bob', lastname: 'Tran' }, { id: ACTOR, firstname: 'Duy', lastname: 'Nguyen' }] });
+  await lib.notifyEditorSave(svc, { hub_id: HUB, nid: NID, comments: [{ author: 'Bob Tran', text: 'ok' }] });
+  assert.deepStrictEqual(logged(svc).map((r) => [r[1], r[3]]), [[BOB, 'file_commented'], [ACTOR, 'file_edited']]);
+});
+
+test('an author nobody (or two members) signs as is never guessed', async () => {
+  const svc = editorSvc({ members: [{ id: 'x1', firstname: 'Sam' }, { id: 'x2', firstname: 'Sam' }] });
+  await lib.notifyEditorSave(svc, { hub_id: HUB, nid: NID, comments: [{ author: 'Sam', text: 'a' }, { author: 'Nobody', text: 'b' }] });
+  assert.deepStrictEqual(logged(svc).map((r) => [r[1], r[3]]), [[ACTOR, 'file_edited']]);
+});
+
+test('display name = "First Last", else username, else email', () => {
+  assert.strictEqual(lib.displayName({ firstname: 'Ann', lastname: 'Lee', username: 'ann' }), 'Ann Lee');
+  assert.strictEqual(lib.displayName({ username: 'ann', email: 'a@x' }), 'ann');
+  assert.strictEqual(lib.displayName({ email: 'a@x' }), 'a@x');
+});

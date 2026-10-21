@@ -122,3 +122,53 @@ test('attributeComment: by stored userId, else by a unique name, else nobody', (
   assert.strictEqual(attributeComment({ author: 'Stranger' }, people), null);
   assert.strictEqual(attributeComment({ author: '' }, people), null);
 });
+
+// ── Casual Docs / Sheets (media.save path) ─────────────────────────────────
+function casual(ext, json) {
+  const path = join(dir, `c${n++}.${ext}`);
+  writeFileSync(path, JSON.stringify(json));
+  return path;
+}
+
+async function anchoredDocx(ids) {
+  const zip = new JSZip();
+  zip.file('word/document.xml', `<w:document ${W}><w:body><w:p>${ids.map((i) => `<w:commentRangeStart w:id="${i}"/><w:r><w:t>x</w:t></w:r><w:commentRangeEnd w:id="${i}"/><w:r><w:commentReference w:id="${i}"/></w:r>`).join('')}</w:p></w:body></w:document>`);
+  return (await zip.generateAsync({ type: 'nodebuffer' })).toString('base64');
+}
+
+test('udoc: comment anchors are counted per tab, renumbered ids are not new', async () => {
+  const doc = async (ids) => casual('udoc', { docx: await anchoredDocx(ids), tabs: [{ id: 't1', name: 'Tab 1', docx: await anchoredDocx(ids) }], active: 't1' });
+  const one = await readComments(await doc(['-1']), 'udoc');
+  const renumbered = await readComments(await doc(['1']), 'udoc');
+  const two = await readComments(await doc(['1', '2']), 'udoc');
+  assert.strictEqual(one.length, 1, 'the top-level copy of the primary tab is not counted twice');
+  assert.deepStrictEqual(newComments(one, renumbered), []);
+  assert.strictEqual(newComments(renumbered, two).length, 1);
+  assert.deepStrictEqual([two[0].author, two[0].text], ['', '']);
+});
+
+test('udoc: a real word/comments.xml inside a tab is read like a docx', async () => {
+  const zip = new JSZip();
+  zip.file('word/comments.xml', docxComments([{ author: 'Ann Lee', date: '2026-10-21T05:00:00Z', text: 'tighten this' }]));
+  const b64 = (await zip.generateAsync({ type: 'nodebuffer' })).toString('base64');
+  const [c] = await readComments(casual('udoc', { tabs: [{ id: 't1', docx: b64 }] }), 'udoc');
+  assert.deepStrictEqual([c.author, c.text], ['Ann Lee', 'tighten this']);
+});
+
+test('usheet: Univer thread comments and replies, keyed by id', async () => {
+  const sheet = (comments) => casual('usheet', {
+    id: 'wb', sheets: {},
+    resources: [
+      { name: 'SHEET_RANGE_PROTECTION_PLUGIN', data: '{}' },
+      { name: 'SHEET_UNIVER_THREAD_COMMENT_PLUGIN', data: JSON.stringify({ s1: comments }) },
+    ],
+  });
+  const root = { id: 'c1', ref: 'B2', personId: 'Ann Lee', dT: '2026/10/21 05:00', text: { dataStream: 'check B2\r\n' }, children: [] };
+  const before = await readComments(sheet([root]), 'usheet');
+  const reply = { id: 'c2', ref: 'B2', personId: 'Bob Tran', dT: '2026/10/21 05:01', parentId: 'c1', text: { dataStream: 'done\r\n' } };
+  const after = await readComments(sheet([{ ...root, children: [reply] }]), 'usheet');
+  assert.deepStrictEqual(before.map((c) => [c.author, c.text]), [['Ann Lee', 'check B2']]);
+  assert.deepStrictEqual(newComments(before, after).map((c) => [c.author, c.text]), [['Bob Tran', 'done']]);
+  // a sheet without the comment resource has none
+  assert.deepStrictEqual(await readComments(casual('usheet', { sheets: {} }), 'usheet'), []);
+});

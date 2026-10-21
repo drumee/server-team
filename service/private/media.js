@@ -50,7 +50,8 @@ const Media = require("../media");
 const { writeAudit } = require("./_audit");
 const { movePlanRows } = require("./_move-plan");
 const { createHub } = require("../lib/env");
-const { notifyFileOwner, FILE_EDITED } = require("../lib/file-owner-notify");
+const { notifyFileOwner, notifyEditorSave, FILE_EDITED } = require("../lib/file-owner-notify");
+const { readComments, newComments } = require("../../offline/media/office-comments");
 const { sameContent, claimUpdatedNotice } = require("../lib/edit-save-signal");
 const { showBinCall } = require("../lib/trash-sort");
 const {
@@ -3204,8 +3205,25 @@ class __private_media extends Media {
       // content (lib/edit-save-signal): no version snapshot, no "has been
       // updated", no "<A> edited" for the owner. Read BEFORE the replace
       // below overwrites the stored file.
+      const storedPath = resolve(attr.mfs_root, attr.id, `orig.${attr.extension}`);
       const changed = hash !== attr.md5Hash
-        && !(await sameContent(resolve(attr.mfs_root, attr.id, `orig.${attr.extension}`), filepath, attr.extension));
+        && !(await sameContent(storedPath, filepath, attr.extension));
+      // The comments a Casual doc / sheet save brings: these files keep their
+      // comments inside, so the owner can be told "commented on" rather than
+      // "edited" (offline/media/office-comments). Read before the stored file
+      // is overwritten below; any doubt = no comments.
+      let addedComments = [];
+      if (changed && /^(udoc|usheet)$/i.test(String(attr.extension || ''))) {
+        try {
+          const [before, after] = await Promise.all([
+            readComments(storedPath, attr.extension),
+            readComments(filepath, attr.extension),
+          ]);
+          addedComments = newComments(before, after);
+        } catch (e) {
+          this.warn('[SAVE] comment comparison skipped:', e && e.message);
+        }
+      }
 
       if (changed) await this._snapshot_version(attr, { newMd5: hash });
       await this.db.await_proc("mfs_set_metadata", nid, merged, 0);
@@ -3261,11 +3279,16 @@ class __private_media extends Media {
         }
       }
 
-      // "<editor> edited <file>" for the file's owner. Only when the content
-      // really changed (see `changed`): editors autosave on a timer and resave
-      // identical content. Not awaited; it never throws.
+      // "<editor> edited <file>" / "<author> commented on <file>" for the
+      // file's owner. Only when the content really changed (see `changed`):
+      // editors autosave on a timer and resave identical content. Not
+      // awaited; it never throws.
       if (!chatScoped && changed) {
-        notifyFileOwner(this, { event: FILE_EDITED, hub_id, nid: attr.id || nid, actor: this.uid, source: 'editor' });
+        if (addedComments.length) {
+          notifyEditorSave(this, { hub_id, nid: attr.id || nid, comments: addedComments });
+        } else {
+          notifyFileOwner(this, { event: FILE_EDITED, hub_id, nid: attr.id || nid, actor: this.uid, source: 'editor' });
+        }
       }
 
       if ([Attr.document].includes(old_category)) {
