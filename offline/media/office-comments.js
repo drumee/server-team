@@ -36,9 +36,9 @@
  *         ppt/commentAuthors.xml       authorId -> name
  *
  *   udoc  Casual Docs: {tabs:[{id, docx: <base64 .docx>}]}. Read like a docx
- *         per tab; while the Live editor saves only the comment ANCHORS
- *         (w:commentReference, no word/comments.xml), each anchor is a
- *         comment with no author and no text, counted per tab.
+ *         per tab, keyed by ordinal (date order). An anchor-only file (saved
+ *         before the integration wrote word/comments.xml) counts each
+ *         w:commentReference as a comment with no author and no text.
  *   usheet Casual Sheets (Univer snapshot): resources[name =
  *         SHEET_UNIVER_THREAD_COMMENT_PLUGIN].data, a JSON string of
  *         { <sheet id>: [ { id, personId, dT, text: { dataStream },
@@ -208,16 +208,24 @@ async function casualDocComments(json) {
     if (!t || !t.docx) continue;
     const zip = await JSZip.loadAsync(Buffer.from(String(t.docx), 'base64'));
     const tab = String(t.id || '');
+    // Keyed by ORDINAL within the tab, oldest first, whichever way the
+    // comments are stored: one more comment than before is one new comment
+    // (the newest). The integration now writes word/comments.xml (author,
+    // date, text); files saved before it carry only the anchors, whose ids
+    // Casual renumbers between saves (-1 became 2 on drumee.in). The same
+    // keys on both sides keep the first save that adds comments.xml to an
+    // anchor-only file from announcing every old comment as new.
+    let list;
     if (zip.file('word/comments.xml')) {
-      for (const c of await wordComments(zip)) out.push({ ...c, key: `${tab}|${c.key}` });
-      continue;
+      list = (await wordComments(zip))
+        .map((c, i) => ({ c, i }))
+        .sort((a, b) => String(a.c.date || '').localeCompare(String(b.c.date || '')) || a.i - b.i)
+        .map(({ c }) => c);
+    } else {
+      const body = await part(zip, 'word/document.xml');
+      list = elements(body, 'commentReference').map(() => comment('', '', ''));
     }
-    // Anchors only. Casual renumbers their ids between saves (-1 became 2 on
-    // drumee.in), so they are counted, not matched by id: one more anchor in
-    // a tab than before is one new comment.
-    const body = await part(zip, 'word/document.xml');
-    const anchors = elements(body, 'commentReference').length;
-    for (let i = 1; i <= anchors; i++) out.push(comment(`a:${tab}:#${i}`, '', ''));
+    list.forEach((c, i) => out.push({ ...c, key: `a:${tab}:#${i + 1}` }));
   }
   return out;
 }

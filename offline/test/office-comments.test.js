@@ -147,6 +147,19 @@ test('udoc: comment anchors are counted per tab, renumbered ids are not new', as
   assert.deepStrictEqual([two[0].author, two[0].text], ['', '']);
 });
 
+test('udoc: the first save that adds comments.xml to an anchor-only file announces only the new comment', async () => {
+  const anchorsOnly = await readComments(casual('udoc', { tabs: [{ id: 't1', docx: await anchoredDocx(['1', '2']) }] }), 'udoc');
+  const zip = new JSZip();
+  zip.file('word/comments.xml', docxComments([
+    { author: 'Ann', date: '2026-10-21T05:00:00Z', text: 'old one' },
+    { author: 'Bob', date: '2026-10-21T05:10:00Z', text: 'old two' },
+    { author: 'Ann', date: '2026-10-21T06:00:00Z', text: 'the new one' },
+  ]));
+  const withXml = await readComments(casual('udoc', { tabs: [{ id: 't1', docx: (await zip.generateAsync({ type: 'nodebuffer' })).toString('base64') }] }), 'udoc');
+  const added = newComments(anchorsOnly, withXml);
+  assert.deepStrictEqual(added.map((c) => [c.author, c.text]), [['Ann', 'the new one']]);
+});
+
 test('udoc: a real word/comments.xml inside a tab is read like a docx', async () => {
   const zip = new JSZip();
   zip.file('word/comments.xml', docxComments([{ author: 'Ann Lee', date: '2026-10-21T05:00:00Z', text: 'tighten this' }]));

@@ -77,6 +77,25 @@ test('renumbering a comment anchor (-1 -> 3) is no edit; adding one is', async (
   assert.strictEqual(await S.sameContent(udoc(one(none)), udoc(one(provisional)), 'udoc'), false);
 });
 
+test('comment parts re-exported with fresh random paraId / durableId are the same content', async () => {
+  const parts = (pid, did) => ({
+    'word/comments.xml': `<w:comments><w:comment w:id="1000001" w:author="Ann" w:date="2026-10-21T06:00:00Z"><w:p w14:paraId="${pid}"><w:r><w:t>c1</w:t></w:r></w:p></w:comment></w:comments>`,
+    'word/commentsExtended.xml': `<w15:commentsEx><w15:commentEx w15:paraId="${pid}" w15:done="0"/></w15:commentsEx>`,
+    'word/commentsIds.xml': `<w16cid:commentsIds><w16cid:commentId w16cid:paraId="${pid}" w16cid:durableId="${did}"/></w16cid:commentsIds>`,
+    'word/commentsExtensible.xml': `<w16cex:commentsExtensible><w16cex:commentExtensible w16cex:durableId="${did}" w16cex:dateUtc="2026-10-21T06:00:00Z"/></w16cex:commentsExtensible>`,
+  });
+  const build = async (pid, did, text = 'c1') => {
+    const zip = new JSZip();
+    zip.file('word/document.xml', '<w:document><w:body><w:p><w:r><w:t>hi</w:t></w:r></w:p></w:body></w:document>');
+    for (const [k, v] of Object.entries(parts(pid, did))) zip.file(k, v.replace('>c1<', `>${text}<`));
+    const b64 = (await zip.generateAsync({ type: 'nodebuffer' })).toString('base64');
+    return udoc({ tabs: [{ id: 't1', name: 'Tab 1', docx: b64 }] });
+  };
+  assert.strictEqual(await S.sameContent(await build('EBE07CCA', '19B946F6'), await build('D2D5C47C', '7FDB5614'), 'udoc'), true);
+  // the comment's text is content
+  assert.strictEqual(await S.sameContent(await build('EBE07CCA', '19B946F6'), await build('D2D5C47C', '7FDB5614', 'c2'), 'udoc'), false);
+});
+
 test('a real edit, a renamed tab or a new tab is a change', async () => {
   const a = await docx('hi');
   const b = await docx('hi there');

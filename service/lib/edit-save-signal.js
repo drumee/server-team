@@ -45,7 +45,11 @@ function zipLib() {
 // is an edit anybody should be told about, so both are left out. The price:
 // adding or removing nothing but blank lines is not announced either -- the
 // bytes are still saved.
-const VOLATILE_ATTR_RE = /\s(?:w14:paraId|w14:textId|w:rsid[A-Za-z]*)="[^"]*"/g;
+// In every namespace: document.xml carries w14:paraId / w14:textId /
+// w:rsid*, and the comment parts the integration now writes carry
+// w15:paraId(Parent) / w16cid:paraId / w16cid:durableId / w16cex:durableId,
+// all drawn at random on every export.
+const VOLATILE_ATTR_RE = /\s(?:[A-Za-z0-9]+:)?(?:paraId|paraIdParent|textId|durableId|rsid[A-Za-z]*)="[^"]*"/g;
 // A new comment's anchors are saved with a provisional id (-1) and renumbered
 // on a later save (-1 -> 3): the comment was already announced, the
 // renumbering is no edit.
