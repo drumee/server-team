@@ -199,3 +199,46 @@ test('usheet: Univer thread comments and replies, keyed by id', async () => {
   // a sheet without the comment resource has none
   assert.deepStrictEqual(await readComments(casual('usheet', { sheets: {} }), 'usheet'), []);
 });
+
+test('focus: where the editor finds each comment again', async () => {
+  // Casual Docs: Casual's comment id (w:id) and the tab it lives in
+  const zip = new JSZip();
+  zip.file('word/comments.xml', `<w:comments ${W}><w:comment w:id="621000001" w:author="Ann" w:date="2026-10-21T06:00:00Z"><w:p><w:r><w:t>see here</w:t></w:r></w:p></w:comment></w:comments>`);
+  const b64 = (await zip.generateAsync({ type: 'nodebuffer' })).toString('base64');
+  const [d] = await readComments(casual('udoc', { tabs: [{ id: 'tab2', docx: b64 }] }), 'udoc');
+  assert.deepStrictEqual(d.focus, { comment_id: '621000001', tab_id: 'tab2' });
+  // Casual Sheets: a reply points at its thread's root, on the root's cell
+  const root = { id: 'c1', threadId: 'c1', ref: 'B2', personId: 'Ann', text: { dataStream: 'x\r\n' }, children: [
+    { id: 'c2', threadId: 'c1', parentId: 'c1', ref: 'B2', personId: 'Bob', text: { dataStream: 'y\r\n' } },
+  ] };
+  const list = await readComments(casual('usheet', { resources: [{ name: 'SHEET_UNIVER_THREAD_COMMENT_PLUGIN', data: JSON.stringify({ s9: [root] }) }] }), 'usheet');
+  assert.deepStrictEqual(list.map((c) => c.focus), [
+    { comment_id: 'c1', sub_unit_id: 's9', ref: 'B2' },
+    { comment_id: 'c1', sub_unit_id: 's9', ref: 'B2' },
+  ]);
+});
+
+test('comment_guid: the id the document editor opens a file on', async () => {
+  const W14 = 'xmlns:w14="x"';
+  const f = await file('docx', {
+    'word/comments.xml': `<w:comments ${W} ${W14}>`
+      + '<w:comment w:id="0" w:author="Ann" w:date="2026-10-21T12:00:00Z"><w:p w14:paraId="00000001"><w:r><w:t>root</w:t></w:r></w:p></w:comment>'
+      + '<w:comment w:id="1" w:author="Bob" w:date="2026-10-21T12:05:00Z"><w:p w14:paraId="00000002"><w:r><w:t>reply</w:t></w:r></w:p></w:comment>'
+      + '</w:comments>',
+    'word/commentsIds.xml': '<w16cid:commentsIds xmlns:w16cid="x"><w16cid:commentId w16cid:paraId="00000001" w16cid:durableId="2C3613C7"/><w16cid:commentId w16cid:paraId="00000002" w16cid:durableId="11112222"/></w16cid:commentsIds>',
+    'word/commentsExtended.xml': '<w15:commentsEx xmlns:w15="x"><w15:commentEx w15:paraId="00000001" w15:done="0"/><w15:commentEx w15:paraId="00000002" w15:paraIdParent="00000001" w15:done="0"/></w15:commentsEx>',
+  });
+  const list = await readComments(f, 'docx');
+  // a reply opens its thread: the ROOT's durable id
+  assert.deepStrictEqual(list.map((c) => c.focus), [
+    { comment_id: '0', comment_guid: '2C3613C7' },
+    { comment_id: '1', comment_guid: '2C3613C7' },
+  ]);
+  const x = await file('xlsx', {
+    'xl/threadedComments/threadedComment1.xml': '<ThreadedComments><threadedComment ref="B2" id="{AAA}"><text>root</text></threadedComment><threadedComment ref="B2" id="{BBB}" parentId="{AAA}"><text>reply</text></threadedComment></ThreadedComments>',
+  });
+  assert.deepStrictEqual((await readComments(x, 'xlsx')).map((c) => c.focus.comment_guid), ['{AAA}', '{AAA}']);
+  // a docx another app wrote has no durable ids: no guid, nothing guessed
+  const plain = await file('docx', { 'word/comments.xml': docxComments([{ author: 'A', date: 'd', text: 't' }]) });
+  assert.deepStrictEqual((await readComments(plain, 'docx'))[0].focus, { comment_id: '0' });
+});

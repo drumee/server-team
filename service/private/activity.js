@@ -297,6 +297,8 @@ function flattenFileOwnerActivity(rows) {
     if (r.folder_name == null && meta.folder_name != null) r.folder_name = meta.folder_name;
     if (r.comment == null && meta.comment != null) r.comment = meta.comment;
     if (r.message_id == null && meta.message_id != null) r.message_id = meta.message_id;
+    // Where the opened editor finds the comment (a comment inside a document).
+    if (r.focus == null && meta.focus && typeof meta.focus === 'object') r.focus = meta.focus;
   }
   return rows;
 }

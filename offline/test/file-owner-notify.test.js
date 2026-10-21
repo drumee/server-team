@@ -216,3 +216,16 @@ test('display name = "First Last", else username, else email', () => {
   assert.strictEqual(lib.displayName({ username: 'ann', email: 'a@x' }), 'ann');
   assert.strictEqual(lib.displayName({ email: 'a@x' }), 'a@x');
 });
+
+test('focus is stored with a comment notification, whitelisted and short', async () => {
+  const svc = fakeSvc();
+  await lib.notifyFileOwner(svc, {
+    event: 'file_commented', hub_id: HUB, nid: NID, actor: ACTOR, comment: 'hi',
+    focus: { comment_id: 'c1', sub_unit_id: 's9', ref: 'B2', evil: 'x', tab_id: 'y'.repeat(500) },
+  });
+  const data = logged(svc)[0][4];
+  assert.deepStrictEqual(Object.keys(data.focus).sort(), ['comment_id', 'ref', 'sub_unit_id', 'tab_id']);
+  assert.strictEqual(data.focus.tab_id.length, 64);
+  assert.strictEqual(lib.focusOf(null), null);
+  assert.strictEqual(lib.focusOf({}), null);
+});

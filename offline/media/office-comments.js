@@ -114,7 +114,11 @@ async function parts(zip, re) {
 }
 
 function comment(key, author, text, extra = {}) {
-  return { key, author: author || '', text: text || '', userId: extra.userId || null, date: extra.date || null };
+  const c = { key, author: author || '', text: text || '', userId: extra.userId || null, date: extra.date || null };
+  // Where the editor can find this comment again, for the notification's
+  // click (see casualDocComments / casualSheetComments).
+  if (extra.focus) c.focus = extra.focus;
+  return c;
 }
 
 async function wordComments(zip) {
@@ -123,11 +127,31 @@ async function wordComments(zip) {
     const info = elements(p.body, 'presenceInfo')[0];
     if (p.attrs.author && info && info.attrs.userId) people[p.attrs.author] = info.attrs.userId;
   }
+  // The document editor (euro-office) opens a file ON a comment given its
+  // durable id: commentsIds.xml w16cid:durableId of the paragraph that ends
+  // the comment, for the ROOT of a thread (commentsExtended paraIdParent
+  // leads a reply to its root). Only files the editor itself saved carry it.
+  const durable = {};
+  for (const c of elements(await part(zip, 'word/commentsIds.xml'), 'commentId')) {
+    if (c.attrs.paraId && c.attrs.durableId) durable[c.attrs.paraId] = c.attrs.durableId;
+  }
+  const parentOf = {};
+  for (const c of elements(await part(zip, 'word/commentsExtended.xml'), 'commentEx')) {
+    if (c.attrs.paraId && c.attrs.paraIdParent) parentOf[c.attrs.paraId] = c.attrs.paraIdParent;
+  }
   return elements(await part(zip, 'word/comments.xml'), 'comment').map((c) => {
     const author = c.attrs.author || '';
     const text = textOf(c.body);
+    const paras = elements(c.body, 'p');
+    const last = paras.length ? paras[paras.length - 1].attrs.paraId : null;
+    const root = last && parentOf[last] ? parentOf[last] : last;
+    const guid = root ? durable[root] : null;
+    const focus = {};
+    if (c.attrs.id != null) focus.comment_id = String(c.attrs.id);
+    if (guid) focus.comment_guid = guid;
     return comment(`${author}|${c.attrs.date || ''}|${text}`, author, text, {
       userId: people[author], date: c.attrs.date,
+      focus: Object.keys(focus).length ? focus : null,
     });
   });
 }
@@ -144,8 +168,11 @@ async function sheetComments(zip) {
       const who = persons[c.attrs.personId] || {};
       const text = textOf(c.body);
       threaded.add(`${c.attrs.ref || ''}|${text}`);
+      // The editor opens a sheet ON a thread by its root's id ({GUID}).
+      const guid = c.attrs.parentId || c.attrs.id;
       out.push(comment(`t:${c.attrs.id || `${c.attrs.ref}|${c.attrs.dT}|${text}`}`, who.displayName, text, {
         userId: who.userId, date: c.attrs.dT,
+        focus: guid ? { comment_guid: guid } : null,
       }));
     }
   }
@@ -157,7 +184,9 @@ async function sheetComments(zip) {
       // A threaded comment is also written as a legacy note for older
       // readers; count it once.
       if (threaded.size && [...threaded].some((t) => t.startsWith(`${c.attrs.ref || ''}|`))) continue;
-      out.push(comment(`n:${author}|${c.attrs.ref || ''}|${text}`, author, text));
+      out.push(comment(`n:${author}|${c.attrs.ref || ''}|${text}`, author, text, {
+        focus: c.attrs.uid ? { comment_guid: c.attrs.uid } : null,
+      }));
     }
   }
   return out;
@@ -221,7 +250,13 @@ async function casualDocComments(json) {
         .sort((a, b) => String(a.c.date || '').localeCompare(String(b.c.date || '')) || a.i - b.i)
         // Matched by content against another comments.xml; by `ordinal`
         // against an anchor-only file (newComments).
-        .forEach(({ c }, i) => out.push({ ...c, key: `x:${tab}|${c.key}`, ordinal: `a:${tab}:#${i + 1}` }));
+        .forEach(({ c }, i) => out.push({
+          ...c,
+          key: `x:${tab}|${c.key}`,
+          ordinal: `a:${tab}:#${i + 1}`,
+          // w:id is Casual's own Comment.id; a .udoc tab is its own document.
+          focus: c.focus ? { ...c.focus, tab_id: tab } : null,
+        }));
       continue;
     }
     const body = await part(zip, 'word/document.xml');
@@ -239,13 +274,18 @@ function casualSheetComments(json) {
   const res = (Array.isArray(json.resources) ? json.resources : []).find((r) => r && r.name === UNIVER_COMMENTS);
   if (!res || !res.data) return out;
   const data = typeof res.data === 'string' ? JSON.parse(res.data) : res.data;
-  const add = (c) => {
+  const add = (c, sheet, root) => {
     if (!c || !c.id) return;
-    out.push(comment(`u:${c.id}`, String(c.personId || ''), univerText(c.text), { date: c.dT }));
-    for (const r of Array.isArray(c.children) ? c.children : []) add(r);
+    out.push(comment(`u:${c.id}`, String(c.personId || ''), univerText(c.text), {
+      date: c.dT,
+      // The editor opens a THREAD (its root comment) on its cell; a reply
+      // points at the root it belongs to.
+      focus: { comment_id: String(c.threadId || (root && root.id) || c.id), sub_unit_id: String(sheet), ref: String((root || c).ref || c.ref || '') },
+    }));
+    for (const r of Array.isArray(c.children) ? c.children : []) add(r, sheet, root || c);
   };
-  for (const list of Object.values(data || {})) {
-    for (const c of Array.isArray(list) ? list : []) add(c);
+  for (const [sheet, list] of Object.entries(data || {})) {
+    for (const c of Array.isArray(list) ? list : []) add(c, sheet, null);
   }
   return out;
 }

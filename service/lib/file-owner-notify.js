@@ -37,6 +37,20 @@ const CONTAINERS = new Set(["folder", "hub", "root"]);
 // excerpt keeps the readable part only.
 const MENTION_RE = /\[([^\]]*)\]\(mention:[^)]*\)/g;
 
+// Where the opened editor finds the comment (offline/media/office-comments):
+// only these keys, short strings. Anything else is dropped.
+const FOCUS_KEYS = ["comment_id", "comment_guid", "tab_id", "sub_unit_id", "ref", "author", "date", "text"];
+function focusOf(focus) {
+  if (!focus || typeof focus !== "object") return null;
+  const out = {};
+  for (const k of FOCUS_KEYS) {
+    const v = focus[k];
+    if (v == null || v === "") continue;
+    out[k] = String(v).slice(0, k === "text" ? EXCERPT_MAX : 64);
+  }
+  return Object.keys(out).length ? out : null;
+}
+
 function excerpt(text) {
   const s = String(text || "").replace(MENTION_RE, "$1").replace(/\s+/g, " ").trim();
   if (s.length <= EXCERPT_MAX) return s;
@@ -158,6 +172,8 @@ async function notifyFileOwner(svc, args = {}) {
       source: source || null,
     };
     if (event === FILE_COMMENTED) {
+      const where = focusOf(args.focus);
+      if (where) data.focus = where;
       data.comment = excerpt(comment);
       if (message_id && ID_RE.test(String(message_id))) data.message_id = String(message_id);
     }
@@ -202,7 +218,7 @@ async function notifyEditorSave(svc, { hub_id, nid, comments = [] }) {
         : saver;
       if (!actor) continue;
       commenters.add(actor);
-      await notifyFileOwner(svc, { event: FILE_COMMENTED, hub_id, nid, actor, comment: c.text, source: "editor" });
+      await notifyFileOwner(svc, { event: FILE_COMMENTED, hub_id, nid, actor, comment: c.text, focus: c.focus, source: "editor" });
     }
   } catch (e) {
     svc.warn("[file-owner-notify] comments skipped:", e && e.message);
@@ -223,5 +239,6 @@ module.exports = {
   notifyFileOwner,
   // exported for tests
   excerpt,
+  focusOf,
   folderNameOf,
 };
