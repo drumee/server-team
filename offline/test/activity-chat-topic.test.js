@@ -129,6 +129,30 @@ const Topics = new Function(
   }
 
   {
+    // "mentioned you in": the topic of the MENTION, not of the newest message.
+    // A hub whose rows are all named by their mention needs no list.
+    const t = new Topics(
+      { h1: [{ sys_id: 50, message_id: 'm50' }], h2: 'THROW' },
+      {
+        m50: { topic_id: null },          // newest message: General
+        mA: { topic_id: 'tpA' },          // the mention: topic A
+        mB: { metadata: '{"_topic_id":"tpB"}' },
+      },
+    );
+    const rows = [
+      { category: 'teamchat', hub_id: 'h1', nid: 'f1', last_id: 50, mentioned_in: 'F1', mention_message_id: 'mA' },
+      { category: 'teamchat', hub_id: 'h1', nid: 'f2', last_id: 50 },
+      { category: 'teamchat', hub_id: 'h2', nid: 'f3', last_id: 9, mentioned_in: 'F3', mention_message_id: 'mB' },
+    ];
+    await t._stampChatTopics(rows);
+    eq(rows[0].topic_id, 'tpA', 'mention row opens the topic of the mention');
+    eq(rows[1].topic_id, 'general', 'plain row still follows last_id');
+    eq(rows[2].topic_id, 'tpB', 'mention row resolves even when its hub has no list');
+    eq(t.calls.filter((c) => c.fn === 'channel_list_notifications' && c.hub === 'h2').length, 0,
+      'no list for a hub whose rows are all named by their mention');
+  }
+
+  {
     // nothing to do → no DB call at all; an existing topic_id is kept
     const t = new Topics({}, {});
     await t._stampChatTopics([]);
@@ -153,6 +177,41 @@ const Topics = new Function(
     await t._stampChatTopics(rows);
     eq(t.calls.filter((c) => c.fn === 'channel_list_notifications').length, 8, 'hub lookups capped at 8');
     eq(rows.filter((r) => r.topic_id === 'general').length, 8, 'rows of capped-out hubs untouched');
+  }
+
+  {
+    // _stampChatMentions names the NEWEST unread mention of each folder
+    // (channel_list_notifications lists newest first).
+    const Mentions = new Function(
+      'toArray', 'sqlString',
+      `class M {
+         constructor(perHub) {
+           this.uid = 'me';
+           this.calls = [];
+           this.yp = { async await_proc(proc, hub) { return perHub[hub] || []; } };
+         }
+         debug() {}
+         ${sliceMethod('_stampChatMentions')}
+       }
+       return M;`,
+    )(toArray, sqlString);
+    const m = new Mentions({
+      h1: [
+        { scope_nid: 'f1', message_id: 'newest' },
+        { scope_nid: 'f1', message_id: 'older' },
+        { scope_nid: 'null', message_id: 'hubLevel' },
+      ],
+    });
+    const rows = [
+      { category: 'teamchat', hub_id: 'h1', nid: 'f1', filename: 'F1' },
+      { category: 'teamchat', hub_id: 'h1', nid: null, filename: 'WS' },
+      { category: 'teamchat', hub_id: 'h1', nid: 'f2', filename: 'F2' },
+    ];
+    await m._stampChatMentions(rows);
+    eq(rows[0].mention_message_id, 'newest', 'newest mention of the folder');
+    eq(rows[1].mention_message_id, 'hubLevel', 'hub-level mention');
+    eq(rows[2].mention_message_id, undefined, 'no mention → no id');
+    eq(rows[2].mentioned_in, undefined, 'no mention → not flagged');
   }
 
   console.log(`activity-chat-topic: ${pass} passed, ${fail} failed`);

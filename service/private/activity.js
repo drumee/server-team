@@ -2301,9 +2301,10 @@ class MfsActivity extends Entity {
       hubs.push(r.hub_id);
     }
 
-    // "hub:folder" for every folder holding an unread mention. '' = a
-    // hub-level/legacy chat message, which the rollup groups with nid NULL.
-    const mentioned = new Set();
+    // "hub:folder" for every folder holding an unread mention, to the newest
+    // such message (the list comes newest first). '' = a hub-level/legacy chat
+    // message, which the rollup groups with nid NULL.
+    const mentioned = new Map();
     for (const hubId of hubs) {
       try {
         const list = toArray(
@@ -2315,7 +2316,8 @@ class MfsActivity extends Entity {
         for (const m of list) {
           if (!m) continue;
           const scope = (m.scope_nid == null || m.scope_nid === 'null') ? '' : String(m.scope_nid);
-          mentioned.add(`${hubId}:${scope}`);
+          const key = `${hubId}:${scope}`;
+          if (!mentioned.has(key)) mentioned.set(key, m.message_id || null);
         }
       } catch (e) {
         this.debug('[ACTIVITY] mention lookup failed', hubId, e && e.message);
@@ -2331,6 +2333,10 @@ class MfsActivity extends Entity {
       // name for hub-level chat (notification_center_next COALESCEs h.name).
       r.mentioned_in = r.folder_name || r.filename || '';
       if (!r.mentioned_in) delete r.mentioned_in;
+      // The mention itself, so _stampChatTopics opens the topic it is in rather
+      // than the topic of the folder's newest message.
+      const messageId = mentioned.get(`${r.hub_id}:${scope}`);
+      if (r.mentioned_in && messageId) r.mention_message_id = messageId;
     }
   }
 
@@ -2345,8 +2351,11 @@ class MfsActivity extends Entity {
    *
    * The rollup's `last_id` is its newest message's sys_id:
    * channel_list_notifications names that message, channel_get reads its
-   * topic — no schema change. One list per DISTINCT hub, capped, best-effort:
-   * a row left without `topic_id` opens exactly as it does today.
+   * topic — no schema change. A "mentioned you in" row reads the topic of the
+   * mention instead (`mention_message_id`, _stampChatMentions): a newer
+   * message elsewhere in the folder would otherwise open a chat without the
+   * mention. One list per DISTINCT hub, capped, best-effort: a row left
+   * without `topic_id` opens exactly as it does today.
    */
   async _stampChatTopics(rows) {
     const MAX_HUBS = 8;
@@ -2365,21 +2374,23 @@ class MfsActivity extends Entity {
 
     let lookups = 0;
     for (const hubId of hubs) {
-      let bySysId;
-      try {
-        bySysId = new Map(toArray(
-          await this.yp.await_proc(
-            'forward_proc', hubId, 'channel_list_notifications',
-            `${sqlString(this.uid)},'all',0,1`
-          )
-        ).filter((m) => m && m.message_id).map((m) => [String(m.sys_id), m.message_id]));
-      } catch (e) {
-        this.debug('[ACTIVITY] topic lookup failed', hubId, e && e.message);
-        continue;
+      // Needed only for rows that are not named by their mention.
+      let bySysId = new Map();
+      if (pending.some((r) => r.hub_id === hubId && !r.mention_message_id)) {
+        try {
+          bySysId = new Map(toArray(
+            await this.yp.await_proc(
+              'forward_proc', hubId, 'channel_list_notifications',
+              `${sqlString(this.uid)},'all',0,1`
+            )
+          ).filter((m) => m && m.message_id).map((m) => [String(m.sys_id), m.message_id]));
+        } catch (e) {
+          this.debug('[ACTIVITY] topic lookup failed', hubId, e && e.message);
+        }
       }
       for (const r of pending) {
         if (r.hub_id !== hubId || lookups >= MAX_MESSAGES) continue;
-        const messageId = bySysId.get(String(r.last_id));
+        const messageId = r.mention_message_id || bySysId.get(String(r.last_id));
         if (!messageId) continue;
         lookups++;
         try {
