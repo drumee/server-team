@@ -43,6 +43,38 @@ test('builds a generic string-only payload without private content', () => {
   });
 });
 
+test('a call carries what the app rings from, is heard, and dies with its ring', () => {
+  const now = 1_800_000_000_000;
+  const delivery = {
+    event_id: 'event-1',
+    type: 'conference.invite',
+    actor_id: 'caller-1',
+    hub_id: 'caller-1',
+    room_id: 'room-1',
+    room_type: 'connect',
+    registration_id: 7,
+    binding_version: 3,
+    state_version: 4,
+    expires_at: String(now / 1000 + 60),
+  };
+  const {message} = buildFcmMessage(delivery, 'token-value', undefined, now);
+
+  assert.equal(message.data.event_type, 'conference.invite');
+  assert.equal(message.data.room_id, 'room-1');
+  assert.equal(message.data.room_type, 'connect');
+  assert.equal(message.data.actor_id, 'caller-1');
+  assert.equal(message.data.expires_at, String(now / 1000 + 60));
+  assert.equal(message.apns.payload.aps.sound, 'default');
+  assert.equal(message.android.ttl, '60s');
+  // A re-ring of the same room replaces its banner.
+  assert.equal(message.android.notification.tag, 'room-1');
+  assert.equal(message.apns.headers['apns-collapse-id'], 'room-1');
+
+  // An offline dial names no room yet, so the app does not ring from it.
+  const dial = buildFcmMessage({...delivery, room_id: ''}, 'token-value', undefined, now).message;
+  assert.equal('room_id' in dial.data, false);
+});
+
 test('carries the resolved notification and falls back on a blank one', () => {
   const delivery = {
     event_id: 'event-1',

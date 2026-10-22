@@ -3,15 +3,22 @@ const Crypto = require('crypto');
 // What a phone is interrupted for (Aaron, 2026-09-08): a chat message, a
 // meeting, and a mention — in chat, or in a task by @-mention or assignment.
 // A workspace invitation is not on that list; it stays in the Activity feed
-// and the invitation mail.
+// and the invitation mail. A call ringing the user (`conference.invite`) is:
+// the socket rings only an open app, so a backgrounded or closed one needs it.
 const ALLOWED_EVENTS = new Set([
   'chat.post',
   'channel.post',
   'task.assigned',
   'task.mention',
   'room.reminder',
+  'conference.invite',
 ]);
 const ADMISSION_TIMEOUT_MS = 225;
+// A call rings as long as the app rings an invite (drumee-mobile
+// INCOMING_INVITE_MS). A callee with no socket is re-invited by the caller
+// every 3 s for 45 s (ui-team window/connect, drumee-mobile OFFLINE_RING_MS).
+const CALL_RING_SECONDS = 60;
+const OFFLINE_DIAL_SECONDS = 45;
 const ID = /^[0-9a-zA-Z_.:-]{1,128}$/;
 const NODE_ID = /^[0-9a-zA-Z_-]{1,32}$/;
 
@@ -39,6 +46,8 @@ function normalizeEvent(input) {
     hub_id: input.hub_id || '',
     key_id: input.key_id || '',
     scope_nid: input.scope_nid || '',
+    room_id: input.room_id || '',
+    room_type: input.room_type || '',
     event_phase: input.event_phase || '',
     occurred_at: occurredAt,
     expires_at: String(input.expires_at || Math.floor(Date.now() / 1000) + 3600),
@@ -46,7 +55,8 @@ function normalizeEvent(input) {
     recipient_uids: [...new Set((input.recipient_uids || []).filter(Boolean))].slice(0, 100),
   };
   for (const key of [
-    'event_id', 'type', 'actor_id', 'hub_id', 'key_id', 'scope_nid', 'event_phase',
+    'event_id', 'type', 'actor_id', 'hub_id', 'key_id', 'scope_nid', 'room_id', 'room_type',
+    'event_phase',
   ]) {
     if (event[key] && !ID.test(String(event[key]))) {
       throw new Error(`invalid mobile push ${key}`);
@@ -55,6 +65,35 @@ function normalizeEvent(input) {
   if (event.scope_nid && !NODE_ID.test(String(event.scope_nid))) {
     throw new Error('invalid mobile push scope_nid');
   }
+  return event;
+}
+
+/**
+ * The push that rings a call's callee. With a room (the callee has a socket,
+ * maybe in a backgrounded app) a tap rings that room; without one (no socket)
+ * it only opens the app, and the caller's next re-invite rings it there. A 1:1
+ * call's hub_id is the caller's own uid, which an offline tap must not open as
+ * a workspace. The re-invites of one dial share an event id per minute, so
+ * they queue one push, not fifteen.
+ */
+function callRingEvent({callerUid, hubId, guestId, roomId = '', roomType = '', now = Date.now()}) {
+  const seconds = Math.floor(now / 1000);
+  const direct = hubId === callerUid;
+  const event = {
+    type: 'conference.invite',
+    actor_id: callerUid,
+    hub_id: roomId || !direct ? hubId : '',
+    room_id: roomId,
+    room_type: roomType,
+    recipient_uids: [guestId],
+    expires_at: String(seconds + (roomId ? CALL_RING_SECONDS : OFFLINE_DIAL_SECONDS)),
+  };
+  event.event_id = stableEventId({
+    ...event,
+    key_id: roomId || guestId,
+    occurred_at: String(Math.floor(seconds / 60)),
+    event_phase: roomId ? 'ring' : 'dial',
+  });
   return event;
 }
 
@@ -82,4 +121,11 @@ async function admit(input, enqueue) {
   }
 }
 
-module.exports = {ADMISSION_TIMEOUT_MS, ALLOWED_EVENTS, admit, normalizeEvent, stableEventId};
+module.exports = {
+  ADMISSION_TIMEOUT_MS,
+  ALLOWED_EVENTS,
+  admit,
+  callRingEvent,
+  normalizeEvent,
+  stableEventId,
+};
