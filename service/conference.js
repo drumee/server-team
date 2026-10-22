@@ -31,6 +31,7 @@ const { earlyArrival } = require("./lib/meeting-early");
 const { isMeetingNode } = require("./lib/meeting-attachments");
 const { sqlString } = require("./lib/sql-literal");
 const { markFeatureUsage } = require("./lib/feature-usage");
+const { admit: admitMobilePush, callRingEvent } = require("./lib/mobile-push");
 class conference extends __yp {
 
   /**
@@ -684,6 +685,11 @@ class conference extends __yp {
     if (room_id) args.room_id = room_id;
     let data = await this.yp.await_proc("conference_invite", args);
     if (!data || data.offline) {
+      // No socket: the phone may still be reachable. The tap only opens the
+      // app; the caller's next re-invite then finds a socket and rings it.
+      if (data && data.offline) {
+        await admitMobilePush(callRingEvent({ callerUid: this.uid, hubId: hub_id, guestId: guest_id, roomType: metadata.type }));
+      }
       this.output.data(data);
       return;
     }
@@ -703,6 +709,7 @@ class conference extends __yp {
     });
 
     if (!clients || !clients.length) {
+      await admitMobilePush(callRingEvent({ callerUid: this.uid, hubId: hub_id, guestId: guest_id, roomType: metadata.type }));
       this.output.data({ offline: 1, uid: guest_id });
       return;
     }
@@ -733,6 +740,8 @@ class conference extends __yp {
     if (!payload.name) payload.name = payload.firstname;
     let opt = { recipients: clients, payload };
     await this.inform(opt, this.input.get(Attr.service));
+    // The socket rings an open app only; a backgrounded one needs the push.
+    await admitMobilePush(callRingEvent({ callerUid: this.uid, hubId: hub_id, guestId: guest_id, roomId: room_id, roomType: metadata.type }));
     this.output.data({ room_id, nid });
   }
 

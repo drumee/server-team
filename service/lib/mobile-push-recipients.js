@@ -3,6 +3,10 @@ const BROADCAST_EVENTS = new Set(['channel.post']);
 // mentions in tasks and meeting reminders are not chat and keep ringing, and
 // so does an instant-meeting card posted in a muted chat (see unmutedUids).
 const MUTABLE_EVENTS = new Set(['chat.post', 'channel.post']);
+// Pushes addressed to named people only, whatever their hub_id: a call rings
+// the callee, and a 1:1 call's hub_id is the caller's own uid, not a hub whose
+// members could be listed.
+const DIRECT_EVENTS = new Set(['conference.invite']);
 const MAX_RECIPIENTS = 100;
 const MEMBER_PAGE_SIZE = 45;
 const CAN_READ = 0b0000010;
@@ -57,7 +61,7 @@ function eligibleRecipientUids(event, currentHubUids = []) {
       .filter(uid => uid && uid !== actorId),
   );
 
-  if (!event.hub_id) return [...explicit].slice(0, MAX_RECIPIENTS);
+  if (!event.hub_id || DIRECT_EVENTS.has(event.type)) return [...explicit].slice(0, MAX_RECIPIENTS);
 
   const current = new Set(
     currentHubUids.map(String).filter(uid => uid && uid !== actorId),
@@ -87,6 +91,7 @@ function unmutedUids(event, uids, mutedRows, isMeeting = false) {
 
 module.exports = {
   BROADCAST_EVENTS,
+  DIRECT_EVENTS,
   MUTABLE_EVENTS,
   MEMBER_PAGE_SIZE,
   MAX_RECIPIENTS,

@@ -4,6 +4,7 @@ const test = require('node:test');
 const {
   ADMISSION_TIMEOUT_MS,
   admit,
+  callRingEvent,
   normalizeEvent,
   stableEventId,
 } = require('../service/lib/mobile-push');
@@ -36,6 +37,33 @@ test('keeps reminder phases in separate deterministic event identities', () => {
     stableEventId({...reminder, event_phase: 'upcoming'}),
     stableEventId({...reminder, event_phase: 'start'}),
   );
+});
+
+test('a ringing call names its room and lasts as long as the app rings it', () => {
+  const now = 1_800_000_000_000;
+  const event = normalizeEvent(callRingEvent({
+    callerUid: 'caller-1', hubId: 'caller-1', guestId: 'callee-1', roomId: '5f2c9a0e1b7d4c63', now,
+  }));
+  assert.equal(event.type, 'conference.invite');
+  assert.equal(event.hub_id, 'caller-1');
+  assert.equal(event.room_id, '5f2c9a0e1b7d4c63');
+  assert.deepEqual(event.recipient_uids, ['callee-1']);
+  assert.equal(event.expires_at, String(now / 1000 + 60));
+  assert.throws(() => normalizeEvent({...event, room_id: 'room with spaces'}));
+});
+
+test('an offline dial queues one push per minute and opens no person as a workspace', () => {
+  const now = 1_800_000_000_000;
+  const dial = at => callRingEvent({callerUid: 'caller-1', hubId: 'caller-1', guestId: 'callee-1', now: at});
+  const first = normalizeEvent(dial(now));
+  assert.equal(first.hub_id, '');
+  assert.equal(first.room_id, '');
+  assert.equal(first.expires_at, String(now / 1000 + 45));
+  // The caller re-invites every 3 s; those retries share the push.
+  assert.equal(dial(now + 3000).event_id, first.event_id);
+
+  const workspace = callRingEvent({callerUid: 'caller-1', hubId: 'hub-1', guestId: 'callee-1', now});
+  assert.equal(workspace.hub_id, 'hub-1');
 });
 
 test('deduplicates and caps explicit recipients', () => {

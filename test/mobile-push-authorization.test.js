@@ -27,6 +27,17 @@ test('rejects a blocked direct-chat recipient', async () => {
   }, 'user-1'), false);
 });
 
+test('authorizes a call by the callee, not by a hub, and still honours a block', async () => {
+  // A 1:1 call's hub_id is the caller's uid: no hub database answers for it.
+  const noHub = {...databaseFixture(), await_query: async sql =>
+    (sql.includes('contact_block') || sql.includes('SELECT db_name') ? [] : [{privilege: 7}])};
+  const call = {type: 'conference.invite', actor_id: 'caller-1', hub_id: 'caller-1'};
+  assert.equal(await createMobilePushAuthorization(noHub).recipientAllowed(call, 'callee-1'), true);
+
+  const blocked = createMobilePushAuthorization(databaseFixture({blocked: true}));
+  assert.equal(await blocked.recipientAllowed(call, 'callee-1'), false);
+});
+
 test('requires current workspace and node capability', async () => {
   const allowed = createMobilePushAuthorization(databaseFixture());
   assert.equal(await allowed.recipientAllowed({
