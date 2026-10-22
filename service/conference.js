@@ -684,16 +684,18 @@ class conference extends __yp {
     let args = { hub_id, guest_id };
     if (room_id) args.room_id = room_id;
     let data = await this.yp.await_proc("conference_invite", args);
-    if (!data || data.offline) {
-      // No socket: the phone may still be reachable. The tap only opens the
-      // app; the caller's next re-invite then finds a socket and rings it.
-      if (data && data.offline) {
-        await admitMobilePush(callRingEvent({ callerUid: this.uid, hubId: hub_id, guestId: guest_id, roomType: metadata.type }));
-      }
+    if (!data) {
       this.output.data(data);
       return;
     }
-    if (data[1] && data[1].length) data = data[1];
+    if (data.offline) {
+      // No socket: the phone may still be reachable. The tap only opens the
+      // app; the caller's next re-invite then finds a socket and rings it.
+      await admitMobilePush(callRingEvent({ callerUid: this.uid, hubId: hub_id, guestId: guest_id, roomType: metadata.type }));
+      this.output.data(data);
+      return;
+    }
+    if (data[1]?.length) data = data[1];
 
     let payload = this.user.get("profile") || {};
     let clients = toArray(data).filter(function (e) {
