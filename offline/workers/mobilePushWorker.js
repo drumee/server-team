@@ -11,6 +11,7 @@ const {
   transientStatus,
 } = require('../../service/lib/mobile-push-policy');
 const {
+  DIRECT_EVENTS,
   activeHubMemberUids,
   eligibleRecipientUids,
   hubMemberPageArguments,
@@ -97,7 +98,7 @@ async function isMeetingEvent(event) {
 }
 
 async function eligibleUids(event) {
-  if (!event.hub_id) {
+  if (!event.hub_id || DIRECT_EVENTS.has(event.type)) {
     const candidates = eligibleRecipientUids(event);
     const allowed = [];
     for (const uid of candidates) {

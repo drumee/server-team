@@ -1,4 +1,4 @@
-const {privilegeAllows} = require('./mobile-push-recipients');
+const {DIRECT_EVENTS, privilegeAllows} = require('./mobile-push-recipients');
 const { sqlString } = require('./sql-literal');
 
 const DB_NAME = /^[0-9a-zA-Z_]+$/;
@@ -12,7 +12,7 @@ function asArray(value) {
 
 function createMobilePushAuthorization(yp) {
   async function directChatAllowed(event, recipientUid) {
-    if (event.type !== 'chat.post') return true;
+    if (event.type !== 'chat.post' && !DIRECT_EVENTS.has(event.type)) return true;
     const actorId = String(event.actor_id || '');
     const uid = String(recipientUid || '');
     if (!actorId || !uid || actorId === uid) return false;
@@ -63,8 +63,10 @@ function createMobilePushAuthorization(yp) {
     );
   }
 
+  // A call was authorized when conference.invite ran; at delivery it only has
+  // to reach a real account that has not blocked the caller (or been blocked).
   async function recipientAllowed(event, recipientUid) {
-    return event.hub_id
+    return event.hub_id && !DIRECT_EVENTS.has(event.type)
       ? hubRecipientAllowed(event, recipientUid)
       : directChatAllowed(event, recipientUid);
   }

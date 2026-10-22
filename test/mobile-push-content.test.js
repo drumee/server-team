@@ -30,6 +30,8 @@ test('titles with the actor, subtitles with the workspace, and bodies each admit
     ['channel.post', 'Marketing', 'To Marketing', 'Sent a message'],
     ['task.assigned', 'Marketing', 'To Marketing', 'Assigned you a task'],
     ['task.mention', 'Marketing', 'To Marketing', 'Mentioned you in a task'],
+    ['conference.invite', '', undefined, 'Is calling you'],
+    ['conference.invite', 'Marketing', 'To Marketing', 'Is calling you'],
   ];
   for (const [type, workspaceName, subtitle, body] of cases) {
     assert.deepEqual(
