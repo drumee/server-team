@@ -405,6 +405,16 @@
         "src": "admin"
       },
       "params": {
+        "require_email": {
+          "type": "integer",
+          "required": false,
+          "doc": "1 asks the viewer for an email at the link's gate (Require email to view)."
+        },
+        "allowed_emails": {
+          "type": "array",
+          "required": false,
+          "doc": "Restrict access: the email addresses and @domain entries that pass the gate. Implies require_email."
+        },
         "nid": {
           "type": "string",
           "required": true,

@@ -21,6 +21,27 @@ const { memberCan, CAN_WRITE } = require("../lib/member-capability");
 const { normalizeNids, attachmentsOf, mergeAttachments, isMeetingNode } = require("../lib/meeting-attachments");
 
 //########################################
+
+// "Restrict access" entries as the dmz gate matches them (dmz.js
+// _emailMatchesAllowed): lower-cased addresses, or domains written "@domain".
+// Anything else is dropped; at most 200, deduplicated.
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const DOMAIN_RE = /^@([a-z0-9-]+\.)+[a-z]{2,}$/;
+function allowedEntries(raw) {
+  let list = raw;
+  if (typeof list === 'string') {
+    try { list = JSON.parse(list); } catch (e) { list = list.split(','); }
+  }
+  if (!Array.isArray(list)) return [];
+  const out = [];
+  for (const entry of list) {
+    const v = String(entry || '').toLowerCase().trim();
+    if ((EMAIL_RE.test(v) || DOMAIN_RE.test(v)) && !out.includes(v)) out.push(v);
+    if (out.length >= 200) break;
+  }
+  return out;
+}
+
 class __private_room extends __public_room {
 
 
@@ -99,6 +120,15 @@ class __private_room extends __public_room {
 
     let p = await this.yp.await_proc('dmz_grant_next', hub_id, nid,
       public_id, this.randomString(), pw
+    );
+    // Email gate on the link ("Require email to view", and "Restrict access to
+    // specific emails or domains" as allowed_emails), enforced by the guest
+    // gate in dmz.js. Written after EVERY grant: dmz_grant_next re-links with a
+    // REPLACE, which resets it, so the gate always matches this call.
+    const allowed = allowedEntries(this.input.get('allowed_emails'));
+    const requireEmail = this.input.get('require_email') || allowed.length ? 1 : 0;
+    await this.yp.await_proc('dmz_set_email_gate', p.token,
+      requireEmail, allowed.length ? JSON.stringify(allowed) : null
     );
     await this.db.await_proc('permission_grant',
       nid, public_id, expiry, permission, 'link', ''
