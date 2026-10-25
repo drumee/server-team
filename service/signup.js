@@ -21,6 +21,7 @@ const {
 const { resolve } = require('path');
 const { isEmpty } = require("lodash");
 const { notifyMemberJoined } = require("./lib/notify-member-joined");
+const { joinOrgOnWorkspaceJoin } = require("./lib/org-membership");
 const { bounceLink } = require("./lib/email-link");
 const { Mfs } = require("@drumee/server-core");
 
@@ -182,6 +183,9 @@ class __signup extends Mfs {
           `${db_name}.permission_grant`,
           '*', newUser.id, expiry_time, permission, 'system', 'Resolved from pending_invitation on signup'
         );
+        // An internal workspace of an organisation also makes the new account
+        // an organisation member (seat + plan) — see lib/org-membership.
+        await joinOrgOnWorkspaceJoin(this, newUser.id, hub_id);
         // Audit: invite redeemed on signup — never let a failure break the join.
         try {
           const { writeAudit } = require("./private/_audit");

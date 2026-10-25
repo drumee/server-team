@@ -19,6 +19,7 @@ const { after, union, filter, isEmpty } = require('lodash');
 const Media = require('../media');
 const { writeAudit } = require('./_audit');
 const { holdsHubOwner } = require('../lib/hub-owner');
+const { leaveOrgOnWorkspaceLeave } = require('../lib/org-membership');
 const { pushReferralLive } = require('./_referral_live');
 const { markFeatureUsage } = require("../lib/feature-usage");
 const { ctaFeature } = require("../lib/cta-click");
@@ -638,6 +639,10 @@ class __private_desk extends Media {
       return
     }
     await this.db.await_proc('leave_hub', hub_id);
+    // Leaving the last internal workspace of an organisation one joined
+    // through a workspace returns the account to its personal domain — see
+    // lib/org-membership.
+    await leaveOrgOnWorkspaceLeave(this, this.uid, hub_id);
 
     // Mirror to leaver's drumate in case they later lose hub visibility.
     const hub_db = await this.yp.await_func('get_db_name', hub_id);

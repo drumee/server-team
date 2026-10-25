@@ -29,6 +29,7 @@ const {
 } = Constants;
 const { resolve } = require("path");
 const { notifyMemberJoined, notifyMembersChanged, notifyInvitationsChanged } = require("../lib/notify-member-joined");
+const { joinOrgOnWorkspaceJoin, leaveOrgOnWorkspaceLeave } = require("../lib/org-membership");
 const { sendMail } = require("../lib/send-mail");
 const { bounceLink } = require("../lib/email-link");
 const { mailFailure } = require("../lib/mail-result");
@@ -1180,6 +1181,9 @@ class __private_hub extends Hub {
         "no_traversal", "chat upload permission"
       );
     }
+    // Joining an INTERNAL workspace of an organisation makes the person a
+    // member of that organisation (seat + plan) — see lib/org-membership.
+    await joinOrgOnWorkspaceJoin(this, uid, this.hub.get(Attr.id));
     await writeAudit(this, {
       db: this.hub.get(Attr.db_name),
       uid: this.uid,
@@ -2131,6 +2135,10 @@ class __private_hub extends Hub {
         );
       }
     }
+    // Accepting into an INTERNAL workspace of an organisation makes the
+    // person a member of that organisation (seat + plan); External workspaces
+    // keep them a guest — see lib/org-membership. Best-effort, never throws.
+    const org = await joinOrgOnWorkspaceJoin(this, this.uid, hub_id);
     await this.yp.await_proc('token_hub_invite_set_status', secret, 'accepted', keep_meta);
     await this._closeInvitation(hub_id, tokenRow.email, { accepted: 1 });
     await writeAudit(this, {
@@ -2146,7 +2154,7 @@ class __private_hub extends Hub {
     // token redemption — accept_invite pushed nothing before, so admins with
     // the Folder settings matrix open were stuck with a stale member list.
     await notifyMemberJoined(this, hub_id, this.uid);
-    this.output.data({ hub_id });
+    this.output.data({ hub_id, joined_org: org && org.joined ? 1 : 0 });
   }
 
   /**
@@ -2878,6 +2886,9 @@ class __private_hub extends Hub {
             'chat upload permission'
           );
         }
+        // Internal workspace of an organisation: the person becomes an
+        // organisation member as well — see lib/org-membership.
+        await joinOrgOnWorkspaceJoin(this, uid, hub_id);
       }
 
       // Grants here bypass _grantMembership (this endpoint writes add_member and
@@ -3386,6 +3397,10 @@ class __private_hub extends Hub {
     for (let uid of members) {
       let { db_name } = await this.yp.await_proc("get_entity", uid);
       await this.yp.await_proc(`${db_name}.leave_hub`, hub_id);
+      // A member who got into the organisation through this workspace, and is
+      // in no other internal workspace of it, goes back to their personal
+      // account — see lib/org-membership.
+      await leaveOrgOnWorkspaceLeave(this, uid, hub_id);
       let node = this.granted_node();
       node.nid = node.id = hub_id;
       let sockets = await this.yp.await_proc("user_sockets", uid);
