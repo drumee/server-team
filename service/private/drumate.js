@@ -32,6 +32,8 @@ const {
 const { Entity, Generator, MfsTools } = require("@drumee/server-core");
 const { get_node_content } = MfsTools;
 const { purge_account } = require("../lib/account-purge");
+const { stripeClient } = require("../lib/stripe");
+const { endSubscriptionsOf } = require("../lib/subscription-cancel");
 const { missingPasswordRules } = require("../lib/password-policy");
 const { sqlString } = require("../lib/sql-literal");
 const pins = require("../lib/workspace-pins");
@@ -1020,6 +1022,22 @@ class __private_drumate extends Entity {
     // every later sign-in re-bound the browser to the dead account and 403'd
     // the whole site instead of offering a fresh signup. Workspaces the account
     // owns are handed to a remaining member before it goes; see purge_account.
+    //
+    // Stop billing first: nothing here used to speak to Stripe, so a deleted
+    // account (and the organisation it owned) kept being charged. When Stripe
+    // cannot be reached for a subscription that exists, refuse to delete
+    // rather than leave a live charge behind. No Stripe key = nothing billed.
+    let stripe = null;
+    try { stripe = stripeClient(); } catch (e) { stripe = null; }
+    if (stripe) {
+      try {
+        await endSubscriptionsOf(this.yp, stripe, this.uid, (m) => this.warn(m));
+      } catch (e) {
+        this.warn(`delete_account ${this.uid}: billing not stopped: ${e.message}`);
+        this.output.data({ error: "BILLING_CANCEL_FAILED" });
+        return;
+      }
+    }
     await purge_account(this, this.uid);
     this.session.logout({ redirect: "#/welcome" });
   }
