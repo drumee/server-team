@@ -29,6 +29,11 @@ const { isEmpty, isString, isArray } = require('lodash');
 const { tmp_dir } = sysEnv();
 
 const { DOWNLOAD_FOLDER } = Constants;
+// Once 7z has complained on stderr, how long it may stay silent before it is
+// taken for hung. p7zip 16.02 deadlocks for good on a source it cannot read
+// (WARNING: Permission denied, then nothing, 0% CPU), while a healthy run
+// keeps writing its progress.
+const STALL_MS = 2 * 60 * 1000;
 
 class __offline_media_zip extends Offline {
 
@@ -214,21 +219,55 @@ class __offline_media_zip extends Offline {
 
     const { spawn } = require('child_process');
     this.zipname = zname;
-    const sp = spawn(`${archive}`, [dest_dir, zname]);
-    sp.on('exit', async (s) => {
-      await this.send({
-        exit: s,
+    // Own process group, so a hung 7z (a child of the script) can be killed
+    // with it — see STALL_MS.
+    const sp = spawn(`${archive}`, [dest_dir, zname], { detached: true });
+    // The client waits for this one push: it fetches the archive on exit 0
+    // and reports a failure otherwise. Sent once, whichever way 7z ends.
+    let ended = false;
+    let stderr = "";
+    let stall = null;
+    const watch = () => {
+      clearTimeout(stall);
+      stall = setTimeout(() => {
+        if (ended) return;
+        console.error(`Archiver silent for ${STALL_MS}ms after an error, killing it`);
+        stderr += "\narchiver stalled";
+        end(1);
+        try {
+          process.kill(-sp.pid, 'SIGKILL');
+        } catch (e) {
+          console.error("Failed to kill the archiver", e);
+        }
+      }, STALL_MS);
+    };
+    const end = async (code) => {
+      if (ended) return;
+      ended = true;
+      clearTimeout(stall);
+      stall = null;
+      let model = {
+        exit: code,
         phase: 'exit',
         zipid: this.zipid,
         zipname: this.zipname,
         message: "DOWNLOADING",
         finished: 1
-      })
+      };
+      if (code !== 0 && stderr) model.error = stderr.trim();
+      await this.send(model);
       setTimeout(this.stop.bind(this), 2000);
+    };
+    sp.on('exit', (s) => end(s));
+    sp.on('error', (e) => {
+      console.error("Failed to run the archiver", e);
+      stderr += String(e && e.message || e);
+      end(1);
     });
 
     this.progress = 0;
     sp.stdout.on('data', async (data) => {
+      if (stall && !ended) watch(); // still working after its complaint
       let line = data.toString();
       let size = line.match(/(^.+) ([0-9]{1,3}\%).+$/);
       if (size) {
@@ -246,13 +285,16 @@ class __offline_media_zip extends Offline {
         }
       }
     });
-    sp.stderr.on('data', async (e) => {
+    // 7z reports a source it cannot add on stderr, then exits 1 with the
+    // archive written (7-Zip 25: a dangling link, an unreadable file) or 2
+    // without one (p7zip 16.02: a dangling link) — or hangs (p7zip 16.02: an
+    // unreadable file, see STALL_MS). Stopping here on the first bytes killed
+    // the worker before the exit push above, so the client was never told and
+    // waited forever ("In preparation"). Keep it for that push instead.
+    sp.stderr.on('data', (e) => {
       console.error("Got error", e.toString());
-      await this.send({
-        phase: "error",
-        message: e.toString(),
-      })
-      this.stop("GOT ERROR");
+      if (stderr.length < 4096) stderr += e.toString();
+      if (!ended) watch();
     });
     sp.unref();
   }
