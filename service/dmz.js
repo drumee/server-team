@@ -29,6 +29,7 @@ const { resolve: _resolvePath } = require('path');
 const { existsSync, readFileSync, statSync } = require('fs');
 const { get_node_content } = require('@drumee/server-core/lib/utils/mfs');
 const { sqlString } = require('./lib/sql-literal');
+const { sendMail } = require("./lib/send-mail");
 const { PERM_READ } = Constants;
 // Shared `drumee` secret, loaded ONCE at module load, used to sign a short-lived
 // owner-edit assertion (see _loginSecureShare). The euroffice editor verifies it with
@@ -227,7 +228,7 @@ class __dmz extends Mfs {
     metadata = this.parseJSON(pass.metadata)
     metadata.sharebox = res.hub_id;
     await this.yp.await_proc('token_update', token, metadata);
-    await msg.send();
+    await sendMail(msg);
 
     // Track signup_from_share_link
     const shareHubId = res.hub_id || null;

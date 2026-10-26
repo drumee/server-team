@@ -16,6 +16,7 @@
  */
 const { toArray } = require("@drumee/server-essentials");
 const { Entity } = require("@drumee/server-core");
+const { privilegeAllows, CAN_WRITE } = require("../lib/member-capability");
 
 // Hard ceiling on the per-workspace task fan-out. A membership list this long is
 // pathological rather than legitimate, and the alternative to a cap is a request
@@ -26,21 +27,36 @@ const MAX_WORKSPACES = 200;
 const YMD = /^\d{4}-\d{2}-\d{2}$/;
 
 /**
+ * Is `uid` one of the task's assignees? task_list_range answers them as
+ * `assignee_uids`, a GROUP_CONCAT of uids (NULL when the task has none).
+ */
+function isAssignedTo(row, uid) {
+  if (!row || !row.assignee_uids) return false;
+  return String(row.assignee_uids).split(",").includes(String(uid));
+}
+
+/**
  * Personal Calendar — the aggregated read behind the desk's Calendar screen.
  *
  * READ-ONLY by construction. Every write the Calendar performs goes back to the
  * service that owns the record (task.update / task.update_status / room.book /
  * room.update), addressed with the row's own hub_id, so ACL and the audit log
- * stay identical to editing the item from its folder. Nothing is written here,
- * and no state is duplicated: this endpoint is a union of two existing sources.
+ * stay identical to editing the item from its folder. No record is written
+ * here, and no state is duplicated: this endpoint is a union of two existing
+ * sources. (Reading a workspace's root through mfs_home may create its hidden
+ * __chat__ folders on first read, as every hub-scoped request already does.)
  *
  *   meetings — one indexed read of yp.meeting_schedule, the GLOBAL index the
  *              room service already maintains write-through for the reminder
  *              worker. No fan-out at all.
  *   tasks    — task_list_range per database: the caller's own (personal tasks)
- *              plus every workspace they belong to. This is an N+1 by nature;
+ *              plus every workspace they belong to, keeping only the workspace
+ *              tasks assigned to the caller. This is an N+1 by nature;
  *              it is the price of tasks having no global index the way meetings
  *              do, and it is the thing a future yp.task_schedule would collapse.
+ *              Each workspace that has the caller's tasks in the window adds
+ *              two more serial calls (mfs_home, mfs_access_node) to read the
+ *              caller's write permission; workspaces with none skip them.
  */
 class __private_calendar extends Entity {
   /**
@@ -88,6 +104,44 @@ class __private_calendar extends Entity {
   }
 
   /**
+   * 1 when the caller's role in this workspace may write, else 0.
+   *
+   * Read from the workspace's OWN permission table: mfs_access_node on the hub
+   * root, the same read the ACL makes for a hub-scoped task.update without a
+   * nid, tested with the pinned CAN_WRITE bit (member-capability.js explains
+   * why the package's Privilege values cannot be trusted).
+   *
+   * Not show_hubs' `privilege`: that is the copy kept in the caller's own
+   * database, which hub_add_member writes as `privilege | 15`, so a member
+   * invited as view or chat reads as edit there until their role is changed.
+   *
+   * Fails CLOSED, unlike memberCan: can_write only decides whether the
+   * Calendar offers an edit, and the task ACL still checks every write.
+   */
+  async _canWrite(hub) {
+    const one = (r) => (Array.isArray(r) ? r[0] : r) || null;
+    try {
+      const home = one(await this.yp.await_proc(`${hub.db_name}.mfs_home`));
+      const homeId = home && home.home_id;
+      if (!homeId) return 0;
+      const node = one(
+        await this.yp.await_proc(
+          `${hub.db_name}.mfs_access_node`,
+          this.uid,
+          homeId
+        )
+      );
+      if (!node) return 0;
+      const p = node.privilege != null ? node.privilege : node.permission;
+      return privilegeAllows(p, CAN_WRITE) ? 1 : 0;
+    } catch (e) {
+      this.warn &&
+        this.warn(`[calendar] privilege read failed for ${hub.id}`, e && e.message);
+      return 0;
+    }
+  }
+
+  /**
    * Tasks across every database the caller can see, normalized to the
    * calendar.list row contract.
    *
@@ -102,7 +156,7 @@ class __private_calendar extends Entity {
     let attempted = 0;
     let failed = 0;
 
-    const collect = (rows, { hub_id, scope, workspaceName }) => {
+    const collect = (rows, { hub_id, scope, workspaceName, canWrite }) => {
       for (const r of toArray(rows) || []) {
         if (!r || !r.id) continue;
         out.push({
@@ -133,11 +187,10 @@ class __private_calendar extends Entity {
           status_label: r.status_label || null,
           status_theme: r.status_theme || null,
           priority: r.priority || "medium",
-          // Workspace tasks are read-only from the Calendar: they are edited on
-          // their workspace board, which is where the ACL that governs them is
-          // enforced. The Calendar has no privilege of its own to check
-          // against, so it must not offer an edit it cannot authorise.
-          can_write: scope === "personal" ? 1 : 0,
+          // Personal tasks are the caller's own. A workspace task answers the
+          // caller's role in that workspace (_canWrite), so the Calendar
+          // offers an edit only to someone the task ACL would let through.
+          can_write: canWrite,
           recur: null,
         });
       }
@@ -152,7 +205,7 @@ class __private_calendar extends Entity {
           from,
           to
         );
-        collect(rows, { hub_id: this.uid, scope: "personal" });
+        collect(rows, { hub_id: this.uid, scope: "personal", canWrite: 1 });
       } catch (e) {
         failed++;
         this.warn &&
@@ -172,15 +225,23 @@ class __private_calendar extends Entity {
     for (const hub of capped) {
       attempted++;
       try {
-        const rows = await this.yp.await_proc(
-          `${hub.db_name}.task_list_range`,
-          from,
-          to
-        );
+        // A workspace task is listed only when it is assigned to the caller
+        // (Lexis, 2026-10-20): the board shows the whole team's work, the
+        // Personal Calendar shows the caller's own. Personal tasks are not
+        // filtered — they are the caller's by construction and carry no
+        // assignee. Same rule the Daily Reminder's due-task count already
+        // applies (hub_daily_counts joins task_assignee on the caller).
+        const rows = (toArray(
+          await this.yp.await_proc(`${hub.db_name}.task_list_range`, from, to)
+        ) || []).filter((r) => isAssignedTo(r, this.uid));
+        // Only a workspace that has the caller's tasks in the window pays for
+        // the privilege read.
+        if (!rows.length) continue;
         collect(rows, {
           hub_id: hub.id,
           scope: "workspace",
           workspaceName: hub.name,
+          canWrite: await this._canWrite(hub),
         });
       } catch (e) {
         // A workspace whose database has not been patched with

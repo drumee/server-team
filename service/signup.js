@@ -21,12 +21,14 @@ const {
 const { resolve } = require('path');
 const { isEmpty } = require("lodash");
 const { notifyMemberJoined } = require("./lib/notify-member-joined");
+const { joinOrgOnWorkspaceJoin } = require("./lib/org-membership");
 const { bounceLink } = require("./lib/email-link");
 const { Mfs } = require("@drumee/server-core");
 
 // Password policy — shared with drumate.change_password; see the lib for the
 // UI copies it must stay in step with.
 const { missingPasswordRules } = require("./lib/password-policy");
+const { sendMail } = require("./lib/send-mail");
 
 class __signup extends Mfs {
 
@@ -142,7 +144,7 @@ class __signup extends Mfs {
         handler: this.exception.email,
       });
       const html = msg.renderFrom(tpl, mailData);
-      await msg.send({ html });
+      await sendMail(msg, { html });
     } catch (e) {
       this.warn("[signup.create_account] Welcome email failed", e && e.message);
     }
@@ -181,6 +183,9 @@ class __signup extends Mfs {
           `${db_name}.permission_grant`,
           '*', newUser.id, expiry_time, permission, 'system', 'Resolved from pending_invitation on signup'
         );
+        // An internal workspace of an organisation also makes the new account
+        // an organisation member (seat + plan) — see lib/org-membership.
+        await joinOrgOnWorkspaceJoin(this, newUser.id, hub_id);
         // Audit: invite redeemed on signup — never let a failure break the join.
         try {
           const { writeAudit } = require("./private/_audit");

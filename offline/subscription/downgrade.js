@@ -25,6 +25,7 @@ new Cache();
 const {resolve} = require('path');
 const {readFileSync} = require('jsonfile');
 const Moment = require('moment');
+const { sendMail } = require("../../service/lib/send-mail");
 
 
 async function go() {
@@ -96,7 +97,7 @@ async function send(drumate) {
     },
 
   });
-  await msg.send();
+  await sendMail(msg);
 
 }
 

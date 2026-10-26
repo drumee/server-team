@@ -29,6 +29,7 @@ const { spawn } = require('child_process');
 const { bounceLink } = require('../../service/lib/email-link');
 const Moment = require('moment');
 const { isEmpty, isString } = require('lodash');
+const { sendMail } = require("../../service/lib/send-mail");
 const { tmp_dir, data_dir, domain } = sysEnv();
 const { DOWNLOAD_FOLDER } = Constants;
 
@@ -369,7 +370,7 @@ class __offline_drumate_backup extends Offline {
         recipient: this.email,
         handler: null
       });
-      await msg.send({ html });
+      await sendMail(msg, { html });
     } catch (e) {
       this.warn('_sendDownloadEmail failed:', e.message);
     }

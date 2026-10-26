@@ -45,7 +45,7 @@ const { resolve } = require('path');
 const { CronJob } = require('cron');
 const { Mariadb, RedisStore, Messenger, Cache, sysEnv, toArray } = require('@drumee/server-essentials');
 const { isEmpty } = require('lodash');
-const { readFileSync } = require('fs');
+const { sendMail } = require('../../service/lib/send-mail');
 
 const WORKER_NAME = process.env.WORKER_NAME || 'reward-expiry-worker-1';
 const SCHEDULE = process.env.REWARD_EXPIRY_SCHEDULE || '0 3 * * *';
@@ -108,18 +108,6 @@ function appLink(vhost, path) {
   const host = vhost || main_domain || 'drumee.com';
   const p = `/${String(path || '').replace(/^\/+/, '')}`;
   return `${protocol || 'https'}://${host}/svc/?service=callback.portal_return&redirect=${encodeURIComponent(p)}`;
-}
-
-let _sender;
-function butlerSender() {
-  if (_sender !== undefined) return _sender;
-  try {
-    const f = resolve(sysEnv().credential_dir, 'email.json');
-    _sender = (JSON.parse(readFileSync(f, 'utf8')).auth || {}).user || null;
-  } catch (e) {
-    _sender = null;
-  }
-  return _sender;
 }
 
 /** Record the send. This row is BOTH the in-app notification the activity feed
@@ -212,14 +200,12 @@ async function sendWarning(row) {
 
   const msg = new Messenger({ subject, recipient: row.email });
   const html = msg.renderFrom(TEMPLATE, data);
-  const sender = butlerSender();
-  const from = sender ? `"Drumee" <${sender}>` : undefined;
 
   // Await the real send. dispatch() is fire-and-forget and returns undefined,
   // which would report success even when delivery failed; send() returns
   // {recipient, error} normally but the rendered HTML STRING when no MTA is
   // configured, and that is not a delivery. Same check as send_storage_alert.
-  const result = await msg.send(from ? { html, from } : { html });
+  const result = await sendMail(msg, { html });
   if (!result || typeof result === 'string') return { sent: false, error: 'NO_MTA' };
   if (!isEmpty(result.error)) return { sent: false, error: 'DELIVERY_FAILED' };
   return { sent: true };

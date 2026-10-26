@@ -20,6 +20,7 @@ const Minimist  = require('minimist');
 const Jsonfile  = require('jsonfile');
 const Path      = require('path');
 const {Mariadb, Messenger, Offline} = require('@drumee/server-essentials');
+const { sendMail } = require("../../service/lib/send-mail");
 
 class __send_mail extends Offline {
 
@@ -35,7 +36,7 @@ class __send_mail extends Offline {
     this.set(data);
 
     const msg = new Messenger(data);
-    await msg.send();    
+    await sendMail(msg);    
   }
   
 }

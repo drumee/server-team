@@ -23,6 +23,7 @@ const { shouldSendNotification } = require('../lib/email-policy');
 const { hashPassword } = require('../lib/secure-share-password');
 const { memberCan, CAN_WRITE } = require('../lib/member-capability');
 const { sqlString } = require('../lib/sql-literal');
+const { sendMail } = require("../lib/send-mail");
 
 class __secure_share extends Mfs {
 
@@ -152,7 +153,7 @@ class __secure_share extends Mfs {
           },
           handler : this.exception.email
         });
-        await msg.send();
+        await sendMail(msg);
       } catch (e) {
         this.warn('[secure_share.create] email send failed:', e && e.message);
       }

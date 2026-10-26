@@ -27,7 +27,7 @@ const { google } = require("googleapis");
 
 const { toArray } = utils;
 const { shouldSendNotification } = require("../lib/email-policy");
-const { butlerFrom } = require("../lib/mail-sender");
+const { sendMail, NOTIFICATION } = require("../lib/send-mail");
 
 /** ==============================================  */
 const Contact = require('../contact');
@@ -486,34 +486,17 @@ class __private_contact extends Contact {
    * @returns 
    */
   /**
-   * Send a butler email as multipart/alternative (plain-text + HTML) with
-   * deliverability headers (display-name From, List-Unsubscribe).
-   *
-   * The shared @drumee/server-essentials Messenger.send() emits HTML-only mail
-   * with no List-Unsubscribe — both are spam signals for Gmail. This restores
-   * the text part and headers without forking the package. Falls back to
-   * msg.send() when no MTA is configured.
-   *
-   * The From is the pinned brand address (lib/mail-sender), so unlike the old
-   * credential-derived sender it is always available — there is no longer a
-   * "no usable sender" case to fall back from.
+   * Send a butler email. Delegates to lib/send-mail.js, which sets the From,
+   * Reply-To, text part and — for NOTIFICATION mail — one-click unsubscribe.
+   * A send that throws (bad request) is reported, never thrown at the caller.
    *
    * @param {Messenger} msg
    * @param {{recipient:string, subject:string, html:string, text:string}} parts
+   * @param {string} [kind] send-mail TRANSACTIONAL (default) or NOTIFICATION
    */
-  async _sendButlerMail(msg, { recipient, subject, html, text }) {
-    const mta = await msg.getMTA();
-    if (!mta) return msg.send({ html });        // preserves NO_MTA handling
-    const mailOptions = {
-      from: butlerFrom(),
-      to: recipient,
-      subject,
-      text,
-      html,
-    };
+  async _sendButlerMail(msg, { recipient, subject, html, text }, kind) {
     try {
-      await mta.sendMail(mailOptions);
-      return { recipient, error: null };
+      return await sendMail(msg, { recipient, subject, html, text, kind });
     } catch (e) {
       if (this.exception && this.exception.email) this.exception.email(e);
       return { recipient, error: [recipient] };
@@ -603,7 +586,7 @@ class __private_contact extends Contact {
       ``,
       `drumee.org · Privacy Policy: https://drumee.com/privacy/`,
     ].join('\n');
-    return this._sendButlerMail(msg, { recipient: email, subject, html, text });
+    return this._sendButlerMail(msg, { recipient: email, subject, html, text }, NOTIFICATION);
   }
 
 

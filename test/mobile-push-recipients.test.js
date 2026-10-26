@@ -52,6 +52,17 @@ test('direct events keep explicit recipients, exclude the actor, and apply the c
   assert.equal(recipients.includes('actor-1'), false);
 });
 
+test('a call rings its named callee even though its hub lists no members', () => {
+  const recipients = eligibleRecipientUids({
+    type: 'conference.invite',
+    actor_id: 'caller-1',
+    hub_id: 'caller-1',
+    recipient_uids: ['callee-1'],
+  }, []);
+
+  assert.deepEqual(recipients, ['callee-1']);
+});
+
 test('filters expired members and requires the current event capability', () => {
   const rows = [
     {id: 'view-only', privilege: 3, expiry: 0},

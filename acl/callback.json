@@ -49,6 +49,18 @@
         "dest": { "type": "string", "required": true, "doc": "Same-host path + query + hash, e.g. /-/#/desk" }
       }
     },
+    "unsubscribe": {
+      "doc": "One-click unsubscribe (RFC 8058): the List-Unsubscribe target on notification mail (service/lib/send-mail.js). Turns the account's settings.email_notifications off; transactional mail is unaffected. Authorised by `sig`, an HMAC of the address (service/lib/unsubscribe-token.js) — no session.",
+      "scope": "hub",
+      "permission": {
+        "src": "read",
+        "fast_check": "public-api"
+      },
+      "params": {
+        "email": { "type": "string", "required": true, "doc": "Address the link was minted for" },
+        "sig": { "type": "string", "required": true, "doc": "base64url HMAC-SHA256 of the lowercased address" }
+      }
+    },
     "portal_return": {
       "doc": "Stripe Billing Portal return. UX-only same-site bounce: redirects the browser to the desk so the SameSite=Strict session cookie survives the cross-site return (avoids apparent logout).",
       "scope": "hub",

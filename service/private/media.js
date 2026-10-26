@@ -50,6 +50,9 @@ const Media = require("../media");
 const { writeAudit } = require("./_audit");
 const { movePlanRows } = require("./_move-plan");
 const { createHub } = require("../lib/env");
+const { notifyFileOwner, notifyEditorSave, FILE_EDITED } = require("../lib/file-owner-notify");
+const { readComments, newComments } = require("../../offline/media/office-comments");
+const { sameContent, claimUpdatedNotice } = require("../lib/edit-save-signal");
 const { showBinCall } = require("../lib/trash-sort");
 const {
   ARCHIVE_EXTENSIONS, SMALL_MAX_BYTES, SMALL_MAX_ENTRIES,
@@ -3197,7 +3200,32 @@ class __private_media extends Media {
       const old_category = attr.category || attr.filetype;
       const hub_id = attr.hub_id;
 
-      await this._snapshot_version(attr, { newMd5: hash });
+      // Is this save news? The bytes are written either way. Same md5, or --
+      // for a Casual doc, which re-zips its .docx on every autosave -- same
+      // content (lib/edit-save-signal): no version snapshot, no "has been
+      // updated", no "<A> edited" for the owner. Read BEFORE the replace
+      // below overwrites the stored file.
+      const storedPath = resolve(attr.mfs_root, attr.id, `orig.${attr.extension}`);
+      const changed = hash !== attr.md5Hash
+        && !(await sameContent(storedPath, filepath, attr.extension));
+      // The comments a Casual doc / sheet save brings: these files keep their
+      // comments inside, so the owner can be told "commented on" rather than
+      // "edited" (offline/media/office-comments). Read before the stored file
+      // is overwritten below; any doubt = no comments.
+      let addedComments = [];
+      if (changed && /^(udoc|usheet)$/i.test(String(attr.extension || ''))) {
+        try {
+          const [before, after] = await Promise.all([
+            readComments(storedPath, attr.extension),
+            readComments(filepath, attr.extension),
+          ]);
+          addedComments = newComments(before, after);
+        } catch (e) {
+          this.warn('[SAVE] comment comparison skipped:', e && e.message);
+        }
+      }
+
+      if (changed) await this._snapshot_version(attr, { newMd5: hash });
       await this.db.await_proc("mfs_set_metadata", nid, merged, 0);
       await this.replace_content(attr, filepath, user_filename, hash);
 
@@ -3239,13 +3267,27 @@ class __private_media extends Media {
       // Best-effort: a logging failure must never fail a save the user has
       // already been told succeeded.
       const chatScoped = /^\/__chat__\//.test(String(attr.ownpath || attr.file_path || ''));
-      if (!chatScoped) {
+      // One "has been updated" per editor per file per window while they keep
+      // editing (lib/edit-save-signal), not one per autosave.
+      if (!chatScoped && changed && (await claimUpdatedNotice(hub_id, attr.id || nid, this.uid))) {
         try {
           // Shallow copy: changelog_write deletes `metadata` off the object it
           // is handed, and `attr` is still read below.
           await this.changelog_write({ src: { ...attr }, event: 'media.replace', notify: 0 });
         } catch (e) {
           this.warn('[SAVE] changelog_write failed:', e && e.message);
+        }
+      }
+
+      // "<editor> edited <file>" / "<author> commented on <file>" for the
+      // file's owner. Only when the content really changed (see `changed`):
+      // editors autosave on a timer and resave identical content. Not
+      // awaited; it never throws.
+      if (!chatScoped && changed) {
+        if (addedComments.length) {
+          notifyEditorSave(this, { hub_id, nid: attr.id || nid, comments: addedComments });
+        } else {
+          notifyFileOwner(this, { event: FILE_EDITED, hub_id, nid: attr.id || nid, actor: this.uid, source: 'editor' });
         }
       }
 
@@ -3337,6 +3379,8 @@ class __private_media extends Media {
       return;
     }
     let md5Hash = this.input.get("md5Hash");
+    // What the file held before, for the owner notification below.
+    const previousMd5 = node.md5Hash;
     let { metadata } = node;
     metadata = cleanSeen(metadata);
     metadata.md5Hash = md5Hash;
@@ -3378,6 +3422,13 @@ class __private_media extends Media {
       ...node,
       replace: 1,
     });
+    // "<uploader> edited <file>" for the file's owner, when the bytes really
+    // changed and the file is not a chat attachment. Not awaited; it never
+    // throws.
+    const chatScoped = /^\/__chat__\//.test(String((node && (node.ownpath || node.file_path)) || ''));
+    if (node && node.hub_id && !chatScoped && !(md5Hash && md5Hash === previousMd5)) {
+      notifyFileOwner(this, { event: FILE_EDITED, hub_id: node.hub_id, nid: node.id || nid, actor: this.uid, source: 'upload' });
+    }
   }
 
   /**

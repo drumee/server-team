@@ -61,10 +61,15 @@ const EVENT_BODY = {
   'task.mention': () => 'Mentioned you in a task',
   'room.reminder': (_workspace, phase) =>
     phase === 'start' ? 'A meeting is starting' : 'A meeting starts soon',
+  // A 1:1 call's hub_id is the caller's uid, which names no workspace and so
+  // gets no subtitle.
+  'conference.invite': () => 'Is calling you',
 };
 
 /** Event types whose subtitle names the workspace ("To Marketing"). */
-const WORKSPACE_SUBTITLED = new Set(['channel.post', 'task.assigned', 'task.mention']);
+const WORKSPACE_SUBTITLED = new Set([
+  'channel.post', 'task.assigned', 'task.mention', 'conference.invite',
+]);
 
 function asArray(value) {
   if (Array.isArray(value)) return value;

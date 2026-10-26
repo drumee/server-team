@@ -411,6 +411,9 @@ class __private_room extends __public_room {
         await this.db.await_proc('permission_grant', f, public_id, 0, Privilege.download, 'link', '');
       }
     }
+    // An open Meet tab refetches, so the files show for everyone without a
+    // reload. Nothing new linked (all duplicates or skipped): nothing to show.
+    if (added.length) await this._broadcast('room.update', nid);
     this.output.data({ nid, attachments: list, overflow });
   }
 

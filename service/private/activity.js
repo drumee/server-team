@@ -148,7 +148,7 @@ function mapNotificationRow(r) {
 function bookmarkKey(row) {
   const event = String(row.event || '');
   let category = String(row.category || row.event_type || event || 'unknown');
-  if (['hub_invite', 'contact_refused', 'task_assigned', 'task_mention'].includes(category)) {
+  if (['hub_invite', 'contact_refused', 'task_assigned', 'task_mention', 'file_edited', 'file_commented'].includes(category)) {
     category = 'contact';
   } else if (event.startsWith('media.')) {
     category = 'mfs';
@@ -271,6 +271,38 @@ function flattenMeetingNotice(rows) {
   return rows;
 }
 
+// "<actor> edited <file>" / "<actor> commented on <file>", addressed to the
+// file's owner (service/lib/file-owner-notify.js). Stamps the category the
+// client renders from -- unstamped, a contact_activity row resolves to
+// 'contact' and reads as a contact request -- the actor as author (the avatar),
+// and surfaces the file fields the click needs from the nested `data` JSON.
+// Same contract and same idempotence as flattenTaskFields; touches no other
+// event.
+function flattenFileOwnerActivity(rows) {
+  for (const r of rows) {
+    if (!r || (r.event !== 'file_edited' && r.event !== 'file_commented')) continue;
+    let meta = r.data;
+    if (typeof meta === 'string') {
+      try { meta = JSON.parse(meta); } catch (e) { meta = null; }
+    }
+    meta = meta || {};
+    if (!r.category) r.category = r.event;
+    if (r.author_id == null && r.uid != null) r.author_id = r.uid;
+    if (r.hub_id == null && meta.hub_id != null) r.hub_id = meta.hub_id;
+    if (r.nid == null && meta.nid != null) r.nid = meta.nid;
+    if (r.pid == null && meta.pid != null) r.pid = meta.pid;
+    if (r.filename == null && meta.filename != null) r.filename = meta.filename;
+    if (r.ext == null && meta.ext != null) r.ext = meta.ext;
+    if (r.filetype == null && meta.filetype != null) r.filetype = meta.filetype;
+    if (r.folder_name == null && meta.folder_name != null) r.folder_name = meta.folder_name;
+    if (r.comment == null && meta.comment != null) r.comment = meta.comment;
+    if (r.message_id == null && meta.message_id != null) r.message_id = meta.message_id;
+    // Where the opened editor finds the comment (a comment inside a document).
+    if (r.focus == null && meta.focus && typeof meta.focus === 'object') r.focus = meta.focus;
+  }
+  return rows;
+}
+
 // Shape a hub-invite row (yp.contact_activity 'hub_invite_received') into the
 // same notification item shape as mapNotificationRow. Extracted so both list()
 // and get_feed() build hub-invite items identically (single source of truth).
@@ -357,6 +389,10 @@ const BUCKET_BY_EVENT = {
   // yp.contact_activity event, so its category resolves to 'contact' and it
   // would otherwise land in Other.
   meeting_notice: BUCKET.meeting,
+  // "<actor> edited / commented on <file>" for the file's owner -- another
+  // yp.contact_activity event, filed with the other file activity.
+  file_edited: BUCKET.files,
+  file_commented: BUCKET.files,
   // A bare @-mention row (channel.list_notifications, type='mention') carries no
   // category at all; a chat mention belongs to Chat.
   mention: BUCKET.chat,
@@ -715,6 +751,9 @@ const CONTACT_UNREAD_PROCS = [
   'contact_meeting_notice_unread',
   // "<X> accepted your invitation" → Other.
   'contact_invite_accepted_unread',
+  // "<X> edited / commented on <your file>" → Files.
+  'contact_file_edited_unread',
+  'contact_file_commented_unread',
 ];
 
 // The contact_activity event behind each CONTACT_UNREAD_PROCS entry. Every one
@@ -732,6 +771,8 @@ const CONTACT_UNREAD_EVENTS = {
   contact_reward_expiry_unread: 'reward_expiry_warning',
   contact_meeting_notice_unread: 'meeting_notice',
   contact_invite_accepted_unread: 'invite_accepted',
+  contact_file_edited_unread: 'file_edited',
+  contact_file_commented_unread: 'file_commented',
 };
 const CONTACT_UNREAD_PAGE = 50; // = the LIMIT of every CONTACT_UNREAD_PROCS entry
 
@@ -1081,6 +1122,11 @@ class MfsActivity extends Entity {
       ],
       [BUCKET.meeting]: [
         'contact_meeting_notice_unread',
+      ],
+      // The file-owner notifications are contact_activity rows in Files.
+      [BUCKET.files]: [
+        'contact_file_edited_unread',
+        'contact_file_commented_unread',
       ],
       // The Other tab counts these too (CONTACT_UNREAD_PROCS), so clearing Other
       // must clear them, or its badge could never reach zero.
@@ -1481,6 +1527,7 @@ class MfsActivity extends Entity {
     flattenTaskFields(result);
     flattenTaskColumnChange(result);
     flattenMeetingNotice(result);
+    flattenFileOwnerActivity(result);
 
     // Stamp the tab on every row, then (only when the caller asked for a tab)
     // narrow to it. Deliberately AFTER every merge above, so a row is judged by
@@ -1511,6 +1558,7 @@ class MfsActivity extends Entity {
     await this._stampHubInvites(result);
     await this._stampInviteStatus(result);
     await this._stampChatMentions(result);
+    await this._stampChatTopics(result);
     result = await this._stampMeetingRollups(result);
     if (!unreadOnly) await this._alignContactReadState(result, liveRollups);
 
@@ -2253,9 +2301,10 @@ class MfsActivity extends Entity {
       hubs.push(r.hub_id);
     }
 
-    // "hub:folder" for every folder holding an unread mention. '' = a
-    // hub-level/legacy chat message, which the rollup groups with nid NULL.
-    const mentioned = new Set();
+    // "hub:folder" for every folder holding an unread mention, to the newest
+    // such message (the list comes newest first). '' = a hub-level/legacy chat
+    // message, which the rollup groups with nid NULL.
+    const mentioned = new Map();
     for (const hubId of hubs) {
       try {
         const list = toArray(
@@ -2267,7 +2316,8 @@ class MfsActivity extends Entity {
         for (const m of list) {
           if (!m) continue;
           const scope = (m.scope_nid == null || m.scope_nid === 'null') ? '' : String(m.scope_nid);
-          mentioned.add(`${hubId}:${scope}`);
+          const key = `${hubId}:${scope}`;
+          if (!mentioned.has(key)) mentioned.set(key, m.message_id || null);
         }
       } catch (e) {
         this.debug('[ACTIVITY] mention lookup failed', hubId, e && e.message);
@@ -2283,6 +2333,84 @@ class MfsActivity extends Entity {
       // name for hub-level chat (notification_center_next COALESCEs h.name).
       r.mentioned_in = r.folder_name || r.filename || '';
       if (!r.mentioned_in) delete r.mentioned_in;
+      // The mention itself, so _stampChatTopics opens the topic it is in rather
+      // than the topic of the folder's newest message.
+      const messageId = mentioned.get(`${r.hub_id}:${scope}`);
+      if (r.mentioned_in && messageId) r.mention_message_id = messageId;
+    }
+  }
+
+  /**
+   * Tell each folder-chat rollup which topic its latest message is in, as
+   * `topic_id` ("general" for a message outside any topic).
+   *
+   * A folder chat opens on # General, which leaves topic messages out, and
+   * notification_center_next rolls team chat up per FOLDER with no topic — so
+   * "<A> sent a message" for a message posted in a topic opened a chat where
+   * that message was not shown. The client scopes the chat to `topic_id`.
+   *
+   * The rollup's `last_id` is its newest message's sys_id:
+   * channel_list_notifications names that message, channel_get reads its
+   * topic — no schema change. A "mentioned you in" row reads the topic of the
+   * mention instead (`mention_message_id`, _stampChatMentions): a newer
+   * message elsewhere in the folder would otherwise open a chat without the
+   * mention. One list per DISTINCT hub, capped, best-effort: a row left
+   * without `topic_id` opens exactly as it does today.
+   */
+  async _stampChatTopics(rows) {
+    const MAX_HUBS = 8;
+    const MAX_MESSAGES = 20;
+    if (!Array.isArray(rows) || !rows.length) return;
+    const pending = rows.filter((r) => r && r.category === 'teamchat' && r.topic_id == null
+      && r.hub_id && Number(r.last_id) > 0);
+    if (!pending.length) return;
+
+    const hubs = [];
+    for (const r of pending) {
+      if (hubs.includes(r.hub_id)) continue;
+      if (hubs.length >= MAX_HUBS) break;
+      hubs.push(r.hub_id);
+    }
+
+    let lookups = 0;
+    for (const hubId of hubs) {
+      // Needed only for rows that are not named by their mention.
+      let bySysId = new Map();
+      if (pending.some((r) => r.hub_id === hubId && !r.mention_message_id)) {
+        try {
+          bySysId = new Map(toArray(
+            await this.yp.await_proc(
+              'forward_proc', hubId, 'channel_list_notifications',
+              `${sqlString(this.uid)},'all',0,1`
+            )
+          ).filter((m) => m && m.message_id).map((m) => [String(m.sys_id), m.message_id]));
+        } catch (e) {
+          this.debug('[ACTIVITY] topic lookup failed', hubId, e && e.message);
+        }
+      }
+      for (const r of pending) {
+        if (r.hub_id !== hubId || lookups >= MAX_MESSAGES) continue;
+        const messageId = r.mention_message_id || bySysId.get(String(r.last_id));
+        if (!messageId) continue;
+        lookups++;
+        try {
+          const msg = toArray(
+            await this.yp.await_proc('forward_proc', hubId, 'channel_get', `${sqlString(messageId)}`)
+          )[0];
+          if (!msg) continue;
+          let topic = msg.topic_id;
+          if (topic == null) {
+            let meta = msg.metadata;
+            if (typeof meta === 'string') {
+              try { meta = JSON.parse(meta); } catch (e) { meta = null; }
+            }
+            topic = meta && meta._topic_id;
+          }
+          r.topic_id = topic ? String(topic) : 'general';
+        } catch (e) {
+          this.debug('[ACTIVITY] topic lookup failed', hubId, e && e.message);
+        }
+      }
     }
   }
 
