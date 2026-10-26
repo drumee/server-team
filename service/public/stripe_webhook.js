@@ -3,6 +3,7 @@ const { Entity } = require('@drumee/server-core');
 const { Messenger } = require('@drumee/server-essentials');
 const { resolve } = require('path');
 const { stripeClient, endpointSecret } = require('../lib/stripe');
+const { isPendingCancel, endSubscription } = require('../lib/subscription-cancel');
 const { sendButlerMail } = require('../lib/butler-mail');
 const { bounceLink } = require('../lib/email-link');
 const { pushRevenueLive } = require('../private/_revenue_live');
@@ -588,6 +589,21 @@ class __public_stripe_webhook extends Entity {
               this.warn(`supersede check failed for ${entity_id}: ${e8.message}`);
             }
           }
+          // A cancel made in the Billing Portal while the renewal is unpaid:
+          // the Portal can only schedule it for period end, which kept Stripe
+          // dunning that unpaid invoice. Apply the in-app rule instead — end it
+          // now and void the invoice (lib/subscription-cancel). The deletion
+          // event that follows clears the entitlement; if the call fails, fall
+          // through and mirror the pending cancel as before.
+          if (event.type === 'customer.subscription.updated' && stripe && obj.id
+            && isPendingCancel(obj) && /^(past_due|unpaid)$/.test(String(obj.status || ''))) {
+            try {
+              await endSubscription(stripe, obj.id, (m) => this.warn(m));
+              break;
+            } catch (e11) {
+              this.warn(`ending unpaid ${obj.id} after a portal cancel failed: ${e11.message}`);
+            }
+          }
           if (entity_id) {
             // Mirror the live subscription for the status panel + Billing Portal.
             const customer_id = obj.customer || null;
@@ -618,7 +634,7 @@ class __public_stripe_webhook extends Entity {
             // the UI could not tell "running now" from "starts later"
             // (tester 2026-07-30: banner said "renews" for a plan that had
             // not started). `sub_status` is resolved below alongside items.
-            let status = obj.cancel_at_period_end ? 'canceled'
+            let status = isPendingCancel(obj) ? 'canceled'
               : (obj.object === 'checkout.session' ? 'active' : (obj.status || 'active'));
             const entity_type = md.entity_type || 'user';
             // Line items: the subscription object carries them; a checkout.session
@@ -633,7 +649,7 @@ class __public_stripe_webhook extends Entity {
                 // Real subscription status for the session event (see the
                 // status declaration above). trial_end doubles as period_end
                 // for a trialing sub: it IS the date the new cycle starts.
-                if (obj.object === 'checkout.session' && s.status && !obj.cancel_at_period_end) {
+                if (obj.object === 'checkout.session' && s.status && !isPendingCancel(obj)) {
                   status = s.status;
                   if (s.status === 'trialing' && s.trial_end) period_end = s.trial_end;
                 }
@@ -782,8 +798,12 @@ class __public_stripe_webhook extends Entity {
             // exactly when the update also swapped the price, so it separates
             // a bare resume from a resume-by-plan-change.
             const prev = (event.data && event.data.previous_attributes) || {};
+            // A Billing Portal cancel is a cancel_at date, so its resume clears
+            // cancel_at instead. An ended subscription also comes back with
+            // cancel_at cleared — that is not a resume.
             if (event.type === 'customer.subscription.updated'
-              && prev.cancel_at_period_end === true && !obj.cancel_at_period_end
+              && (prev.cancel_at_period_end === true || !!prev.cancel_at)
+              && !isPendingCancel(obj) && obj.status !== 'canceled'
               && !prev.items) {
               try {
                 const invId = typeof obj.latest_invoice === 'string'

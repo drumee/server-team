@@ -4,6 +4,7 @@ const { stripeClient } = require('../lib/stripe');
 // Shared with promo.js's direct redeem — see lib/mkt-coupon for why the
 // hold TTL must be one value across both.
 const { COUPON_HOLD_TTL_SEC } = require('../lib/mkt-coupon');
+const { isPendingCancel, clearCancelParams, endSubscription } = require('../lib/subscription-cancel');
 
 // Billing currency for every catalog / plan lookup. The 2026-07 pricing
 // rebuild moved the catalog to USD; the old EUR rows are deactivated in
@@ -760,12 +761,15 @@ class __private_payment extends Entity {
     this.output.data({ url: session.url });
   }
 
-  // Native in-app cancel: schedule the subscription to end at the current
-  // period end (Stripe cancel_at_period_end=true). The user keeps the paid tier
-  // until period_end; the customer.subscription.updated webhook mirrors
-  // status='canceled', and the entitlement is dropped only by the final
-  // customer.subscription.deleted. Returns the live status + period_end so the
-  // FE flips to "ends on {date}" immediately, without waiting on the webhook.
+  // Native in-app cancel, by the rule in lib/subscription-cancel: a paid-up
+  // subscription ends at the current period end (Stripe cancel_at_period_end)
+  // and the user keeps the paid tier until then -- the
+  // customer.subscription.updated webhook mirrors status='canceled', and the
+  // entitlement is dropped only by the final customer.subscription.deleted.
+  // A subscription whose renewal is unpaid (past_due) ends NOW and its unpaid
+  // invoice is voided; `ended` tells the FE the plan is already gone.
+  // Returns the live status + period_end so the FE flips to "ends on {date}"
+  // immediately, without waiting on the webhook.
   // _subscription_row() is caller-scoped (own sub, or the org this owner owns),
   // so a member can never cancel someone else's / a team they don't own.
   async cancel_subscription() {
@@ -775,11 +779,15 @@ class __private_payment extends Entity {
     const sub = await this._subscription_row();
     const subscription_id = sub && sub.subscription_id;
     if (!subscription_id) return this.output.data({ status: 'NO_SUBSCRIPTION' });
-    let s;
+    let r;
     try {
-      s = await stripe.subscriptions.update(subscription_id, { cancel_at_period_end: true });
+      r = await endSubscription(stripe, subscription_id, (m) => this.warn(m));
     } catch (e) {
       return this.output.data({ status: 'CANCEL_FAILED', error: e && e.message });
+    }
+    const s = r.sub;
+    if (r.ended) {
+      return this.output.data({ status: 'canceled', ended: true, cancel_at_period_end: false, period_end: 0 });
     }
     const items = (s.items && s.items.data) || [];
     this.output.data({
@@ -789,8 +797,9 @@ class __private_payment extends Entity {
     });
   }
 
-  // Undo a scheduled cancellation (Stripe cancel_at_period_end=false) — the
-  // subscription resumes normal renewal. The webhook re-mirrors status='active'.
+  // Undo a scheduled cancellation — the subscription resumes normal renewal.
+  // The webhook re-mirrors status='active'. A Billing Portal cancel is a
+  // cancel_at date, not cancel_at_period_end, so clear whichever form is set.
   async resume_subscription() {
     let stripe;
     try { stripe = this._stripe(); }
@@ -800,7 +809,8 @@ class __private_payment extends Entity {
     if (!subscription_id) return this.output.data({ status: 'NO_SUBSCRIPTION' });
     let s;
     try {
-      s = await stripe.subscriptions.update(subscription_id, { cancel_at_period_end: false });
+      const live = await stripe.subscriptions.retrieve(subscription_id);
+      s = await stripe.subscriptions.update(subscription_id, clearCancelParams(live));
     } catch (e) {
       return this.output.data({ status: 'RESUME_FAILED', error: e && e.message });
     }
@@ -879,7 +889,7 @@ class __private_payment extends Entity {
       (item && item.price && item.price.recurring && item.price.recurring.interval)
       || live_md.period || sub.period || ''
     );
-    const pending_cancel = !!live.cancel_at_period_end;
+    const pending_cancel = isPendingCancel(live);
     // past_due counts: the subscription still exists at Stripe and checkout()
     // refuses to sell to its holder, so switching plan is their only self-serve
     // move. Telling them NO_SUBSCRIPTION would send them to buy a second one.
@@ -927,8 +937,9 @@ class __private_payment extends Entity {
       proration_behavior: 'always_invoice',
       payment_behavior: 'error_if_incomplete',
       // Switching plan implies staying: a pending-cancel sub is resumed by the
-      // same update instead of bouncing the caller through resume first.
-      cancel_at_period_end: false,
+      // same update instead of bouncing the caller through resume first --
+      // whichever form the cancel took (see clearCancelParams).
+      ...clearCancelParams(live),
       metadata: { ...live_md, plan, period },
     };
     if (cur_period !== period) {
