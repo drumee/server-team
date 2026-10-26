@@ -31,6 +31,7 @@ const Crypto = require("crypto");
 const Moment = require('moment');
 
 const { Attr, Constants, Messenger, Mariadb, Offline, Cache } = require('@drumee/server-essentials');
+const { sendMail } = require("../../service/lib/send-mail");
 
 class __offline_media_zip extends Offline {
 
@@ -106,7 +107,7 @@ class __offline_media_zip extends Offline {
         message: Cache.message._drumee_transfer_download_ack_message.format(sender_name, this.days),
       },
     });
-    await msg.send();
+    await sendMail(msg);
 
   }
   /**
@@ -143,7 +144,7 @@ class __offline_media_zip extends Offline {
         sys_message: Cache.message._drumee_transfer_download_message.format(sender_name),
       },
     });
-    await msg.send();
+    await sendMail(msg);
   }
 
   /**

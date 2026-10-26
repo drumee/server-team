@@ -15,32 +15,12 @@
  * =============================================================================
  */
 
-const { Attr, Messenger, Cache, Constants, uniqueId, sysEnv } = require("@drumee/server-essentials");
+const { Attr, Messenger, Cache, Constants, uniqueId } = require("@drumee/server-essentials");
 const { FORGOT_PASSWORD } = Constants;
 const { Entity } = require("@drumee/server-core");
 const { resolve } = require("path");
 
-const { butlerFrom, mailbox } = require("./lib/mail-sender");
-
-/**
- * Configured envelope sender (email.json -> auth.user), resolved once.
- *
- * Only the reset-password mail still builds its From from this. The OTP mail
- * moved to the pinned brand address (lib/mail-sender); this one was left on the
- * credential-derived sender because it was not part of that change.
- */
-let _butlerSender;
-function butlerSender() {
-  if (_butlerSender !== undefined) return _butlerSender;
-  try {
-    const { readFileSync } = require("fs");
-    const f = resolve(sysEnv().credential_dir, "email.json");
-    _butlerSender = (JSON.parse(readFileSync(f, "utf8")).auth || {}).user || null;
-  } catch (e) {
-    _butlerSender = null;
-  }
-  return _butlerSender;
-}
+const { sendMail } = require("./lib/send-mail");
 
 class Otp extends Entity {
 
@@ -114,9 +94,8 @@ class Otp extends Entity {
     });
     const tplPath = resolve(__dirname, "./templates/otp.html");
     const html = msg.renderFrom(tplPath, data);
-    // Display-name From ("Drumee" <contact@drumee.org>) so the inbox shows
-    // "Drumee", matching the other butler emails.
-    const payload = { html, from: butlerFrom() };
+    // From, Reply-To and the text part are set by lib/send-mail.
+    const payload = { html };
 
     // Answer with the secret the moment it's minted — the SMTP round-trip is the
     // slow part (seconds) and the client only needs the secret to open the
@@ -128,7 +107,7 @@ class Otp extends Entity {
 
     // Fire-and-forget: the request is already answered, so a delivery error is
     // only logged here, never surfaced to the (already-served) caller.
-    Promise.resolve(msg.send(payload))
+    Promise.resolve(sendMail(msg, payload))
       .then((result) => {
         if (result && result.error) {
           this.warn(`OTP email delivery failed: ${result.error}`);
@@ -188,15 +167,10 @@ class Otp extends Entity {
     });
     const tplPath = resolve(__dirname, "./templates/reset-password.html");
     const html = msg.renderFrom(tplPath, data);
-    // Via mailbox() rather than a hand-rolled `"Drumee" <${sender}>`: `sender`
-    // is credential-derived (email.json auth.user), so a value that already
-    // carries angle brackets would nest them and ship a "Drumee>" display name.
-    const sender = butlerSender();
-    const from = sender ? mailbox("Drumee", sender) : undefined;
 
     let sent = 0;
     try {
-      const result = await msg.send(from ? { html, from } : { html });
+      const result = await sendMail(msg, { html });
       if (result && result.error) {
         this.warn(`Reset-link email delivery failed: ${result.error}`);
       } else {

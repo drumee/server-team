@@ -14,6 +14,7 @@ const { Mfs, MfsTools } = require("@drumee/server-core");
 const { logConnection } = require("./lib/connection_log");
 
 const { google } = require("googleapis");
+const { sendMail } = require("./lib/send-mail");
 const oauth2 = google.oauth2("v2");
 const { stringify } = JSON;
 
@@ -152,7 +153,7 @@ class __butler extends Mfs {
       },
       handler: this.exception.email,
     });
-    await msg.send();
+    await sendMail(msg);
     this.output.data({ email });
   }
 

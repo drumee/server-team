@@ -22,11 +22,12 @@ const {
 } = require('@drumee/server-essentials/index.js');
 const { stringify } = JSON;
 const { isArray, isEmpty, } = require('lodash');
-const { shouldSendNotification } = require("../lib/email-policy");
+const { shouldSendNotification, hasAccount } = require("../lib/email-policy");
 const { bounceLink } = require("../lib/email-link");
 
 
 const __public = require('../sharebox.js');
+const { sendMail, NOTIFICATION, TRANSACTIONAL } = require("../lib/send-mail");
 class __private_sharebox extends __public {
 
   constructor(...args) {
@@ -426,7 +427,11 @@ class __private_sharebox extends __public {
       },
       handler: this.exception.email
     });
-    await msg.send();
+    await sendMail(msg, {
+      // One-click unsubscribe only for account holders (a guest has no
+      // setting to turn off); guests get the share link as transactional mail.
+      kind: (await hasAccount(this.yp, email)) ? NOTIFICATION : TRANSACTIONAL,
+    });
   }
 
   /**
@@ -470,7 +475,9 @@ class __private_sharebox extends __public {
         },
         handler: this.exception.email
       });
-      await msg.send();
+      await sendMail(msg, {
+        kind: (await hasAccount(this.yp, recipient)) ? NOTIFICATION : TRANSACTIONAL,
+      });
     }
     this.output.data(node);
   }
@@ -784,7 +791,7 @@ class __private_sharebox extends __public {
           },
           handler: this.exception.email
         });
-         await msg.send();
+         await sendMail(msg);
       }
     }
     return 1;

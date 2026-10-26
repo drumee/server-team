@@ -20,6 +20,7 @@ const Minimist  = require('minimist');
 const _         = require('lodash');
 const {Cache, Messenger, Mariadb, Offline} = require('@drumee/server-essentials');
 const { sqlString } = require('../../service/lib/sql-literal');
+const { sendMail } = require("../../service/lib/send-mail");
 
 /**
  * 
@@ -121,7 +122,7 @@ class __offline_sharebox_notification_mail extends Offline {
           ...this.opt.data
         },
       });
-      await msg.send();
+      await sendMail(msg);
       await this.yp.await_proc('dmz_update_notify', m.token);
     }
   }

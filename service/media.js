@@ -931,8 +931,15 @@ class __media extends Mfs {
       return true;
     }
 
-    // Get quota info
-    let quotaResult = await this.yp.await_proc("get_quota", this.uid);
+    // The file lands in THIS workspace, so it is the workspace OWNER's
+    // allowance it consumes -- on an organisation workspace, the team's shared
+    // pool. Until 2026-10 this read the UPLOADER's entitlement and usage, so a
+    // Free member uploading into a paid team's workspace was measured against
+    // their own 25 GB, and a guest with an empty desk could fill a Free owner's
+    // workspace past its limit. The desk is its own hub (id = uid), so for
+    // personal uploads the payer is still the uploader.
+    const payer = (this.hub && this.hub.get && this.hub.get(Attr.owner_id)) || this.uid;
+    let quotaResult = await this.yp.await_proc("get_quota", payer);
 
     // Handle different result formats from driver
     let quotaInfo = quotaResult;
@@ -982,7 +989,7 @@ class __media extends Mfs {
       // FREE PLAN: Individual user quota
       // Each free user has separate quota
       // Will not sum all free users - they all share domain_id=1
-      let usageResult = await this.yp.await_proc("disk_usage", this.uid) || {};
+      let usageResult = await this.yp.await_proc("disk_usage", payer) || {};
 
       // Handle different result formats
       if (usageResult.usage) {
@@ -1003,7 +1010,7 @@ class __media extends Mfs {
         disk_used = 0;
       }
 
-      this.debug(`[QUOTA] Free plan check: user=${this.uid}, used=${disk_used}/${storage}`);
+      this.debug(`[QUOTA] Free plan check: payer=${payer}, used=${disk_used}/${storage}`);
 
     } else {
       // PAID PLAN: Domain shared quota
@@ -1022,7 +1029,7 @@ class __media extends Mfs {
         if (usage.error) {
           this.warn('[QUOTA] Domain usage error:', usage.error);
           // Fallback to individual check
-          let fallback = await this.yp.await_proc("disk_usage", this.uid) || {};
+          let fallback = await this.yp.await_proc("disk_usage", payer) || {};
           if (fallback.usage) {
             let fb = typeof fallback.usage === 'string' ? JSON.parse(fallback.usage) : fallback.usage;
             disk_used = parseInt(fb.total || 0);

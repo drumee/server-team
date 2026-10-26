@@ -20,6 +20,7 @@ const {isArray, map, isString} = require('lodash');
 const {Mfs} = require('@drumee/server-core');
 const {writeFileSync, readFileSync} = require('jsonfile');
 const {Messenger, Cache} = require('@drumee/server-essentials');
+const { sendMail } = require("./lib/send-mail");
 
 //########################################
 class __form extends Mfs {
@@ -136,7 +137,7 @@ class __form extends Mfs {
       },
       handler: this.exception.email
     });
-    await msg.send();
+    await sendMail(msg);
   }
 
   /**
@@ -159,7 +160,7 @@ class __form extends Mfs {
         message
       },
     });
-    await msg.send();
+    await sendMail(msg);
 
   }
 
