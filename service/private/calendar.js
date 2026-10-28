@@ -36,6 +36,26 @@ function isAssignedTo(row, uid) {
 }
 
 /**
+ * A task's attached files, as task_list_range's `linked_files` JSON array —
+ * a string on some paths, already parsed on others. A file whose media row
+ * is gone has no name and is dropped; anything unreadable reads as none.
+ */
+function taskFiles(raw) {
+  let list = raw;
+  if (typeof list === "string") {
+    try {
+      list = JSON.parse(list);
+    } catch (e) {
+      return [];
+    }
+  }
+  if (!Array.isArray(list)) return [];
+  return list
+    .filter((f) => f && f.filename)
+    .map((f) => ({ nid: f.nid, filename: f.filename, extension: f.extension || null }));
+}
+
+/**
  * Personal Calendar — the aggregated read behind the desk's Calendar screen.
  *
  * READ-ONLY by construction. Every write the Calendar performs goes back to the
@@ -187,6 +207,11 @@ class __private_calendar extends Entity {
           status_label: r.status_label || null,
           status_theme: r.status_theme || null,
           priority: r.priority || "medium",
+          // What the Day-view card draws under the description. An instance
+          // whose task_list_range predates these columns answers 0 / 0 / [].
+          subtask_total: Number(r.subtask_total) || 0,
+          subtask_done: Number(r.subtask_done) || 0,
+          linked_files: taskFiles(r.linked_files),
           // Personal tasks are the caller's own. A workspace task answers the
           // caller's role in that workspace (_canWrite), so the Calendar
           // offers an edit only to someone the task ACL would let through.
