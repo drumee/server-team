@@ -189,6 +189,21 @@
         }
       }
     },
+    "delete_request": {
+      "doc": "Remove a pending access request from the creator's notification panel -- the trash button. Stamps creator_deleted_at, which secure_share_list_requests leaves out; the request stays pending and can still be answered. Scoped server-side to the caller's own requests.",
+      "scope": "hub",
+      "permission": {
+        "src": "write"
+      },
+      "log": true,
+      "params": {
+        "request_id": {
+          "type": "string",
+          "required": true,
+          "doc": "ID of the access request to remove from the panel"
+        }
+      }
+    },
     "set_notify_on_open": {
       "doc": "Turn the sender's open-notification preference on or off for one of their own links, after the link has been created. notify_on_open was create-time only, so the panel's toggle could not persist. Scoped server-side to the caller's own shares; answers NOT_FOUND identically for an unknown token and someone else's token.",
       "scope": "hub",
