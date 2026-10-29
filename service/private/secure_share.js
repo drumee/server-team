@@ -276,6 +276,26 @@ class __secure_share extends Mfs {
   }
 
   /**
+   * Remove a pending access request from the caller's notification panel -- the
+   * trash button on "{email} requests access to {folder}".
+   *
+   * This used to be client-only (no server marker existed), so the request came
+   * back on every reload for as long as it stayed pending, i.e. until the creator
+   * approved or denied it. This stamps creator_deleted_at, which
+   * secure_share_list_requests leaves out (that SP also feeds the badge count in
+   * activity.unread_counts). The request itself stays pending: the requester is
+   * told nothing and it can still be answered.
+   *
+   * Scoped server-side to the caller's own requests (creator_id).
+   * Endpoint: POST /secure_share.delete_request
+   */
+  async delete_request() {
+    const request_id = this.input.need('request_id');
+    await this.yp.await_proc('secure_share_delete_request', this.uid, request_id);
+    this.output.data({ status: 'OK' });
+  }
+
+  /**
    * Turn the sender's "notify me when someone opens this" preference on or off
    * for one of their OWN links, after the link has been created.
    *
