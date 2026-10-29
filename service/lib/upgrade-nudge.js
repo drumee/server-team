@@ -84,19 +84,40 @@ async function _limits(yp, domainId, orgId) {
     ~~domainId, orgId
   ));
   if (row && row.disk != null) {
+    const plan = String(row.plan || "").toLowerCase();
+    let seat = row.seat == null ? null : Number(row.seat);
+    // A Free row that carries no seat still has the Free cap (over-limit.js
+    // does the same): read it from the catalog row below.
+    if (plan === "free" && !(seat > 0)) seat = (await _freeRow(yp)).seat;
     return {
-      plan: String(row.plan || "").toLowerCase(),
+      plan,
       // Number() everywhere a driver value enters arithmetic: mariadb hands
       // BIGINT columns (and COUNT()s) back as BigInt, and BigInt/Number
       // division throws — found live on the liam endpoint.
       disk: Number(row.disk) || 0,
-      seat: row.seat == null ? null : Number(row.seat),
+      seat,
     };
   }
-  let free = firstRow(await yp.await_query(
-    `SELECT disk FROM quota WHERE payer_id = 'ffffffffffffffff' LIMIT 1`
+  const free = await _freeRow(yp);
+  return { plan: "free", disk: free.disk, seat: free.seat };
+}
+
+// The Free plan's catalog row, the same numbers over-limit.js enforces
+// (FREE_SEAT_CAP / FREE_DISK_BYTES, the seat cap counting the owner). The seat
+// used to be a hard-coded 1 here, a copy of over-limit's pre-August fallback:
+// every Free organisation looked 100% full and its lone member was due the
+// seats popup before anything else (prod, 2026-10-29).
+const FREE_SEAT_CAP = 3;
+const FREE_DISK_BYTES = 25000000000;
+async function _freeRow(yp) {
+  const free = firstRow(await yp.await_query(
+    `SELECT disk, seat FROM quota WHERE payer_id = 'ffffffffffffffff' LIMIT 1`
   ));
-  return { plan: "free", disk: Number(free && free.disk) || 5000000000, seat: 1 };
+  const seat = Number(free && free.seat);
+  return {
+    disk: Number(free && free.disk) || FREE_DISK_BYTES,
+    seat: seat > 0 ? seat : FREE_SEAT_CAP,
+  };
 }
 
 /**
