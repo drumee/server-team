@@ -107,9 +107,47 @@ class __private_room extends __public_room {
   /**
    * 
    */
+  /**
+   * The meeting's own guest link row (the public_id grant on this hub's
+   * node), or null when it has none. One row by the `recipient` unique key.
+   */
+  async _meetingLinkToken(nid) {
+    const public_id = Cache.getSysConf('public_id');
+    const rows = await this.yp.await_query(
+      "SELECT id, fingerprint, require_email, allowed_emails FROM dmz_token WHERE hub_id=? AND node_id=? AND guest_id=?",
+      this.hub.get(Attr.id), nid, public_id
+    );
+    return toArray(rows)[0] || null;
+  }
+
+  /**
+   * An existing meeting's guest link and its gate, for the Personal
+   * Calendar's "Meeting Information" form: the link itself, "Require email",
+   * the allowed emails / @domains, and WHETHER a password is set — never the
+   * password (only its fingerprint is stored anyway).
+   */
+  async link_info() {
+    const nid = this.input.need(Attr.nid);
+    const row = await this._meetingLinkToken(nid);
+    let allowed = row && row.allowed_emails;
+    if (typeof allowed === 'string') allowed = this.parseJSON(allowed);
+    this.output.data({
+      link: row ? this._getShareLink(row.id) : null,
+      require_email: row && Number(row.require_email) ? 1 : 0,
+      allowed_emails: Array.isArray(allowed) ? allowed : [],
+      has_password: !!(row && row.fingerprint),
+    });
+  }
+
   async public_link() {
     const nid = this.input.need(Attr.nid);
     const pw = this.input.get(Attr.password);
+    // keep_password: an edit that changes the gate but types no new password
+    // keeps the old one. dmz_grant_next re-derives the fingerprint from pw, so
+    // an empty pw would otherwise clear it; it is put back after the grant.
+    const kept = this.input.get('keep_password') && !pw
+      ? await this._meetingLinkToken(nid)
+      : null;
     const days = this.input.get(Attr.days) || 0;
     const hours = this.input.get(Attr.hours) || 0;
     const expiry = (hours * 1) + (days * 24);
@@ -121,6 +159,11 @@ class __private_room extends __public_room {
     let p = await this.yp.await_proc('dmz_grant_next', hub_id, nid,
       public_id, this.randomString(), pw
     );
+    if (kept && kept.fingerprint && p && p.token) {
+      await this.yp.await_query(
+        "UPDATE dmz_token SET fingerprint=? WHERE id=?", kept.fingerprint, p.token
+      );
+    }
     // Email gate on the link ("Require email to view", and "Restrict access to
     // specific emails or domains" as allowed_emails), enforced by the guest
     // gate in dmz.js. Written after EVERY grant: dmz_grant_next re-links with a

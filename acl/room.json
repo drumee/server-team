@@ -398,6 +398,22 @@
         }
       }
     },
+    "link_info": {
+      "doc": "An existing meeting's guest link and its gate, for the Personal Calendar's Meeting Information form: the link, require_email, allowed_emails and whether a password is set (never the password). link is null when the meeting has no guest link.",
+      "scope": "hub",
+      "permission": {
+        "src": "admin"
+      },
+      "params": {
+        "nid": {
+          "type": "string",
+          "required": true,
+          "description": "Node ID of the meeting"
+        }
+      },
+      "errors": []
+    },
+
     "public_link": {
       "doc": "Generate a public shareable link for a meeting room node. Creates a DMZ grant token for the specified node, grants permission to the public_id system user, and returns a shareable URL containing the access token.",
       "scope": "hub",
@@ -405,6 +421,11 @@
         "src": "admin"
       },
       "params": {
+        "keep_password": {
+          "type": "integer",
+          "required": false,
+          "doc": "1 keeps the link's current password when no new password is given (an edit of the gate)."
+        },
         "require_email": {
           "type": "integer",
           "required": false,
