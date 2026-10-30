@@ -217,3 +217,53 @@ test('room.js wires mentions into book() and update()', () => {
   assert.match(roomSrc, /_notify_mentions\(newlyMentionedUserIds\(prevMessage, message\)/);
   assert.match(roomSrc, /const prevMessage = message;/);
 });
+
+// ---------------------------------------------------------------- task pop-up placement
+const taskSrc = fs.readFileSync(path.join(__dirname, '../../service/private/task.js'), 'utf8');
+function sliceTask(name) {
+  const start = taskSrc.indexOf(`  async ${name}(`);
+  assert.ok(start > 0, `${name} not found`);
+  const end = taskSrc.indexOf('\n  }\n', start);
+  return taskSrc.slice(start + 2, end + 4);
+}
+const TaskBits = new Function('toArray', 'Attr', `return class { ${sliceTask('_taskFolderName')} }`);
+
+function fakeTask(nodes, { fails = false } = {}) {
+  const T = TaskBits(toArray, Attr);
+  const t = new T();
+  t.hub = { get: (k) => (k === 'id' ? HUB : null) };
+  t.db = {
+    await_proc: async (name, id) => {
+      assert.strictEqual(name, 'mfs_node_attr');
+      if (fails) throw new Error('db');
+      return nodes[id] ? [{ filename: nodes[id] }] : [];
+    },
+  };
+  return t;
+}
+
+test('_taskFolderName: the folder, else the workspace, never plumbing', async () => {
+  const t = fakeTask({ f1: 'Design', [HUB]: 'Acme WS', f2: '__chat__' });
+  assert.strictEqual(await t._taskFolderName('f1'), 'Design');
+  assert.strictEqual(await t._taskFolderName(null), 'Acme WS');
+  assert.strictEqual(await t._taskFolderName('0'), 'Acme WS');
+  assert.strictEqual(await t._taskFolderName('f2'), null);
+  assert.strictEqual(await t._taskFolderName('gone'), null);
+  assert.strictEqual(await fakeTask({}, { fails: true })._taskFolderName('f1'), null);
+});
+
+test('task pushes carry the chip and where the mention is', () => {
+  assert.match(taskSrc, /service: 'task\.mention',[\s\S]{0,200}folder_name: await this\._taskFolderName\(meta\.nid\),\s*\n\s*\.\.\.\(focus \? \{ focus \} : \{\}\),/);
+  assert.match(taskSrc, /service: 'task\.assigned',[\s\S]{0,120}folder_name: await this\._taskFolderName\(meta\.nid\),/);
+  // description mentions on create AND update
+  assert.strictEqual((taskSrc.match(/this\.input\.use\('mention_uids', null\), null, null, 'description'\)/g) || []).length, 2);
+  // comment mentions name the comment (create, reply, edit)
+  assert.match(taskSrc, /const focus = row && row\.id \? `comment:\$\{row\.id\}` : null;/);
+  assert.match(taskSrc, /_notifyCommentMentions\(task_id, \[\.\.\.mentionSet\], null, focus\)/);
+  assert.match(taskSrc, /row\.id \? `comment:\$\{row\.id\}` : null,\s*\n\s*\);/);
+});
+
+test('channel.post marks a message sent from a call (push only)', () => {
+  const ch = fs.readFileSync(path.join(__dirname, '../../service/private/channel.js'), 'utf8');
+  assert.match(ch, /if \(this\.input\.get\("from_meeting"\)\) data\.from_meeting = 1;/);
+});
