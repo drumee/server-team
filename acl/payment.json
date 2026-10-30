@@ -90,8 +90,35 @@
           "type": "string",
           "required": false,
           "doc": "Plan the shopper is buying — the code may be locked to one plan."
+        },
+        "period": {
+          "type": "string",
+          "required": false,
+          "doc": "month or year (default month) — the code may be locked to one billing cycle."
         }
       }
+    },
+    "offer_attach": {
+      "doc": "Hold the offer code of a signup link (?offer=CODE) for the caller until checkout. An unknown, disabled or expired code is not stored (status OFFER_NOT_AVAILABLE).",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "params": {
+        "code": {
+          "type": "string",
+          "required": true,
+          "doc": "Offer code from the link, e.g. TEAM1"
+        }
+      }
+    },
+    "offer_pending": {
+      "doc": "The offer code held for the caller (status OK with code, plan_scope, period_scope), or status NONE.",
+      "scope": "hub",
+      "permission": {
+        "src": "owner"
+      },
+      "params": {}
     },
     "subscription_status": {
       "scope": "hub",
