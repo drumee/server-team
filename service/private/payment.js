@@ -5,6 +5,7 @@ const { stripeClient } = require('../lib/stripe');
 // hold TTL must be one value across both.
 const { COUPON_HOLD_TTL_SEC } = require('../lib/mkt-coupon');
 const { isPendingCancel, clearCancelParams, endSubscription } = require('../lib/subscription-cancel');
+const { offerCheck, offerClaim, offerFinalize } = require('../lib/offer');
 
 // Billing currency for every catalog / plan lookup. The 2026-07 pricing
 // rebuild moved the catalog to USD; the old EUR rows are deactivated in
@@ -77,9 +78,12 @@ class __private_payment extends Entity {
   // Lazily create (or reuse) the Stripe Coupon for an MKT outreach code.
   // percent_off=0 → no Stripe coupon (free-months / warm_trial use trial_end only).
   // trial_days is applied separately via subscription_data.trial_end.
+  // amount_off (offer rules, e.g. TEAM1 "$1 first month") is a fixed amount in
+  // minor units and wins over percent_off — Stripe takes one or the other.
   async _ensureStripeCoupon(row) {
     const percent = parseInt(row && row.percent_off, 10) || 0;
-    if (percent <= 0) return null;
+    const amount = Number.parseInt(row?.amount_off, 10) || 0;
+    if (percent <= 0 && amount <= 0) return null;
     if (row && row.stripe_coupon_id) return row.stripe_coupon_id;
     const stripe = this._stripe();
     const code = String((row && row.code) || '').toUpperCase();
@@ -87,7 +91,7 @@ class __private_payment extends Entity {
     const id = `mkt_${code.toLowerCase().replace(/[^a-z0-9_]/g, '_')}`.slice(0, 40);
     const payload = {
       id,
-      percent_off: percent,
+      ...(amount > 0 ? { amount_off: amount, currency: CURRENCY } : { percent_off: percent }),
       name: `MKT ${code}`,
       metadata: {
         mkt_code: code,
@@ -130,6 +134,77 @@ class __private_payment extends Entity {
       td = months * 30;
     }
     return td;
+  }
+
+  // Context for service/lib/offer: the caller is the payer.
+  _offerCtx() {
+    return { yp: this.yp, stripe: () => this._stripe(), uid: this.uid, warn: (m) => this.warn?.(m) };
+  }
+
+  // Offer rules of an MKT coupon (see lib/offer offerCheck).
+  _offerCheck(code, email, period, opt = {}) {
+    return offerCheck(this._offerCtx(), code, email, period, opt);
+  }
+
+  /**
+   * The Stripe customer for a once_per_card offer's card-saving session.
+   * A customer whose first subscription or session was in EUR (before the
+   * 2026-07 USD catalog) is pinned to EUR; the setup session would still
+   * succeed (it prices nothing) and the USD subscription bought afterwards
+   * would fail. checkout() recovers from that clash on its own session; this
+   * path has to decide before, so a pinned customer gets a fresh one here.
+   */
+  async _offerCustomer(customer_id, { email, name, entity_id }) {
+    const stripe = this._stripe();
+    const cust = await stripe.customers.retrieve(customer_id);
+    if (cust && !cust.deleted && (!cust.currency || cust.currency === CURRENCY)) return customer_id;
+    const fresh = await stripe.customers.create({ email, name, metadata: { id: entity_id } });
+    return fresh.id;
+  }
+
+  // The offer line shown at checkout, e.g. "First month $1.00 · then
+  // $29.00/month · cancel anytime". Amounts come from the live Stripe price,
+  // so the line cannot drift from what is charged.
+  async _offerNote(promo, plan_row) {
+    let unit = null;
+    try { unit = (await this._stripe().prices.retrieve(plan_row.stripe_price_id)).unit_amount; }
+    catch (e) { unit = null; }
+    if (unit == null) return 'You will be charged when you confirm. Cancel anytime.';
+    const amount_off = Number.parseInt(promo.amount_off, 10) || 0;
+    const percent_off = Number.parseInt(promo.percent_off, 10) || 0;
+    const off = amount_off > 0 ? amount_off : Math.round((unit * percent_off) / 100);
+    const first = Math.max(0, unit - off);
+    const usd = (c) => `$${(c / 100).toFixed(2)}`;
+    const per = plan_row.period === 'year' ? 'year' : 'month';
+    return `First ${per} ${usd(first)} · then ${usd(unit)}/${per} · cancel anytime. `
+      + `${usd(first)} is charged when you confirm.`;
+  }
+
+  // Hold the offer code of a signup link (?offer=TEAM1) for the caller until
+  // they pay. The client posts it once it has a session; checkout reads it
+  // back through offer_pending. An unknown or ended code is not stored.
+  async offer_attach() {
+    const code = String(this.input.need('code')).trim();
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(code)) {
+      return this.output.data({ status: 'OFFER_NOT_AVAILABLE' });
+    }
+    const row = this._row(await this.yp.await_proc('mkt_offer_pending_set', this.uid, code));
+    if (!row || row.error) {
+      return this.output.data({ status: row?.error || 'OFFER_NOT_AVAILABLE', code });
+    }
+    this.output.data({ status: 'OK', code: row.code });
+  }
+
+  // The offer code held for the caller, if it can still be used.
+  async offer_pending() {
+    const row = this._row(await this.yp.await_proc('mkt_offer_pending_get', this.uid));
+    if (!row?.code) return this.output.data({ status: 'NONE' });
+    this.output.data({
+      status: 'OK',
+      code: row.code,
+      plan_scope: row.plan_scope || 'all',
+      period_scope: row.period_scope || 'all',
+    });
   }
 
   // Priced catalog from yp.plan. Enriched with the live Stripe unit amount when
@@ -267,11 +342,21 @@ class __private_payment extends Entity {
       });
     }
 
+    // Same offer rules checkout applies after reserve, so Apply does not
+    // accept a code the purchase would then refuse. The card is unknown here;
+    // once_per_card is settled at the card step (offer_finalize).
+    const period = this.input.use('period', 'month') === 'year' ? 'year' : 'month';
+    const offer = await this._offerCheck(code, email, period);
+    if (offer.error) {
+      return this.output.data({ status: offer.error, code: row.code });
+    }
+
     const percent_off = parseInt(row.percent_off, 10) || 0;
+    const amount_off = Number.parseInt(offer.amount_off, 10) || 0;
     const trial_days = this._promoTrialDays(row);
     // Mirrors checkout's own refusal: a code with neither a discount nor a
     // free period would render as "applied" and change nothing.
-    if (!percent_off && !trial_days) {
+    if (!percent_off && !amount_off && !trial_days) {
       return this.output.data({ status: 'OFFER_INVALID', code: row.code });
     }
 
@@ -281,7 +366,10 @@ class __private_payment extends Entity {
       partner: row.partner || '',
       kind: row.kind || '',
       plan_scope: row.plan_scope || 'all',
+      period_scope: offer.period_scope || 'all',
       percent_off,
+      // Fixed discount in minor units; when set it replaces percent_off.
+      amount_off,
       trial_days,
       // 0 = Stripe duration 'once' (single invoice), else N billing cycles.
       duration_months: parseInt(row.duration_months, 10) || 0,
@@ -566,6 +654,25 @@ class __private_payment extends Entity {
           requested_plan: reserved && reserved.requested_plan,
         });
       }
+      // Offer rules, with this checkout's own hold excluded from the
+      // per-domain / per-card counts. A refusal hands the hold back at once,
+      // or it would block the shopper's email (and their colleagues' domain)
+      // for the whole TTL over a purchase that cannot happen.
+      const offer = await this._offerCheck(promo_code, email, period, { exclude_id: reserved.id });
+      if (offer.error) {
+        try { await this.yp.await_proc('mkt_offer_release', reserved.id); } catch (e) { }
+        return this.output.data({ status: offer.error, code: reserved.code });
+      }
+      reserved.amount_off = offer.amount_off;
+      reserved.once_per_card = Number(offer.once_per_card) === 1;
+      if (Number(offer.once_per_domain) === 1) {
+        // Atomic: a colleague checking out at the same moment cannot also pass.
+        const claim = await offerClaim(this._offerCtx(), reserved.id, offer.domain_key, '');
+        if (claim.error) {
+          try { await this.yp.await_proc('mkt_offer_release', reserved.id); } catch (e) { /* ages out by TTL */ }
+          return this.output.data({ status: claim.error, code: reserved.code });
+        }
+      }
       promo = reserved;
       try {
         // percent_off=0 (free months) → no Stripe discount object.
@@ -591,7 +698,52 @@ class __private_payment extends Entity {
     }
     const eff_trial_end = promo_trial_end || trial_end || 0;
 
+    // once_per_card offers (TEAM1) must see the card BEFORE anything is
+    // charged, and a subscription-mode Checkout charges the moment the card
+    // is entered — there is no hook in between. So Checkout only SAVES the
+    // card here (mode 'setup'); lib/offer offerFinalize, run by
+    // checkout_result on the way back (or by the webhook if the shopper never
+    // comes back), reads its fingerprint and only then creates the discounted
+    // subscription.
+    // The card can only be checked on the setup path, which buys the
+    // subscription with the coupon itself. A once_per_card code without a
+    // discount (free days only) has no such path: refuse it rather than sell
+    // it with the card rule silently off.
+    if (promo?.once_per_card && !stripe_discount_coupon) {
+      try { await this.yp.await_proc('mkt_offer_release', promo.id); } catch (e) { /* ages out by TTL */ }
+      return this.output.data({ status: 'OFFER_INVALID', code: promo.code });
+    }
+    const offer_setup = !!(promo?.once_per_card && stripe_discount_coupon);
+    const offer_note = offer_setup ? await this._offerNote(promo, plan_row) : '';
+    if (offer_setup) {
+      try {
+        customer_id = await this._offerCustomer(customer_id, { email, name, entity_id });
+      } catch (e) {
+        this.warn?.('offer customer check failed', e?.message);
+        return this.output.data({ status: 'CHECKOUT_FAILED', reason: e?.message || '' });
+      }
+    }
+
     const create = (cust) => {
+      if (offer_setup) {
+        const smd = {
+          ...metadata,
+          offer_setup: '1',
+          offer_price: plan_row.stripe_price_id,
+          offer_coupon: stripe_discount_coupon,
+        };
+        return stripe.checkout.sessions.create({
+          mode: 'setup',
+          customer: cust,
+          payment_method_types: ['card'],
+          setup_intent_data: { metadata: smd },
+          metadata: smd,
+          // Stripe's own page says "save your card"; say what will happen.
+          custom_text: { submit: { message: offer_note } },
+          success_url,
+          cancel_url,
+        });
+      }
       const opts = {
         mode: 'subscription',
         customer: cust,
@@ -1001,6 +1153,18 @@ class __private_payment extends Entity {
       const org = await this.yp.await_proc('payment_get_org', this.uid);
       if (!(org && org.id && md.entity_id === org.id)) {
         return this.output.data({ status: 'SESSION_NOT_FOUND' });
+      }
+    }
+    // A once_per_card offer comes back from a card-saving session: this is
+    // where its subscription is bought (lib/offer offerFinalize; the webhook
+    // does the same if the shopper never comes back).
+    if (session.mode === 'setup') {
+      if (md.offer_setup !== '1') return this.output.data({ status: 'SESSION_NOT_FOUND' });
+      try {
+        return this.output.data(await offerFinalize(this._offerCtx(), session));
+      } catch (e) {
+        this.warn?.('offer finalize failed', e?.message);
+        return this.output.data({ status: 'OFFER_PAYMENT_FAILED', payment_status: 'unpaid', reason: e?.message || '' });
       }
     }
     const inv = (session.invoice && typeof session.invoice === 'object') ? session.invoice : null;
