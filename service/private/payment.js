@@ -82,7 +82,7 @@ class __private_payment extends Entity {
   // minor units and wins over percent_off — Stripe takes one or the other.
   async _ensureStripeCoupon(row) {
     const percent = parseInt(row && row.percent_off, 10) || 0;
-    const amount = parseInt(row && row.amount_off, 10) || 0;
+    const amount = Number.parseInt(row?.amount_off, 10) || 0;
     if (percent <= 0 && amount <= 0) return null;
     if (row && row.stripe_coupon_id) return row.stripe_coupon_id;
     const stripe = this._stripe();
@@ -162,11 +162,11 @@ class __private_payment extends Entity {
     } catch (e) {
       // Code deployed ahead of the schema patch: no offer rules exist yet, so
       // there is nothing to enforce — do not take every other code down.
-      if (/does not exist/i.test((e && e.message) || '')) return { domain_key };
+      if (/does not exist/i.test(e?.message || '')) return { domain_key };
       throw e;
     }
-    if (!row || row.error) return { error: (row && row.error) || 'COUPON_INVALID' };
-    if (~~row.block_disposable && disposable) return { error: 'OFFER_EMAIL_DISPOSABLE' };
+    if (!row || row.error) return { error: row?.error || 'COUPON_INVALID' };
+    if (Number(row.block_disposable) === 1 && disposable) return { error: 'OFFER_EMAIL_DISPOSABLE' };
     return { ...row, domain_key };
   }
 
@@ -178,11 +178,60 @@ class __private_payment extends Entity {
     try { unit = (await this._stripe().prices.retrieve(plan_row.stripe_price_id)).unit_amount; }
     catch (e) { unit = null; }
     if (unit == null) return 'You will be charged when you confirm. Cancel anytime.';
-    const first = Math.max(0, unit - (parseInt(promo.amount_off, 10) || 0));
+    const first = Math.max(0, unit - (Number.parseInt(promo.amount_off, 10) || 0));
     const usd = (c) => `$${(c / 100).toFixed(2)}`;
     const per = plan_row.period === 'year' ? 'year' : 'month';
     return `First ${per} ${usd(first)} · then ${usd(unit)}/${per} · cancel anytime. `
       + `${usd(first)} is charged when you confirm.`;
+  }
+
+  // checkout_result's shape for a subscription bought by _offerFinalize.
+  _offerResult(md, sub, pm) {
+    const inv = typeof sub.latest_invoice === 'object' ? sub.latest_invoice : null;
+    const item = sub.items?.data?.[0];
+    return {
+      status: 'complete',
+      payment_status: inv?.status === 'paid' ? 'paid' : 'unpaid',
+      plan: md.plan || null,
+      period: md.period || null,
+      entity_type: md.entity_type || 'user',
+      amount_total: inv ? inv.amount_paid : null,
+      currency: inv?.currency || CURRENCY,
+      invoice_number: inv?.number,
+      paid_at: inv?.status_transitions?.paid_at || sub.created,
+      card_brand: pm?.card?.brand || null,
+      card_last4: pm?.card?.last4 || null,
+      defer: false,
+      starts_at: null,
+      upcoming_amount: item?.price ? item.price.unit_amount : null,
+      offer_code: md.mkt_code || null,
+    };
+  }
+
+  // The card a setup session saved, with its fingerprint expanded.
+  async _offerCard(session) {
+    const si_id = typeof session.setup_intent === 'string' ? session.setup_intent : session.setup_intent?.id;
+    const si = await this._stripe().setupIntents.retrieve(si_id, { expand: ['payment_method'] });
+    return typeof si?.payment_method === 'object' ? si.payment_method : null;
+  }
+
+  // Buy the discounted subscription on the saved card. Declined / needs
+  // action → Stripe creates nothing and charges nothing (error_if_incomplete);
+  // the hold stays so the shopper can retry with another card. One
+  // idempotency key per session covers a concurrent double call.
+  async _offerSubscribe(session, customer, pm) {
+    const md = session.metadata || {};
+    const sub_md = { ...md, offer_session: session.id };
+    delete sub_md.offer_setup; delete sub_md.offer_price; delete sub_md.offer_coupon;
+    return this._stripe().subscriptions.create({
+      customer,
+      items: [{ price: md.offer_price, quantity: 1 }],
+      discounts: [{ coupon: md.offer_coupon }],
+      default_payment_method: pm.id,
+      payment_behavior: 'error_if_incomplete',
+      metadata: sub_md,
+      expand: ['latest_invoice'],
+    }, { idempotencyKey: `offer_${session.id}` });
   }
 
   /**
@@ -196,97 +245,60 @@ class __private_payment extends Entity {
    *
    * Safe to repeat (the success page can be reloaded): a subscription
    * already made from this session is found by metadata.offer_session and
-   * reported instead of charging again; Stripe's idempotency key covers a
-   * concurrent double call.
+   * reported instead of charging again.
    *
    * @param {Object} session  Checkout Session (mode 'setup', metadata.offer_setup)
    * @returns {Promise<Object>} same shape as checkout_result
    */
   async _offerFinalize(session) {
-    const stripe = this._stripe();
     const md = session.metadata || {};
     if (md.payer_id !== this.uid) return { status: 'SESSION_NOT_FOUND' };
     if (session.status !== 'complete') {
       return { status: session.status || 'open', payment_status: 'unpaid' };
     }
-    const result = (sub, pm) => {
-      const inv = (sub.latest_invoice && typeof sub.latest_invoice === 'object') ? sub.latest_invoice : null;
-      const item = sub.items && sub.items.data && sub.items.data[0];
-      const paid = !!inv && inv.status === 'paid';
-      return {
-        status: 'complete',
-        payment_status: paid ? 'paid' : 'unpaid',
-        plan: md.plan || null,
-        period: md.period || null,
-        entity_type: md.entity_type || 'user',
-        amount_total: inv ? inv.amount_paid : null,
-        currency: (inv && inv.currency) || CURRENCY,
-        invoice_number: inv && inv.number,
-        paid_at: (inv && inv.status_transitions && inv.status_transitions.paid_at) || sub.created,
-        card_brand: (pm && pm.card && pm.card.brand) || null,
-        card_last4: (pm && pm.card && pm.card.last4) || null,
-        defer: false,
-        starts_at: null,
-        upcoming_amount: item && item.price ? item.price.unit_amount : null,
-        offer_code: md.mkt_code || null,
-      };
-    };
-    const customer = typeof session.customer === 'string' ? session.customer : session.customer && session.customer.id;
+    const customer = typeof session.customer === 'string' ? session.customer : session.customer?.id;
 
-    const held = await stripe.subscriptions.list({
+    const held = await this._stripe().subscriptions.list({
       customer, status: 'all', limit: 20, expand: ['data.latest_invoice', 'data.default_payment_method'],
     });
-    const done = (held.data || []).find((s) => s.metadata && s.metadata.offer_session === session.id);
-    if (done) return result(done, typeof done.default_payment_method === 'object' ? done.default_payment_method : null);
+    const done = (held.data || []).find((s) => s.metadata?.offer_session === session.id);
+    if (done) {
+      const done_pm = typeof done.default_payment_method === 'object' ? done.default_payment_method : null;
+      return this._offerResult(md, done, done_pm);
+    }
 
-    const si = await stripe.setupIntents.retrieve(
-      typeof session.setup_intent === 'string' ? session.setup_intent : session.setup_intent.id,
-      { expand: ['payment_method'] },
-    );
-    const pm = si && si.payment_method && typeof si.payment_method === 'object' ? si.payment_method : null;
-    const fingerprint = (pm && pm.card && pm.card.fingerprint) || '';
+    const pm = await this._offerCard(session);
+    const fingerprint = pm?.card?.fingerprint || '';
     if (!fingerprint) return { status: 'OFFER_CARD_REQUIRED', payment_status: 'unpaid' };
 
     const payer = await this.yp.await_proc('payment_get_payer', this.uid);
-    const email = (payer && payer.email) || '';
-    const rid = ~~md.mkt_redemption_id;
+    const email = payer?.email || '';
+    const rid = Math.trunc(Number(md.mkt_redemption_id)) || 0;
     const offer = await this._offerCheck(md.mkt_code, email, md.period, { exclude_id: rid, fingerprint });
     if (offer.error) {
-      try { await this.yp.await_proc('mkt_offer_release', rid); } catch (e) { }
+      try { await this.yp.await_proc('mkt_offer_release', rid); } catch (e) { /* hold ages out by TTL anyway */ }
       return { status: offer.error, payment_status: 'unpaid', offer_code: md.mkt_code || null };
     }
     await this.yp.await_proc('mkt_offer_stamp', rid, '', fingerprint);
 
-    const sub_md = { ...md, offer_session: session.id };
-    delete sub_md.offer_setup; delete sub_md.offer_price; delete sub_md.offer_coupon;
     let sub;
     try {
-      sub = await stripe.subscriptions.create({
-        customer,
-        items: [{ price: md.offer_price, quantity: 1 }],
-        discounts: [{ coupon: md.offer_coupon }],
-        default_payment_method: pm.id,
-        // Declined / needs action → nothing is created and nothing charged;
-        // the hold stays so the shopper can retry with another card.
-        payment_behavior: 'error_if_incomplete',
-        metadata: sub_md,
-        expand: ['latest_invoice'],
-      }, { idempotencyKey: `offer_${session.id}` });
+      sub = await this._offerSubscribe(session, customer, pm);
     } catch (e) {
-      this.warn && this.warn('offer subscription failed', e && e.message);
+      this.warn?.('offer subscription failed', e?.message);
       return {
         status: 'OFFER_PAYMENT_FAILED',
         payment_status: 'unpaid',
-        reason: (e && e.message) || '',
+        reason: e?.message || '',
         offer_code: md.mkt_code || null,
       };
     }
     try {
       await this.yp.await_proc('mkt_coupon_confirm', session.id, sub.id, this.uid, email);
     } catch (e) {
-      this.warn && this.warn('mkt_coupon_confirm (offer) failed', e && e.message);
+      this.warn?.('mkt_coupon_confirm (offer) failed', e?.message);
     }
-    return result(sub, pm);
+    return this._offerResult(md, sub, pm);
   }
 
   // Hold the offer code of a signup link (?offer=TEAM1) for the caller until
@@ -299,7 +311,7 @@ class __private_payment extends Entity {
     }
     const row = this._row(await this.yp.await_proc('mkt_offer_pending_set', this.uid, code));
     if (!row || row.error) {
-      return this.output.data({ status: (row && row.error) || 'OFFER_NOT_AVAILABLE', code });
+      return this.output.data({ status: row?.error || 'OFFER_NOT_AVAILABLE', code });
     }
     this.output.data({ status: 'OK', code: row.code });
   }
@@ -307,7 +319,7 @@ class __private_payment extends Entity {
   // The offer code held for the caller, if it can still be used.
   async offer_pending() {
     const row = this._row(await this.yp.await_proc('mkt_offer_pending_get', this.uid));
-    if (!row || !row.code) return this.output.data({ status: 'NONE' });
+    if (!row?.code) return this.output.data({ status: 'NONE' });
     this.output.data({
       status: 'OK',
       code: row.code,
@@ -461,7 +473,7 @@ class __private_payment extends Entity {
     }
 
     const percent_off = parseInt(row.percent_off, 10) || 0;
-    const amount_off = parseInt(offer.amount_off, 10) || 0;
+    const amount_off = Number.parseInt(offer.amount_off, 10) || 0;
     const trial_days = this._promoTrialDays(row);
     // Mirrors checkout's own refusal: a code with neither a discount nor a
     // free period would render as "applied" and change nothing.
@@ -773,8 +785,8 @@ class __private_payment extends Entity {
         return this.output.data({ status: offer.error, code: reserved.code });
       }
       reserved.amount_off = offer.amount_off;
-      reserved.once_per_card = ~~offer.once_per_card;
-      if (~~offer.once_per_domain) {
+      reserved.once_per_card = Number(offer.once_per_card) === 1;
+      if (Number(offer.once_per_domain) === 1) {
         await this.yp.await_proc('mkt_offer_stamp', reserved.id, offer.domain_key, '');
       }
       promo = reserved;
@@ -808,7 +820,7 @@ class __private_payment extends Entity {
     // card here (mode 'setup'); payment.offer_finalize, reached through
     // checkout_result on the way back, reads its fingerprint and only then
     // creates the discounted subscription. The webhook ignores setup sessions.
-    const offer_setup = !!(promo && promo.once_per_card && stripe_discount_coupon);
+    const offer_setup = !!(promo?.once_per_card && stripe_discount_coupon);
     const offer_note = offer_setup ? await this._offerNote(promo, plan_row) : '';
 
     const create = (cust) => {
@@ -1249,8 +1261,8 @@ class __private_payment extends Entity {
       try {
         return this.output.data(await this._offerFinalize(session));
       } catch (e) {
-        this.warn && this.warn('offer finalize failed', e && e.message);
-        return this.output.data({ status: 'OFFER_PAYMENT_FAILED', payment_status: 'unpaid', reason: (e && e.message) || '' });
+        this.warn?.('offer finalize failed', e?.message);
+        return this.output.data({ status: 'OFFER_PAYMENT_FAILED', payment_status: 'unpaid', reason: e?.message || '' });
       }
     }
     const inv = (session.invoice && typeof session.invoice === 'object') ? session.invoice : null;
