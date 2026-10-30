@@ -545,6 +545,12 @@ class __public_stripe_webhook extends Entity {
         case 'checkout.session.completed':
         case 'customer.subscription.created':
         case 'customer.subscription.updated': {
+          // A 'setup' session only saved a card (once_per_card offers, see
+          // payment.checkout): nothing is paid yet, so it must neither
+          // provision the org nor grant the plan. The subscription that
+          // payment.offer_finalize creates afterwards arrives here as
+          // customer.subscription.created with the same metadata.
+          if (obj.object === 'checkout.session' && obj.mode === 'setup') break;
           let entity_id = md.entity_id;
           const plan = md.plan || 'team';
           const period = md.period || 'month';
