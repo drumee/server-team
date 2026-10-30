@@ -59,7 +59,7 @@ function emailDomain(email) {
 // A subdomain of a listed domain counts as that domain
 // (x.mailinator.com is still mailinator).
 function _listed(set, domain) {
-  for (let d = domain; d && d.includes('.'); d = d.slice(d.indexOf('.') + 1)) {
+  for (let d = domain; d?.includes('.'); d = d.slice(d.indexOf('.') + 1)) {
     if (set.has(d)) return true;
   }
   return false;
