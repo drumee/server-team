@@ -25,6 +25,10 @@
  *
  * Env:
  *   PROMO_EXPIRY_INTERVAL_SEC  poll cadence (default 900 = 15 min)
+ *   PROMO_EXPIRY_ONLY_CODES    comma-separated coupon codes. When set, only those
+ *                              redemptions expire and LAUNCH30 is left alone. Prod
+ *                              never ran this worker, so its LAUNCH30 backlog needs
+ *                              its own decision before a full run.
  */
 
 const { Mariadb, RedisStore } = require('@drumee/server-essentials');
@@ -33,6 +37,8 @@ const { pushPromoLive } = require('../../service/private/_promo_live');
 
 const WORKER_NAME = process.env.WORKER_NAME || 'promo-expiry-worker-1';
 const INTERVAL_MS = (parseInt(process.env.PROMO_EXPIRY_INTERVAL_SEC, 10) || 900) * 1000;
+const ONLY_CODES = (process.env.PROMO_EXPIRY_ONLY_CODES || '')
+  .split(',').map((c) => c.trim().toUpperCase()).filter(Boolean);
 
 console.log(`[PromoExpiryWorker] Starting worker: ${WORKER_NAME}`);
 console.log(`[PromoExpiryWorker] Poll interval: ${INTERVAL_MS / 1000}s`);
@@ -133,7 +139,7 @@ async function runExpiryJob() {
   // The two campaigns are independent: a failure to read one must not stop
   // the other from being reverted.
   try {
-    const due = asArray(await yp.await_proc('promo_launch30_due'));
+    const due = ONLY_CODES.length ? [] : asArray(await yp.await_proc('promo_launch30_due'));
     if (due.length) {
       console.log(`[PromoExpiryWorker] ${due.length} LAUNCH30 trial(s) due for expiry`);
       let expired = 0;
@@ -147,7 +153,8 @@ async function runExpiryJob() {
   }
 
   try {
-    const dueCodes = asArray(await yp.await_proc('mkt_coupon_redeem_due'));
+    const dueCodes = asArray(await yp.await_proc('mkt_coupon_redeem_due'))
+      .filter((row) => !ONLY_CODES.length || ONLY_CODES.includes(String(row.code).toUpperCase()));
     if (dueCodes.length) {
       console.log(`[PromoExpiryWorker] ${dueCodes.length} coupon redemption(s) due for expiry`);
       let expired = 0;
