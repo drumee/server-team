@@ -3,6 +3,7 @@ const { Entity } = require('@drumee/server-core');
 const { Messenger } = require('@drumee/server-essentials');
 const { resolve } = require('path');
 const { stripeClient, endpointSecret } = require('../lib/stripe');
+const { offerFinalize } = require('../lib/offer');
 const { isPendingCancel, endSubscription } = require('../lib/subscription-cancel');
 const { sendButlerMail } = require('../lib/butler-mail');
 const { bounceLink } = require('../lib/email-link');
@@ -547,10 +548,26 @@ class __public_stripe_webhook extends Entity {
         case 'customer.subscription.updated': {
           // A 'setup' session only saved a card (once_per_card offers, see
           // payment.checkout): nothing is paid yet, so it must neither
-          // provision the org nor grant the plan. The subscription that
-          // payment.offer_finalize creates afterwards arrives here as
-          // customer.subscription.created with the same metadata.
-          if (obj.object === 'checkout.session' && obj.mode === 'setup') break;
+          // provision the org nor grant the plan here. It is the buy itself
+          // that is still to do: normally the success page does it
+          // (payment.checkout_result), but a shopper who confirmed on Stripe
+          // and closed the tab would otherwise never be charged nor get the
+          // plan. offerFinalize is safe to run from both. The subscription it
+          // creates comes back as customer.subscription.created with the
+          // same metadata and is handled below like any other.
+          if (obj.object === 'checkout.session' && obj.mode === 'setup') {
+            if (event.type === 'checkout.session.completed' && md.offer_setup === '1' && md.payer_id && stripe) {
+              try {
+                const res = await offerFinalize({
+                  yp: this.yp, stripe: () => stripe, uid: md.payer_id, warn: (m) => this.warn(m),
+                }, obj);
+                this.debug(`offer setup ${obj.id} finalized: ${res.status}/${res.payment_status}`);
+              } catch (e12) {
+                this.error(`offer finalize from webhook failed for ${obj.id}: ${e12.message}`);
+              }
+            }
+            break;
+          }
           let entity_id = md.entity_id;
           const plan = md.plan || 'team';
           const period = md.period || 'month';

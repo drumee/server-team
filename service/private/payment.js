@@ -5,7 +5,7 @@ const { stripeClient } = require('../lib/stripe');
 // hold TTL must be one value across both.
 const { COUPON_HOLD_TTL_SEC } = require('../lib/mkt-coupon');
 const { isPendingCancel, clearCancelParams, endSubscription } = require('../lib/subscription-cancel');
-const { classifyEmail } = require('../lib/offer-email');
+const { offerCheck, offerClaim, offerFinalize } = require('../lib/offer');
 
 // Billing currency for every catalog / plan lookup. The 2026-07 pricing
 // rebuild moved the catalog to USD; the old EUR rows are deactivated in
@@ -136,38 +136,30 @@ class __private_payment extends Entity {
     return td;
   }
 
+  // Context for service/lib/offer: the caller is the payer.
+  _offerCtx() {
+    return { yp: this.yp, stripe: () => this._stripe(), uid: this.uid, warn: (m) => this.warn?.(m) };
+  }
+
+  // Offer rules of an MKT coupon (see lib/offer offerCheck).
+  _offerCheck(code, email, period, opt = {}) {
+    return offerCheck(this._offerCtx(), code, email, period, opt);
+  }
+
   /**
-   * The offer rules of an MKT coupon (yp mkt_offer_check): billing cycle,
-   * never-paid workspace, not combinable with Reward Hub / LAUNCH30, once per
-   * company email domain, once per card, no disposable email. Runs for every
-   * code — one without rules answers OK — after mkt_coupon_validate/reserve,
-   * which keep owning the base checks.
-   *
-   * @param {string} code
-   * @param {string} email   payer email
-   * @param {string} period  'month' | 'year'
-   * @param {Object} [opt]   { exclude_id: the caller's own reserved row,
-   *                           fingerprint: Stripe card fingerprint }
-   * @returns {Promise<Object>} { error, ... } or the coupon's offer fields,
-   *   plus domain_key (what to stamp on the redemption)
+   * The Stripe customer for a once_per_card offer's card-saving session.
+   * A customer whose first subscription or session was in EUR (before the
+   * 2026-07 USD catalog) is pinned to EUR; the setup session would still
+   * succeed (it prices nothing) and the USD subscription bought afterwards
+   * would fail. checkout() recovers from that clash on its own session; this
+   * path has to decide before, so a pinned customer gets a fresh one here.
    */
-  async _offerCheck(code, email, period, opt = {}) {
-    const { domain_key, disposable } = classifyEmail(email);
-    let row;
-    try {
-      row = this._row(await this.yp.await_proc(
-        'mkt_offer_check', code, this.uid, email, period, domain_key,
-        opt.fingerprint || '', opt.exclude_id || 0, COUPON_HOLD_TTL_SEC,
-      ));
-    } catch (e) {
-      // Code deployed ahead of the schema patch: no offer rules exist yet, so
-      // there is nothing to enforce — do not take every other code down.
-      if (/does not exist/i.test(e?.message || '')) return { domain_key };
-      throw e;
-    }
-    if (!row || row.error) return { error: row?.error || 'COUPON_INVALID' };
-    if (Number(row.block_disposable) === 1 && disposable) return { error: 'OFFER_EMAIL_DISPOSABLE' };
-    return { ...row, domain_key };
+  async _offerCustomer(customer_id, { email, name, entity_id }) {
+    const stripe = this._stripe();
+    const cust = await stripe.customers.retrieve(customer_id);
+    if (cust && !cust.deleted && (!cust.currency || cust.currency === CURRENCY)) return customer_id;
+    const fresh = await stripe.customers.create({ email, name, metadata: { id: entity_id } });
+    return fresh.id;
   }
 
   // The offer line shown at checkout, e.g. "First month $1.00 · then
@@ -183,122 +175,6 @@ class __private_payment extends Entity {
     const per = plan_row.period === 'year' ? 'year' : 'month';
     return `First ${per} ${usd(first)} · then ${usd(unit)}/${per} · cancel anytime. `
       + `${usd(first)} is charged when you confirm.`;
-  }
-
-  // checkout_result's shape for a subscription bought by _offerFinalize.
-  _offerResult(md, sub, pm) {
-    const inv = typeof sub.latest_invoice === 'object' ? sub.latest_invoice : null;
-    const item = sub.items?.data?.[0];
-    return {
-      status: 'complete',
-      payment_status: inv?.status === 'paid' ? 'paid' : 'unpaid',
-      plan: md.plan || null,
-      period: md.period || null,
-      entity_type: md.entity_type || 'user',
-      amount_total: inv ? inv.amount_paid : null,
-      currency: inv?.currency || CURRENCY,
-      invoice_number: inv?.number,
-      paid_at: inv?.status_transitions?.paid_at || sub.created,
-      card_brand: pm?.card?.brand || null,
-      card_last4: pm?.card?.last4 || null,
-      defer: false,
-      starts_at: null,
-      upcoming_amount: item?.price ? item.price.unit_amount : null,
-      offer_code: md.mkt_code || null,
-    };
-  }
-
-  // The card a setup session saved, with its fingerprint expanded.
-  async _offerCard(session) {
-    const si_id = typeof session.setup_intent === 'string' ? session.setup_intent : session.setup_intent?.id;
-    const si = await this._stripe().setupIntents.retrieve(si_id, { expand: ['payment_method'] });
-    return typeof si?.payment_method === 'object' ? si.payment_method : null;
-  }
-
-  // Buy the discounted subscription on the saved card. Declined / needs
-  // action → Stripe creates nothing and charges nothing (error_if_incomplete);
-  // the hold stays so the shopper can retry with another card. One
-  // idempotency key per session covers a concurrent double call.
-  async _offerSubscribe(session, customer, pm) {
-    const md = session.metadata || {};
-    const sub_md = { ...md, offer_session: session.id };
-    delete sub_md.offer_setup; delete sub_md.offer_price; delete sub_md.offer_coupon;
-    return this._stripe().subscriptions.create({
-      customer,
-      items: [{ price: md.offer_price, quantity: 1 }],
-      discounts: [{ coupon: md.offer_coupon }],
-      default_payment_method: pm.id,
-      payment_behavior: 'error_if_incomplete',
-      metadata: sub_md,
-      expand: ['latest_invoice'],
-    }, { idempotencyKey: `offer_${session.id}` });
-  }
-
-  /**
-   * Second half of a once_per_card offer checkout (see checkout(): the
-   * Checkout session only saved the card). Reads the saved card's
-   * fingerprint, re-runs the offer rules with it, and only then creates the
-   * discounted subscription and charges the first cycle. The webhook's
-   * customer.subscription.created then provisions the org and applies the
-   * entitlement exactly as for a normal checkout — the subscription carries
-   * the same metadata.
-   *
-   * Safe to repeat (the success page can be reloaded): a subscription
-   * already made from this session is found by metadata.offer_session and
-   * reported instead of charging again.
-   *
-   * @param {Object} session  Checkout Session (mode 'setup', metadata.offer_setup)
-   * @returns {Promise<Object>} same shape as checkout_result
-   */
-  async _offerFinalize(session) {
-    const md = session.metadata || {};
-    if (md.payer_id !== this.uid) return { status: 'SESSION_NOT_FOUND' };
-    if (session.status !== 'complete') {
-      return { status: session.status || 'open', payment_status: 'unpaid' };
-    }
-    const customer = typeof session.customer === 'string' ? session.customer : session.customer?.id;
-
-    const held = await this._stripe().subscriptions.list({
-      customer, status: 'all', limit: 20, expand: ['data.latest_invoice', 'data.default_payment_method'],
-    });
-    const done = (held.data || []).find((s) => s.metadata?.offer_session === session.id);
-    if (done) {
-      const done_pm = typeof done.default_payment_method === 'object' ? done.default_payment_method : null;
-      return this._offerResult(md, done, done_pm);
-    }
-
-    const pm = await this._offerCard(session);
-    const fingerprint = pm?.card?.fingerprint || '';
-    if (!fingerprint) return { status: 'OFFER_CARD_REQUIRED', payment_status: 'unpaid' };
-
-    const payer = await this.yp.await_proc('payment_get_payer', this.uid);
-    const email = payer?.email || '';
-    const rid = Math.trunc(Number(md.mkt_redemption_id)) || 0;
-    const offer = await this._offerCheck(md.mkt_code, email, md.period, { exclude_id: rid, fingerprint });
-    if (offer.error) {
-      try { await this.yp.await_proc('mkt_offer_release', rid); } catch (e) { /* hold ages out by TTL anyway */ }
-      return { status: offer.error, payment_status: 'unpaid', offer_code: md.mkt_code || null };
-    }
-    await this.yp.await_proc('mkt_offer_stamp', rid, '', fingerprint);
-
-    let sub;
-    try {
-      sub = await this._offerSubscribe(session, customer, pm);
-    } catch (e) {
-      this.warn?.('offer subscription failed', e?.message);
-      return {
-        status: 'OFFER_PAYMENT_FAILED',
-        payment_status: 'unpaid',
-        reason: e?.message || '',
-        offer_code: md.mkt_code || null,
-      };
-    }
-    try {
-      await this.yp.await_proc('mkt_coupon_confirm', session.id, sub.id, this.uid, email);
-    } catch (e) {
-      this.warn?.('mkt_coupon_confirm (offer) failed', e?.message);
-    }
-    return this._offerResult(md, sub, pm);
   }
 
   // Hold the offer code of a signup link (?offer=TEAM1) for the caller until
@@ -787,7 +663,12 @@ class __private_payment extends Entity {
       reserved.amount_off = offer.amount_off;
       reserved.once_per_card = Number(offer.once_per_card) === 1;
       if (Number(offer.once_per_domain) === 1) {
-        await this.yp.await_proc('mkt_offer_stamp', reserved.id, offer.domain_key, '');
+        // Atomic: a colleague checking out at the same moment cannot also pass.
+        const claim = await offerClaim(this._offerCtx(), reserved.id, offer.domain_key, '');
+        if (claim.error) {
+          try { await this.yp.await_proc('mkt_offer_release', reserved.id); } catch (e) { /* ages out by TTL */ }
+          return this.output.data({ status: claim.error, code: reserved.code });
+        }
       }
       promo = reserved;
       try {
@@ -817,11 +698,20 @@ class __private_payment extends Entity {
     // once_per_card offers (TEAM1) must see the card BEFORE anything is
     // charged, and a subscription-mode Checkout charges the moment the card
     // is entered — there is no hook in between. So Checkout only SAVES the
-    // card here (mode 'setup'); payment.offer_finalize, reached through
-    // checkout_result on the way back, reads its fingerprint and only then
-    // creates the discounted subscription. The webhook ignores setup sessions.
+    // card here (mode 'setup'); lib/offer offerFinalize, run by
+    // checkout_result on the way back (or by the webhook if the shopper never
+    // comes back), reads its fingerprint and only then creates the discounted
+    // subscription.
     const offer_setup = !!(promo?.once_per_card && stripe_discount_coupon);
     const offer_note = offer_setup ? await this._offerNote(promo, plan_row) : '';
+    if (offer_setup) {
+      try {
+        customer_id = await this._offerCustomer(customer_id, { email, name, entity_id });
+      } catch (e) {
+        this.warn?.('offer customer check failed', e?.message);
+        return this.output.data({ status: 'CHECKOUT_FAILED', reason: e?.message || '' });
+      }
+    }
 
     const create = (cust) => {
       if (offer_setup) {
@@ -1255,11 +1145,12 @@ class __private_payment extends Entity {
       }
     }
     // A once_per_card offer comes back from a card-saving session: this is
-    // where its subscription is actually bought (see _offerFinalize).
+    // where its subscription is bought (lib/offer offerFinalize; the webhook
+    // does the same if the shopper never comes back).
     if (session.mode === 'setup') {
       if (md.offer_setup !== '1') return this.output.data({ status: 'SESSION_NOT_FOUND' });
       try {
-        return this.output.data(await this._offerFinalize(session));
+        return this.output.data(await offerFinalize(this._offerCtx(), session));
       } catch (e) {
         this.warn?.('offer finalize failed', e?.message);
         return this.output.data({ status: 'OFFER_PAYMENT_FAILED', payment_status: 'unpaid', reason: e?.message || '' });
