@@ -24,6 +24,7 @@ const { pushReferralLive } = require('./_referral_live');
 const { markFeatureUsage } = require("../lib/feature-usage");
 const { ctaFeature } = require("../lib/cta-click");
 const { buildSeedInsert } = require("../lib/example-tasks");
+const Campaign = require("../lib/campaign");
 
 const {
   Attr, Privilege, toArray,
@@ -458,6 +459,7 @@ class __private_desk extends Media {
     let sockets = await this.yp.await_proc('entity_sockets', media.hub_id);
     await RedisStore.sendData(this.payload(media), sockets);
     await this.changelog_write({ src: media, event: "media.new" });
+    await Campaign.emit(this.yp, this.uid, 'space_created');
 
     // Mirror to creator's drumate so the trail survives a later delete.
     const hub_db = await this.yp.await_func('get_db_name', hub_id);

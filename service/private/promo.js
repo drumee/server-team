@@ -12,6 +12,7 @@ const { Entity } = require('@drumee/server-core');
 const { isEmpty } = require('lodash');
 const { COUPON_HOLD_TTL_SEC } = require('../lib/mkt-coupon');
 const { pushPromoLiveFrom } = require('./_promo_live');
+const Campaign = require('../lib/campaign');
 
 // Env-overridable, defaults are the real product/business values — same
 // pattern as the workers (reminderWorker's REMINDER_INTERVAL_SEC,
@@ -375,6 +376,8 @@ class __private_promo extends Entity {
         kind: row && row.kind,
       });
     }
+
+    if (org) await Campaign.bindOrg(this.yp, this.uid, org.id);
 
     // Same event the Stripe webhook emits on a real plan change, so an
     // already-open billing tab reflects the new plan without a reload.

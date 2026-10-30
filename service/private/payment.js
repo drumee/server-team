@@ -4,6 +4,7 @@ const { stripeClient } = require('../lib/stripe');
 // Shared with promo.js's direct redeem — see lib/mkt-coupon for why the
 // hold TTL must be one value across both.
 const { COUPON_HOLD_TTL_SEC } = require('../lib/mkt-coupon');
+const Campaign = require('../lib/campaign');
 const { isPendingCancel, clearCancelParams, endSubscription } = require('../lib/subscription-cancel');
 
 // Billing currency for every catalog / plan lookup. The 2026-07 pricing
@@ -591,6 +592,16 @@ class __private_payment extends Entity {
     }
     const eff_trial_end = promo_trial_end || trial_end || 0;
 
+    // Campaign price. Decided here from the stored attribution, never from the
+    // request. A typed partner code keeps priority: Stripe allows one discount.
+    if (!stripe_discount_coupon && !supersede) {
+      const offer = await Campaign.offerForCheckout(this.yp, this.uid, plan, period);
+      if (offer) {
+        stripe_discount_coupon = await Campaign.ensureOfferCoupon(stripe, offer);
+        metadata.offer = offer.name;
+      }
+    }
+
     const create = (cust) => {
       const opts = {
         mode: 'subscription',
@@ -645,6 +656,7 @@ class __private_payment extends Entity {
         this.warn && this.warn('mkt_coupon_bind_session failed', e && e.message);
       }
     }
+    await Campaign.emit(this.yp, this.uid, 'checkout_started', { plan });
     this.output.data({ url: session.url, id: session.id });
   }
 

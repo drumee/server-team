@@ -2,6 +2,7 @@
 const { Entity } = require('@drumee/server-core');
 const { Messenger } = require('@drumee/server-essentials');
 const { resolve } = require('path');
+const Campaign = require('../lib/campaign');
 const { stripeClient, endpointSecret } = require('../lib/stripe');
 const { isPendingCancel, endSubscription } = require('../lib/subscription-cancel');
 const { sendButlerMail } = require('../lib/butler-mail');
@@ -1089,8 +1090,43 @@ class __public_stripe_webhook extends Entity {
       try { await this.yp.await_proc('stripe_event_delete', event.id); } catch (e2) {}
       return this.exception.server({ error: '_internal_error', service: 'stripe_webhook' });
     }
+    await this._campaignEvents(event, obj, stripe);
     await this.yp.await_proc('stripe_event_processed', event.id);
     this.output.data({ ok: 1 });
+  }
+
+  /**
+   * Funnel events for a verified Stripe event. After the reducer, because the
+   * organisation has to exist first. Best effort: entitlement is already
+   * applied and a throw here would make Stripe redeliver the whole event.
+   */
+  async _campaignEvents(event, obj, stripe) {
+    try {
+      let md = obj.metadata || {};
+      const subId = /^invoice\./.test(event.type) ? this._invoiceSubscriptionId(obj) : null;
+      if (subId) {
+        md = ((await stripe.subscriptions.retrieve(subId)) || {}).metadata || {};
+      } else if (event.type === 'payment_intent.payment_failed' && obj.invoice) {
+        const inv = await stripe.invoices.retrieve(obj.invoice);
+        const id = this._invoiceSubscriptionId(inv);
+        md = id ? ((await stripe.subscriptions.retrieve(id)) || {}).metadata || {} : {};
+      }
+      if (!md.offer || !md.payer_id) return;
+      // A subscription replaced by a plan change ends too, and is not a cancel.
+      if (event.type === 'customer.subscription.deleted' && obj.customer) {
+        const live = await stripe.subscriptions.list({ customer: obj.customer, status: 'active', limit: 1 });
+        if (live.data.length) return;
+      }
+      if (event.type === 'checkout.session.completed') {
+        const org = await this.yp.await_proc('payment_get_org', md.payer_id);
+        if (org && org.id) await Campaign.bindOrg(this.yp, md.payer_id, org.id);
+      }
+      for (const e of Campaign.stripeEventsFor(event, md)) {
+        await Campaign.emit(this.yp, md.payer_id, e.event, e);
+      }
+    } catch (e) {
+      this.warn && this.warn(`campaign event skipped for ${event.id}: ${e.message}`);
+    }
   }
 }
 
