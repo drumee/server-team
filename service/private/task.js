@@ -239,6 +239,7 @@ class __private_task extends Entity {
       if (!name || /^__.*__$/.test(name) || name.indexOf('__') === 0) return null;
       return name;
     } catch (e) {
+      // No chip rather than no notification.
       return null;
     }
   }

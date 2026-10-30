@@ -16,9 +16,8 @@ const MAX_MENTIONS = 50;
 function mentionedUserIds(text) {
   const out = [];
   if (typeof text !== "string" || !text) return out;
-  USER_MENTION_RE.lastIndex = 0;
-  let m;
-  while ((m = USER_MENTION_RE.exec(text)) && out.length < MAX_MENTIONS) {
+  for (const m of text.matchAll(USER_MENTION_RE)) {
+    if (out.length >= MAX_MENTIONS) break;
     const uid = m[1];
     if (UID_RE.test(uid) && !out.includes(uid)) out.push(uid);
   }
