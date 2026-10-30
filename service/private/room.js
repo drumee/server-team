@@ -568,6 +568,7 @@ class __private_room extends __public_room {
       const node = toArray(await this.db.await_proc('mfs_access_node', uid, nid))[0];
       return !!node && ((Number(node.privilege) || 0) & CAN_READ) === CAN_READ;
     } catch (e) {
+      // Unknown access answers no: a missed notice, never a leaked title.
       return false;
     }
   }
