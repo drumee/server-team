@@ -22,6 +22,7 @@ const { remove_node } = MfsTools;
 const { notifyTaskEvent } = require('../lib/activity-mailer');
 const {admit: admitMobilePush} = require('../lib/mobile-push');
 const { markFeatureUsage } = require('../lib/feature-usage');
+const { senderIdentity } = require('../lib/message-author');
 
 // Built-in Kanban columns. Custom columns live in the task_column table and
 // use their row id as the task.status key — see _isValidStatus().
@@ -171,7 +172,16 @@ class __private_task extends Entity {
         await RedisStore.sendData(
           this.payload(
             { ...data, event: 'task_mention', hub_id, task_id },
-            { service: 'task.mention' },
+            // The sender is named explicitly: the recipient's pop-up shows it,
+            // and payload() only adds one when the request had a socket_id.
+            // `kind` tells a real @-mention ('mention') from the variants this
+            // push also carries (reply / comment / priority / moved): only the
+            // first raises the "mentioned you" pop-up.
+            {
+              service: 'task.mention',
+              sender: senderIdentity(this.user, this.uid),
+              kind: kind || 'mention',
+            },
           ),
           recipients,
         );
@@ -320,7 +330,8 @@ class __private_task extends Entity {
         await RedisStore.sendData(
           this.payload(
             { ...(row || {}), event: 'task_assigned', hub_id, task_id },
-            { service: 'task.assigned' },
+            // Named for the pop-up — see _notifyMentions.
+            { service: 'task.assigned', sender: senderIdentity(this.user, this.uid) },
           ),
           recipients,
         );
