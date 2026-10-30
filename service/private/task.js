@@ -22,6 +22,7 @@ const { remove_node } = MfsTools;
 const { notifyTaskEvent } = require('../lib/activity-mailer');
 const {admit: admitMobilePush} = require('../lib/mobile-push');
 const { markFeatureUsage } = require('../lib/feature-usage');
+const { senderIdentity } = require('../lib/message-author');
 
 // Built-in Kanban columns. Custom columns live in the task_column table and
 // use their row id as the task.status key — see _isValidStatus().
@@ -133,8 +134,11 @@ class __private_task extends Entity {
    * `kind` marks a non-mention variant carried by the same row (currently only
    * 'reply' — a reply to your comment); omitted for real @-mentions, so their
    * stored data stays exactly as before.
+   * `focus` says WHERE in the task the mention is — 'description' or
+   * 'comment:<id>' — so the recipient's pop-up can open the task on it. Push
+   * only: nothing about it is stored.
    */
-  async _notifyMentions(data, mentionUids, kind = null, extra = null) {
+  async _notifyMentions(data, mentionUids, kind = null, extra = null, focus = null) {
     const uids = toArray(mentionUids).filter((u) => u && u !== this.uid);
     if (isEmpty(uids)) return;
     const hub_id = this.hub && this.hub.get(Attr.id);
@@ -171,7 +175,18 @@ class __private_task extends Entity {
         await RedisStore.sendData(
           this.payload(
             { ...data, event: 'task_mention', hub_id, task_id },
-            { service: 'task.mention' },
+            // The sender is named explicitly: the recipient's pop-up shows it,
+            // and payload() only adds one when the request had a socket_id.
+            // `kind` tells a real @-mention ('mention') from the variants this
+            // push also carries (reply / comment / priority / moved): only the
+            // first raises the "mentioned you" pop-up.
+            {
+              service: 'task.mention',
+              sender: senderIdentity(this.user, this.uid),
+              kind: kind || 'mention',
+              folder_name: await this._taskFolderName(meta.nid),
+              ...(focus ? { focus } : {}),
+            },
           ),
           recipients,
         );
@@ -207,6 +222,26 @@ class __private_task extends Entity {
       scope_nid: meta.nid || '',
       recipient_uids: uids,
     });
+  }
+
+  /**
+   * The pop-up's location chip for a task: its folder, or the WORKSPACE for a
+   * task at the root (mfs_node_attr answers with the workspace name for the
+   * hub root) — the same rule as channel._chat_folder_name. Internal plumbing
+   * names are withheld; any failure is simply no chip.
+   */
+  async _taskFolderName(nid) {
+    try {
+      const id = nid && `${nid}` !== '0' ? nid : this.hub && this.hub.get(Attr.id);
+      if (!id) return null;
+      const a = toArray(await this.db.await_proc('mfs_node_attr', id))[0];
+      const name = a && a.filename;
+      if (!name || /^__.*__$/.test(name) || name.indexOf('__') === 0) return null;
+      return name;
+    } catch (e) {
+      // No chip rather than no notification.
+      return null;
+    }
   }
 
   /**
@@ -320,7 +355,12 @@ class __private_task extends Entity {
         await RedisStore.sendData(
           this.payload(
             { ...(row || {}), event: 'task_assigned', hub_id, task_id },
-            { service: 'task.assigned' },
+            // Named and placed for the pop-up — see _notifyMentions.
+            {
+              service: 'task.assigned',
+              sender: senderIdentity(this.user, this.uid),
+              folder_name: await this._taskFolderName(meta.nid),
+            },
           ),
           recipients,
         );
@@ -666,7 +706,7 @@ class __private_task extends Entity {
     await this._logActivity(id, 'create', { title });
     await this._broadcast('task.create', data);
     // Every tagged member is newly mentioned on create.
-    await this._notifyMentions(data, this.input.use('mention_uids', null));
+    await this._notifyMentions(data, this.input.use('mention_uids', null), null, null, 'description');
     // Every assignee is newly assigned on create → notify them (self excluded).
     await this._notifyAssignees(data, assignees);
     // Notify watchers of the column where the task was created.
@@ -773,7 +813,7 @@ class __private_task extends Entity {
     );
     await this._broadcast('task.update', data);
     // Client sends only the newly-added mentions in `mention_uids`.
-    await this._notifyMentions(data, this.input.use('mention_uids', null));
+    await this._notifyMentions(data, this.input.use('mention_uids', null), null, null, 'description');
     // Assignees hear about a priority change. Guarded on a genuine change so a
     // form save that leaves priority alone notifies nobody.
     if (priority != null && prevPriority !== undefined && prevPriority !== priority) {
@@ -1137,7 +1177,7 @@ class __private_task extends Entity {
    * the click can only fall back to the workspace root instead of opening the
    * folder the task actually lives in.
    */
-  async _notifyCommentMentions(task_id, mentionUids, kind = null) {
+  async _notifyCommentMentions(task_id, mentionUids, kind = null, focus = null) {
     if (isEmpty(toArray(mentionUids))) return;
     let title = '';
     let nid = null;
@@ -1149,7 +1189,7 @@ class __private_task extends Entity {
     } catch (e) {
       this.warn('[task._notifyCommentMentions] title lookup failed:', e && e.message);
     }
-    await this._notifyMentions({ id: task_id, title, nid }, mentionUids, kind);
+    await this._notifyMentions({ id: task_id, title, nid }, mentionUids, kind, null, focus);
   }
 
   /**
@@ -1195,7 +1235,9 @@ class __private_task extends Entity {
     const replyTo = this.input.use('reply_to_uid', null);
     const mentionSet = new Set(mentions);
     if (replyTo) mentionSet.delete(replyTo);
-    await this._notifyCommentMentions(task_id, [...mentionSet]);
+    // The pop-up opens the task on THIS comment.
+    const focus = row && row.id ? `comment:${row.id}` : null;
+    await this._notifyCommentMentions(task_id, [...mentionSet], null, focus);
     // Everyone who gets the "replied to your comment" copy: the author of the
     // comment being answered, plus the root author of the thread. Deduped, and
     // never someone already notified as a genuine @-mention, so one person gets
@@ -1214,7 +1256,7 @@ class __private_task extends Entity {
       }
     }
     if (repliers.size) {
-      await this._notifyCommentMentions(task_id, [...repliers], 'reply');
+      await this._notifyCommentMentions(task_id, [...repliers], 'reply', focus);
     }
     // The task's assignees hear about a comment on their task even when they
     // were not @-mentioned and are not the person being replied to (Duy
@@ -1241,7 +1283,9 @@ class __private_task extends Entity {
     const row = Array.isArray(data) ? data[0] : data;
     if (isEmpty(row)) return this.exception.user('COMMENT_NOT_FOUND');
     await this._broadcast('task.comment_update', row);
-    await this._notifyCommentMentions(row.task_id, this.input.use('mention_uids', null));
+    await this._notifyCommentMentions(
+      row.task_id, this.input.use('mention_uids', null), null, row.id ? `comment:${row.id}` : null,
+    );
     this.output.data(row);
   }
 

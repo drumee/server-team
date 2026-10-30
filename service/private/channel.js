@@ -1863,6 +1863,11 @@ class __private_channel extends Entity {
     // never cost someone their message, so it is caught and dropped, and the
     // client keeps its own fallbacks for a server that predates this.
     data.folder_name = await this._chat_folder_name(nid);
+    // Posted from a live call's chat panel (window/meeting) rather than the
+    // folder chat — the two share this channel, so nothing else tells them
+    // apart. A recipient's pop-up uses it to bring them INTO the call on Open.
+    // On the push only; never stored.
+    if (this.input.get("from_meeting")) data.from_meeting = 1;
     data.echoId = this.input.get("echoId");
     const meetingAction = meetingCardAction(data.message);
     if (meetingAction) data.message_type = `meeting.${meetingAction}`;

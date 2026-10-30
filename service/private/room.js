@@ -17,8 +17,11 @@
 const { isEmpty, isArray, difference, map } = require('lodash');
 const __public_room = require("../room");
 const { Attr, Privilege, Cache, sysEnv, RedisStore, toArray } = require("@drumee/server-essentials")
-const { memberCan, CAN_WRITE } = require("../lib/member-capability");
+const { memberCan, CAN_WRITE, CAN_READ } = require("../lib/member-capability");
 const { normalizeNids, attachmentsOf, mergeAttachments, isMeetingNode } = require("../lib/meeting-attachments");
+const { mentionedUserIds, newlyMentionedUserIds } = require("../lib/mention-markers");
+const { workspaceMemberIds } = require("../lib/meeting-lifecycle");
+const { senderIdentity } = require("../lib/message-author");
 
 //########################################
 
@@ -259,6 +262,13 @@ class __private_room extends __public_room {
     // are added by a subsequent update() with flag 'member').
     await this._index_meeting(node && (node.id || node.nid), metadata.content);
     await this._broadcast('room.book', node && (node.id || node.nid));
+    // People @-mentioned in the description.
+    await this._notify_mentions(mentionedUserIds(message), {
+      nid: node && (node.id || node.nid),
+      pid: (node && node.parent_id) || this.home_id,
+      title,
+      stime,
+    });
     this.output.data(node);
   }
 
@@ -283,6 +293,8 @@ class __private_room extends __public_room {
     let attendees = content.attendees
     let title = content.title
     let message = content.message
+    // The description BEFORE this edit: only people it newly mentions are told.
+    const prevMessage = message;
     let date = content.date
     let stime = content.stime
     let etime = content.etime
@@ -435,6 +447,14 @@ class __private_room extends __public_room {
     // (attendee set, moved time, cleared/added recurrence).
     await this._index_meeting(nid, content);
     await this._broadcast('room.update', nid);
+    if (flag == 'agenda' || flag == 'all') {
+      await this._notify_mentions(newlyMentionedUserIds(prevMessage, message), {
+        nid,
+        pid: (node && node.parent_id) || null,
+        title,
+        stime: Number(stime) || 0,
+      });
+    }
     await this.output.data((content));
   }
 
@@ -514,7 +534,7 @@ class __private_room extends __public_room {
    * edit or the deletion that triggered it.
    *
    * @param {string[]} uids     recipients (self is dropped)
-   * @param {string} kind       'invite' | 'moved' | 'cancelled'
+   * @param {string} kind       'invite' | 'moved' | 'cancelled' | 'mention'
    * @param {object} payload    { nid, pid, title, stime, folder_name }
    */
   async _meeting_notice(uids, kind, payload = {}) {
@@ -549,6 +569,80 @@ class __private_room extends __public_room {
       }
     } catch (e) {
       this.warn && this.warn('room._meeting_notice failed', e && e.message);
+    }
+  }
+
+  /**
+   * Tell the people @-mentioned in a meeting's description: a durable
+   * `meeting_notice` row of kind 'mention' (Notification Center, Meeting tab)
+   * plus a live `room.mention` push for the in-app pop-up.
+   *
+   * The mentions are read from the description's own markers rather than from
+   * a list the client sends, so what is notified is exactly what is written.
+   * A description is free text, though, so only WORKSPACE MEMBERS are told —
+   * an id typed into a marker by hand must not reach, or reveal the meeting's
+   * title to, anyone outside it. Membership is not enough on its own: a
+   * meeting filed in a restricted folder is told only to those who can read
+   * the meeting itself (mfs_access_node). When either cannot be read, that
+   * person is not notified: a missed pop-up is the safe failure here.
+   *
+   * Best-effort: the meeting is already saved.
+   *
+   * @param {string[]} uids     mentioned uids (self is dropped)
+   * @param {object} payload    { nid, pid, title, stime }
+   */
+  async _notify_mentions(uids, payload = {}) {
+    try {
+      let targets = toArray(uids).filter((u) => u && u !== this.uid);
+      if (isEmpty(targets)) return;
+      const members = await workspaceMemberIds(this.db);
+      if (!members) return;
+      targets = targets.filter((u) => members.has(String(u)));
+      if (isEmpty(targets)) return;
+      const readable = [];
+      for (const uid of targets) {
+        if (await this._can_read_meeting(uid, payload.nid)) readable.push(uid);
+      }
+      targets = readable;
+      if (isEmpty(targets)) return;
+      const folder_name = await this._meeting_folder_name(payload.pid);
+      const common = { ...payload, folder_name };
+      await this._meeting_notice(targets, 'mention', common);
+      const recipients = toArray(await this.yp.await_proc('user_sockets', targets));
+      if (isEmpty(recipients)) return;
+      await RedisStore.sendData(
+        this.payload(
+          {
+            event: 'meeting_notice',
+            meeting_kind: 'mention',
+            hub_id: this.hub.get(Attr.id),
+            nid: common.nid || null,
+            pid: common.pid || null,
+            title: (common.title || '').slice(0, 255),
+            stime: Number(common.stime) || 0,
+            folder_name: folder_name || null,
+          },
+          { service: 'room.mention', sender: senderIdentity(this.user, this.uid) },
+        ),
+        recipients,
+      );
+    } catch (e) {
+      this.warn && this.warn('room._notify_mentions failed', e && e.message);
+    }
+  }
+
+  /**
+   * Whether `uid` can read the meeting node `nid` in this workspace. Any
+   * failure answers no.
+   */
+  async _can_read_meeting(uid, nid) {
+    try {
+      if (!uid || !nid) return false;
+      const node = toArray(await this.db.await_proc('mfs_access_node', uid, nid))[0];
+      return !!node && ((Number(node.privilege) || 0) & CAN_READ) === CAN_READ;
+    } catch (e) {
+      // Unknown access answers no: a missed notice, never a leaked title.
+      return false;
     }
   }
 

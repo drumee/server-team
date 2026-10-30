@@ -50,4 +50,30 @@ function stampAuthorIdentity(user, data) {
   return data;
 }
 
-module.exports = { stampAuthorIdentity };
+/**
+ * Who sent a targeted notification push, for `payload(data, { sender })`.
+ *
+ * server-essentials' payload() stamps `options.sender` only when the request
+ * carried a socket_id, so a push raised from a plain REST call (a task saved
+ * from the board, a meeting saved from the scheduler) reached the recipient
+ * with no name to show on its pop-up. Stated explicitly here, on the push
+ * OPTIONS rather than the row, so whatever merges the row stays untouched.
+ * payload() spreads this over its own sender, so the socket id it adds when
+ * there is one is kept.
+ *
+ * @param {object} user  the session user (`this.user`)
+ * @param {string} uid   the caller's uid (`this.uid`)
+ * @returns {object} { uid, id, firstname, lastname, fullname, email }
+ */
+function senderIdentity(user, uid) {
+  const sender = { uid, id: uid };
+  const author = stampAuthorIdentity(user, {});
+  if (author.firstname) sender.firstname = author.firstname;
+  if (author.lastname) sender.lastname = author.lastname;
+  if (author.fullname) sender.fullname = author.fullname;
+  // The last resort for a name, exactly as the chat card falls back to it.
+  if (author.email) sender.email = author.email;
+  return sender;
+}
+
+module.exports = { stampAuthorIdentity, senderIdentity };
