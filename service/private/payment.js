@@ -597,7 +597,13 @@ class __private_payment extends Entity {
     if (!stripe_discount_coupon && !supersede) {
       const offer = await Campaign.offerForCheckout(this.yp, this.uid, plan, period);
       if (offer) {
-        stripe_discount_coupon = await Campaign.ensureOfferCoupon(stripe, offer);
+        try {
+          stripe_discount_coupon = await Campaign.ensureOfferCoupon(stripe, offer);
+        } catch (e) {
+          // Refuse rather than charge the full price the page did not promise.
+          this.warn && this.warn('offer coupon failed', e && e.message);
+          return this.output.data({ status: 'COUPON_STRIPE_FAILED', reason: (e && e.message) || '' });
+        }
         metadata.offer = offer.name;
       }
     }

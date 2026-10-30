@@ -916,6 +916,11 @@ class __public_stripe_webhook extends Entity {
               quota: await this._freshQuota(md.payer_id, entity_id, etype),
             });
             await this._evaluateOverLimit(entity_id, etype);
+            // Here and not in _campaignEvents: only a genuine cancellation gets
+            // this far, a replaced subscription broke out above.
+            for (const e of Campaign.stripeEventsFor(event, md)) {
+              await Campaign.emit(this.yp, md.payer_id, e.event, e);
+            }
           }
           break;
         }
@@ -1102,6 +1107,7 @@ class __public_stripe_webhook extends Entity {
    */
   async _campaignEvents(event, obj, stripe) {
     try {
+      if (event.type === 'customer.subscription.deleted') return; // see the reducer
       let md = obj.metadata || {};
       const subId = /^invoice\./.test(event.type) ? this._invoiceSubscriptionId(obj) : null;
       if (subId) {
@@ -1112,11 +1118,6 @@ class __public_stripe_webhook extends Entity {
         md = id ? ((await stripe.subscriptions.retrieve(id)) || {}).metadata || {} : {};
       }
       if (!md.offer || !md.payer_id) return;
-      // A subscription replaced by a plan change ends too, and is not a cancel.
-      if (event.type === 'customer.subscription.deleted' && obj.customer) {
-        const live = await stripe.subscriptions.list({ customer: obj.customer, status: 'active', limit: 1 });
-        if (live.data.length) return;
-      }
       if (event.type === 'checkout.session.completed') {
         const org = await this.yp.await_proc('payment_get_org', md.payer_id);
         if (org && org.id) await Campaign.bindOrg(this.yp, md.payer_id, org.id);
