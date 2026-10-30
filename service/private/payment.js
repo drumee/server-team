@@ -170,7 +170,10 @@ class __private_payment extends Entity {
     try { unit = (await this._stripe().prices.retrieve(plan_row.stripe_price_id)).unit_amount; }
     catch (e) { unit = null; }
     if (unit == null) return 'You will be charged when you confirm. Cancel anytime.';
-    const first = Math.max(0, unit - (Number.parseInt(promo.amount_off, 10) || 0));
+    const amount_off = Number.parseInt(promo.amount_off, 10) || 0;
+    const percent_off = Number.parseInt(promo.percent_off, 10) || 0;
+    const off = amount_off > 0 ? amount_off : Math.round((unit * percent_off) / 100);
+    const first = Math.max(0, unit - off);
     const usd = (c) => `$${(c / 100).toFixed(2)}`;
     const per = plan_row.period === 'year' ? 'year' : 'month';
     return `First ${per} ${usd(first)} · then ${usd(unit)}/${per} · cancel anytime. `
@@ -702,6 +705,14 @@ class __private_payment extends Entity {
     // checkout_result on the way back (or by the webhook if the shopper never
     // comes back), reads its fingerprint and only then creates the discounted
     // subscription.
+    // The card can only be checked on the setup path, which buys the
+    // subscription with the coupon itself. A once_per_card code without a
+    // discount (free days only) has no such path: refuse it rather than sell
+    // it with the card rule silently off.
+    if (promo?.once_per_card && !stripe_discount_coupon) {
+      try { await this.yp.await_proc('mkt_offer_release', promo.id); } catch (e) { /* ages out by TTL */ }
+      return this.output.data({ status: 'OFFER_INVALID', code: promo.code });
+    }
     const offer_setup = !!(promo?.once_per_card && stripe_discount_coupon);
     const offer_note = offer_setup ? await this._offerNote(promo, plan_row) : '';
     if (offer_setup) {

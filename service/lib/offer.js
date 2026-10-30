@@ -124,6 +124,40 @@ function offerSubscribe(stripe, session, customer, pm) {
   }, { idempotencyKey: `offer_${session.id}` });
 }
 
+// The bank wants the shopper to confirm the first payment (3DS / SCA). An
+// off-session charge cannot show that challenge, so the purchase moves to a
+// hosted Checkout page that can: same customer, price, coupon and metadata
+// (offer_session included, so a later finalize finds the subscription). One
+// idempotency key per setup session, so the page and the webhook hand out
+// the same link. The redemption follows the new session.
+function needsAuthentication(e) {
+  return e?.code === 'authentication_required'
+    || e?.decline_code === 'authentication_required'
+    || e?.code === 'subscription_payment_intent_requires_action';
+}
+
+async function offerHostedPayment(ctx, session, customer, rid) {
+  const md = session.metadata || {};
+  const sub_md = { ...md, offer_session: session.id };
+  delete sub_md.offer_setup; delete sub_md.offer_price; delete sub_md.offer_coupon;
+  const hosted = await ctx.stripe().checkout.sessions.create({
+    mode: 'subscription',
+    customer,
+    line_items: [{ price: md.offer_price, quantity: 1 }],
+    discounts: [{ coupon: md.offer_coupon }],
+    subscription_data: { metadata: sub_md },
+    metadata: sub_md,
+    success_url: session.success_url,
+    cancel_url: session.cancel_url,
+  }, { idempotencyKey: `offer_sca_${session.id}` });
+  try {
+    await ctx.yp.await_proc('mkt_coupon_bind_session', rid, hosted.id);
+  } catch (e) {
+    ctx.warn?.(`mkt_coupon_bind_session (offer) failed: ${e?.message}`);
+  }
+  return { status: 'OFFER_ACTION_REQUIRED', payment_status: 'unpaid', url: hosted.url, offer_code: md.mkt_code || null };
+}
+
 // Marks the redemption used. Idempotent (only a pending row moves), so it is
 // run again whenever a finished purchase is seen — a confirm that failed once
 // must not leave the offer reusable.
@@ -194,6 +228,11 @@ async function offerFinalize(ctx, session) {
       await new Promise((r) => setTimeout(r, 2000));
       sub = await findOfferSubscription(stripe, customer, session.id);
     }
+    if (!sub && needsAuthentication(e)) return offerHostedPayment(ctx, session, customer, rid);
+    // Stripe or network trouble is not an answer about the card: let it
+    // throw, so the webhook returns 500 and Stripe delivers the event again
+    // (the success page reports it as a failed payment either way).
+    if (!sub && !/^Stripe(Card|InvalidRequest)Error$/.test(e?.type || '')) throw e;
     if (!sub) {
       ctx.warn?.(`offer subscription failed: ${e?.message}`);
       return {
