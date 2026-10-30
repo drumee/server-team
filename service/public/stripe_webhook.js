@@ -557,14 +557,14 @@ class __public_stripe_webhook extends Entity {
           // same metadata and is handled below like any other.
           if (obj.object === 'checkout.session' && obj.mode === 'setup') {
             if (event.type === 'checkout.session.completed' && md.offer_setup === '1' && md.payer_id && stripe) {
-              try {
-                const res = await offerFinalize({
-                  yp: this.yp, stripe: () => stripe, uid: md.payer_id, warn: (m) => this.warn(m),
-                }, obj);
-                this.debug(`offer setup ${obj.id} finalized: ${res.status}/${res.payment_status}`);
-              } catch (e12) {
-                this.error(`offer finalize from webhook failed for ${obj.id}: ${e12.message}`);
-              }
+              // Not caught here: a transient failure must reach the outer
+              // handler, which un-marks the event and answers 500 so Stripe
+              // retries. A refusal (card used, declined) is an answer and is
+              // acknowledged like any handled event.
+              const res = await offerFinalize({
+                yp: this.yp, stripe: () => stripe, uid: md.payer_id, warn: (m) => this.warn(m),
+              }, obj);
+              this.debug(`offer setup ${obj.id} finalized: ${res.status}/${res.payment_status}`);
             }
             break;
           }
