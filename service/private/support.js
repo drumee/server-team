@@ -14,10 +14,12 @@
  * limitations under the License.
  * =============================================================================
  */
-const { Attr, toArray } = require("@drumee/server-essentials");
-const { isEmpty } = require('lodash');
+const { Attr, Messenger, toArray } = require("@drumee/server-essentials");
+const { escape, isEmpty, isPlainObject } = require('lodash');
 
 const Support       = require('../support');
+const { sendMail } = require('../lib/send-mail');
+const { mailFailure } = require('../lib/mail-result');
 
 const { stringify } = JSON;
 const { sqlLiteral } = require('../lib/sql-literal');
@@ -44,6 +46,38 @@ const DEFAULT_GREETING =
 /** Longest first name interpolated into the greeting. */
 const NAME_MAX = 64;
 
+/** The team that acts on reports of objectionable content. */
+const REPORT_RECIPIENT = 'operation@drumee.org';
+
+/** What `support.report_content` accepts as `kind`. */
+const REPORT_KINDS = ['message', 'contact'];
+
+/** Bounds on the client-supplied `target` quoted in a report mail. */
+const REPORT_FIELDS_MAX = 10;
+const REPORT_VALUE_MAX = 500;
+
+/**
+ * Subject, text and HTML of one report mail. Everything in `target` is what
+ * the client claims, so each value is cut to length and HTML-escaped; only
+ * `reporter` comes from the session.
+ */
+function reportMail(kind, target, reporter) {
+  const quote = (value) =>
+    (typeof value === 'string' ? value : JSON.stringify(value) || '').slice(0, REPORT_VALUE_MAX);
+  const who = reporter.name ? `${reporter.name} <${reporter.email}>` : reporter.email;
+  const rows = [
+    ['Reported by', `${who} (${reporter.uid})`],
+    ['Kind', kind],
+    ...Object.entries(target).slice(0, REPORT_FIELDS_MAX).map(([key, value]) => [quote(key), quote(value)]),
+    ['Reported at', new Date().toISOString()],
+  ];
+  return {
+    subject: `Drumee report: ${kind} reported by ${reporter.email || reporter.uid}`,
+    text: rows.map(([label, value]) => `${label}: ${value}`).join('\n'),
+    html: rows.map(([label, value]) => `<p><b>${escape(label)}:</b> ${escape(value)}</p>`).join('\n'),
+  };
+}
+
 //########################################
 class __private_support extends Support {
 
@@ -55,6 +89,43 @@ class __private_support extends Support {
     this.list_feedback = this.list_feedback.bind(this);
     this.contact = this.contact.bind(this);
     this.greet = this.greet.bind(this);
+    this.report_content = this.report_content.bind(this);
+  }
+
+  /**
+   * Report objectionable content from an app — one chat message, or a person.
+   *
+   * The report has to reach somebody who acts on it (App Store guideline 1.2),
+   * and there is no moderation table yet, so it is mailed to the operations
+   * mailbox and nothing is stored. Delivery is judged by `mailFailure`, not by
+   * a truthy `.error`: without an MTA `sendMail` hands back a string, and
+   * answering `sent` then would thank the user for a report nobody received.
+   */
+  async report_content() {
+    if (this.session.isAnonymous()) {
+      this.exception.user('NOT_SIGNED_IN');
+      return;
+    }
+    const kind = this.input.get('kind');
+    const target = this.input.get('target');
+    if (!REPORT_KINDS.includes(kind) || !isPlainObject(target)) {
+      this.exception.user('INVALID_REPORT');
+      return;
+    }
+
+    const { subject, text, html } = reportMail(kind, target, {
+      uid: this.uid,
+      email: this.user.get(Attr.email),
+      name: this.user.get(Attr.fullname),
+    });
+    const msg = new Messenger({ subject, recipient: REPORT_RECIPIENT, handler: this.exception.email });
+    const reason = mailFailure(await sendMail(msg, { html, text }));
+    if (reason) {
+      this.warn(`support.report_content: ${reason}`);
+      this.exception.user('REPORT_NOT_SENT');
+      return;
+    }
+    this.output.data({ sent: 1 });
   }
 
   /**
