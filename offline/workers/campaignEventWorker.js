@@ -87,7 +87,7 @@ async function flush() {
   if (!creds) return;
   const rows = asArray(await yp.await_query(
     'SELECT e.id, e.uid, e.event, e.plan, e.ctime, a.org_id, a.offer, a.utm_source, a.utm_medium,'
-    + ' a.utm_campaign, a.utm_content, a.utm_term, a.gclid, a.li_fat_id, a.fbclid, a.country, a.ga_client_id'
+    + ' a.utm_campaign, a.utm_content, a.utm_term, a.country, a.ga_client_id'
     + ' FROM campaign_event e JOIN campaign_attribution a ON a.uid = e.uid'
     + ' WHERE e.sent_time IS NULL AND e.attempts < ? ORDER BY e.id LIMIT ?',
     MAX_ATTEMPTS, BATCH,
