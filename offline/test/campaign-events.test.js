@@ -31,14 +31,18 @@ test('subscription_cancelled', () => {
   assert.strictEqual(stripeEventsFor(ev('customer.subscription.deleted', {}), md)[0].event, 'subscription_cancelled');
 });
 
-test('GA payload clips to 100 chars, and falls back to a stable client id', () => {
-  const p = gaPayload({ uid: 'u1', event: 'renew_29', offer: 'team-1usd', ctime: 1000, gclid: 'x'.repeat(300), org_id: 'o1', country: 'CH' });
-  assert.strictEqual(p.client_id, 'srv.u1');
-  assert.strictEqual(p.events[0].params.gclid.length, 100);
-  assert.strictEqual(p.events[0].params.workspace_id, 'o1');
-  assert.strictEqual(p.events[0].params.plan, 'team');
+test('GA payload carries only what the report needs', () => {
+  const p = gaPayload({ uid: 'u1', event: 'renew_29', offer: 'team-1usd', ctime: 1000, gclid: 'x'.repeat(300), li_fat_id: 'l', fbclid: 'f', utm_source: 's'.repeat(300), org_id: 'o1', country: 'CH' });
+  const params = p.events[0].params;
+  assert.match(p.client_id, /^srv\.[0-9a-f]{32}$/);
+  assert.ok(!p.client_id.includes('u1'));
+  for (const k of ['account_id', 'gclid', 'li_fat_id', 'fbclid', 'email', 'name']) assert.ok(!(k in params), k);
+  assert.ok(!JSON.stringify(p).includes('u1'));
+  assert.strictEqual(params.utm_source.length, 100);
+  assert.strictEqual(params.workspace_id, 'o1');
+  assert.strictEqual(params.plan, 'team');
   assert.strictEqual(p.timestamp_micros, 1000000000);
-  assert.ok(Object.keys(p.events[0].params).length <= 25);
+  assert.ok(Object.keys(params).length <= 25);
   assert.strictEqual(gaPayload({ uid: 'u1', ga_client_id: '1.2', event: 'e', ctime: 1 }).client_id, '1.2');
 });
 

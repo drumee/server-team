@@ -4,6 +4,8 @@
 // outbox and returns; offline/workers/campaignEventWorker.js does the sending.
 // A failure is a reporting gap, never a failed payment, so emit() swallows.
 
+const { createHash } = require('crypto');
+
 const TEAM_1USD = 'team-1usd';
 
 const OFFERS = {
@@ -141,24 +143,25 @@ const GA_TEXT_MAX = 100;
 
 /**
  * One outbox row, joined to its attribution, as a Measurement Protocol body.
- * GA4 rejects values over 100 characters on a standard property, so long click
- * ids are clipped here; the full value stays in campaign_attribution.
+ * Only what the campaign report needs goes to Google. The account id and the
+ * click ids stay in campaign_attribution. GA4 rejects values over 100 characters
+ * on a standard property, so the UTM tags are clipped here.
  */
 function gaPayload(row) {
   const params = {
     workspace_id: row.org_id || '',
-    account_id: row.uid,
     plan: row.plan || OFFERS[row.offer]?.plan || '',
     offer: row.offer || '',
     country: row.country || '',
   };
-  for (const k of ['utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term',
-    'gclid', 'li_fat_id', 'fbclid']) {
+  for (const k of ['utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term']) {
     if (row[k]) params[k] = String(row[k]).slice(0, GA_TEXT_MAX);
   }
   return {
-    // A server event with no browser behind it still needs a stable id.
-    client_id: row.ga_client_id || `srv.${row.uid}`,
+    // A server event with no browser behind it still needs a stable id, and the
+    // account id must not reach Google through it.
+    client_id: row.ga_client_id
+      || `srv.${createHash('sha256').update(String(row.uid)).digest('hex').slice(0, 32)}`,
     timestamp_micros: Number(row.ctime) * 1000000,
     events: [{ name: row.event, params }],
   };
