@@ -689,7 +689,9 @@ class __private_payment extends Entity {
       }
     }
     const row = await this.yp.await_proc('payment_get_subscription', this.uid);
-    return row || {};
+    // No row comes back as []. Properties set on an array do not survive JSON,
+    // which silently dropped can_buy for everyone without a subscription.
+    return (Array.isArray(row) ? row[0] : row) || {};
   }
 
   async subscription_status() {

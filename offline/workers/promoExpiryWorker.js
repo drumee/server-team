@@ -124,6 +124,15 @@ async function expireOne(row) {
 async function expireOneRedemption(row) {
   const { id, code, org_id, email } = row;
   try {
+    // Paid during the free period: the plan is the subscription's now. Clearing
+    // the entitlement here would take away what the customer just bought.
+    const held = await yp.await_proc('payment_get_subscription', org_id);
+    const sub = Array.isArray(held) ? held[0] : held;
+    if (sub && sub.subscription_id && /^(active|trialing|past_due)$/.test(sub.status)) {
+      await yp.await_proc('mkt_coupon_redeem_mark_expired', id);
+      console.log(`[PromoExpiryWorker] redemption id=${id} code=${code} org=${org_id} became a subscription, kept the plan`);
+      return true;
+    }
     await yp.await_proc('payment_clear_entitlement', org_id);
     await yp.await_proc('mkt_coupon_redeem_mark_expired', id);
     await evaluateOverLimit(org_id);
