@@ -16,6 +16,7 @@ const OFFERS = {
     // $29 first invoice down to $1. A percentage cannot land on $1 exactly.
     coupon_id: 'team_1usd_first_month',
     amount_off: 2800,
+    first_invoice: 100,
     currency: 'usd',
   },
 };

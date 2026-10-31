@@ -51,6 +51,7 @@ const yp = (row) => ({ await_query: async () => row });
 test('the $1 price is decided from stored attribution, and only once', async () => {
   const before = OFFERS['team-1usd'].ends_at - 1000;
   assert.strictEqual((await offerForCheckout(yp({ offer: 'team-1usd', used: 0 }), 'u', 'team', 'month', before)).amount_off, 2800);
+  assert.strictEqual(29 * 100 - OFFERS['team-1usd'].amount_off, OFFERS['team-1usd'].first_invoice);
   assert.strictEqual(await offerForCheckout(yp({ offer: 'team-1usd', used: 1 }), 'u', 'team', 'month', before), null);
   assert.strictEqual(await offerForCheckout(yp({ offer: 'other', used: 0 }), 'u', 'team', 'month', before), null);
   assert.strictEqual(await offerForCheckout(yp(undefined), 'u', 'team', 'month', before), null);

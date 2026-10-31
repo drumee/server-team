@@ -164,7 +164,11 @@ class __private_payment extends Entity {
         } catch (e) { /* leave amount unset on lookup failure */ }
       }));
     }
-    this.output.data({ plans });
+    // What this caller would pay on a campaign, so the page can say so before
+    // Stripe does. Checkout re-decides it; nothing here sets a price.
+    const o = await Campaign.offerForCheckout(this.yp, this.uid, 'team', 'month');
+    const offer = o ? { name: o.name, plan: o.plan, period: o.period, first_invoice: o.first_invoice } : null;
+    this.output.data({ plans, offer });
   }
 
   // ── TEAM org bootstrap ────────────────────────────────────────────────
