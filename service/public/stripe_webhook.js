@@ -1112,10 +1112,8 @@ class __public_stripe_webhook extends Entity {
       const subId = /^invoice\./.test(event.type) ? this._invoiceSubscriptionId(obj) : null;
       if (subId) {
         md = ((await stripe.subscriptions.retrieve(subId)) || {}).metadata || {};
-      } else if (event.type === 'payment_intent.payment_failed' && obj.invoice) {
-        const inv = await stripe.invoices.retrieve(obj.invoice);
-        const id = this._invoiceSubscriptionId(inv);
-        md = id ? ((await stripe.subscriptions.retrieve(id)) || {}).metadata || {} : {};
+      } else if (event.type === 'payment_intent.payment_failed') {
+        md = await Campaign.declinedCheckoutMetadata(stripe, obj);
       }
       if (!md.offer || !md.payer_id) return;
       if (event.type === 'checkout.session.completed') {

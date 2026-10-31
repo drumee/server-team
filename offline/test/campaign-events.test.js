@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert');
-const { stripeEventsFor, gaPayload, offerForCheckout, emit, OFFERS } = require('../../service/lib/campaign');
+const { stripeEventsFor, gaPayload, offerForCheckout, emit, declinedCheckoutMetadata, OFFERS } = require('../../service/lib/campaign');
 
 const md = { offer: 'team-1usd', plan: 'team', payer_id: 'u1' };
 const ev = (type, object, id = 'evt_1') => ({ id, type, data: { object } });
@@ -19,6 +19,27 @@ test('card_failed records every attempt, and only on the first invoice', () => {
   const b = stripeEventsFor(ev('invoice.payment_failed', { billing_reason: 'subscription_create' }, 'evt_b'), md)[0];
   assert.notStrictEqual(a.slot, b.slot);
   assert.deepStrictEqual(stripeEventsFor(ev('invoice.payment_failed', { billing_reason: 'subscription_cycle' }), md), []);
+});
+
+test('a declined card on Checkout records every attempt', () => {
+  const a = stripeEventsFor(ev('payment_intent.payment_failed', {}, 'evt_a'), md)[0];
+  const b = stripeEventsFor(ev('payment_intent.payment_failed', {}, 'evt_b'), md)[0];
+  assert.strictEqual(a.event, 'card_failed_1usd');
+  assert.notStrictEqual(a.slot, b.slot);
+});
+
+test('a declined card finds its offer through the open session, a renewal finds none', async () => {
+  const queries = [];
+  const open = { checkout: { sessions: { list: async (q) => { queries.push(q); return { data: [{ metadata: {} }, { metadata: md }] }; } } } };
+  assert.deepStrictEqual(await declinedCheckoutMetadata(open, { customer: 'cus_1' }), md);
+  assert.deepStrictEqual(await declinedCheckoutMetadata(open, { customer: { id: 'cus_1' } }), md);
+  assert.deepStrictEqual(queries[0], { customer: 'cus_1', status: 'open', limit: 10 });
+  const none = { checkout: { sessions: { list: async () => ({ data: [] }) } } };
+  assert.deepStrictEqual(await declinedCheckoutMetadata(none, { customer: 'cus_1' }), {});
+  // No customer must not turn into a listing of everyone's open sessions.
+  queries.length = 0;
+  assert.deepStrictEqual(await declinedCheckoutMetadata(open, {}), {});
+  assert.strictEqual(queries.length, 0);
 });
 
 test('renew_29 needs a real $29 renewal', () => {

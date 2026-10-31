@@ -459,7 +459,8 @@ class __private_desk extends Media {
     let sockets = await this.yp.await_proc('entity_sockets', media.hub_id);
     await RedisStore.sendData(this.payload(media), sockets);
     await this.changelog_write({ src: media, event: "media.new" });
-    await Campaign.emit(this.yp, this.uid, 'space_created');
+    // A private hub is a workspace. Websites and share boxes come through here too.
+    if (area === Attr.private) await Campaign.emit(this.yp, this.uid, 'space_created');
 
     // Mirror to creator's drumate so the trail survives a later delete.
     const hub_db = await this.yp.await_func('get_db_name', hub_id);

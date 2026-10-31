@@ -111,6 +111,24 @@ async function ensureOfferCoupon(stripe, offer) {
 }
 
 /**
+ * The metadata behind a declined first payment. Since Stripe API 2025-03-31
+ * Checkout creates the subscription and the invoice only after a payment succeeds,
+ * so a failed attempt's PaymentIntent names neither and carries no metadata. Its
+ * open session is the only link back to the offer. A failed renewal has none, so
+ * it never counts as a failed first card.
+ * @param {Object} stripe
+ * @param {Object} pi  the PaymentIntent of a payment_intent.payment_failed event
+ * @returns {Promise<Object>} session metadata, {} when no offer session is open
+ */
+async function declinedCheckoutMetadata(stripe, pi) {
+  const customer = typeof pi.customer === 'string' ? pi.customer : pi.customer && pi.customer.id;
+  if (!customer) return {};
+  const { data = [] } = await stripe.checkout.sessions.list({ customer, status: 'open', limit: 10 });
+  const session = data.find((s) => s.metadata && s.metadata.offer);
+  return session ? session.metadata : {};
+}
+
+/**
  * The funnel events a verified Stripe event stands for.
  * Pure, so the mapping can be tested without Stripe or a database.
  * @param {Object} event  Stripe event
@@ -169,5 +187,6 @@ function gaPayload(row) {
 }
 
 module.exports = {
-  TEAM_1USD, OFFERS, emit, bindOrg, offerForCheckout, ensureOfferCoupon, stripeEventsFor, gaPayload,
+  TEAM_1USD, OFFERS, emit, bindOrg, offerForCheckout, ensureOfferCoupon, declinedCheckoutMetadata,
+  stripeEventsFor, gaPayload,
 };
