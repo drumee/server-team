@@ -162,13 +162,15 @@ const GA_TEXT_MAX = 100;
 
 /**
  * One outbox row, joined to its attribution, as a Measurement Protocol body.
- * Only what the campaign report needs goes to Google. The account id and the
- * click ids stay in campaign_attribution. GA4 rejects values over 100 characters
- * on a standard property, so the UTM tags are clipped here.
+ * Only what the campaign report needs goes to Google. The click ids stay in
+ * campaign_attribution. GA4 rejects values over 100 characters on a standard
+ * property, so the UTM tags are clipped here.
  */
 function gaPayload(row) {
   const params = {
-    workspace_id: row.org_id || '',
+    // The account, not the team: every event needs it, and the team only exists
+    // once the first payment has gone through.
+    workspace_id: row.uid || '',
     plan: row.plan || OFFERS[row.offer]?.plan || '',
     offer: row.offer || '',
     country: row.country || '',
@@ -177,10 +179,11 @@ function gaPayload(row) {
     if (row[k]) params[k] = String(row[k]).slice(0, GA_TEXT_MAX);
   }
   return {
-    // A server event with no browser behind it still needs a stable id, and the
-    // account id must not reach Google through it.
+    // A server event with no browser behind it still needs a stable id.
     client_id: row.ga_client_id
       || `srv.${createHash('sha256').update(String(row.uid)).digest('hex').slice(0, 32)}`,
+    // Opens one account's whole timeline in GA's User explorer.
+    user_id: row.uid,
     timestamp_micros: Number(row.ctime) * 1000000,
     events: [{ name: row.event, params }],
   };

@@ -58,9 +58,10 @@ test('GA payload carries only what the report needs', () => {
   assert.match(p.client_id, /^srv\.[0-9a-f]{32}$/);
   assert.ok(!p.client_id.includes('u1'));
   for (const k of ['account_id', 'gclid', 'li_fat_id', 'fbclid', 'email', 'name']) assert.ok(!(k in params), k);
-  assert.ok(!JSON.stringify(p).includes('u1'));
+  assert.ok(!JSON.stringify(p).includes('o1'));
   assert.strictEqual(params.utm_source.length, 100);
-  assert.strictEqual(params.workspace_id, 'o1');
+  assert.strictEqual(params.workspace_id, 'u1');
+  assert.strictEqual(p.user_id, 'u1');
   assert.strictEqual(params.plan, 'team');
   assert.strictEqual(p.timestamp_micros, 1000000000);
   assert.ok(Object.keys(params).length <= 25);
