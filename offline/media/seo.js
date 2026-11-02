@@ -25,6 +25,7 @@ const { existsSync, writeFileSync, readFileSync, unlinkSync, rmdirSync } = requi
 const { spawn: Spawn } = require("child_process");
 const { promisify } = require('util');
 const execAsync = promisify(require('child_process').exec);
+const execFileAsync = promisify(require('child_process').execFile);
 
 // Text processing
 const SEPARATOR = /[ ,.:;?!\/\-\_\$\&\'\"\\|\@=+\t\n\r\f\)\(\[\]\'\`]+/;
@@ -290,7 +291,10 @@ print(f'Converted {len(images)} pages')
 
     try {
       // Execute and wait for completion
-      await this.execCommand(`${cmd} '${JSON.stringify(args)}'`, 180000); // 3 min timeout
+      const { stderr } = await execFileAsync(cmd, [JSON.stringify(args)], { timeout: 180000 }); // 3 min timeout
+      if (stderr && !stderr.includes('Warning')) {
+        this.syslog('Command stderr:', stderr);
+      }
 
       // Wait for file to appear
       let attempts = 0;

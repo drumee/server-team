@@ -28,6 +28,7 @@ const { resolve, join } = require('path');
 const { existsSync, writeFileSync, readFileSync } = require("fs");
 const { readFileSync: readJson, writeFileSync: writeJson } = require('jsonfile');
 const { exec } = require("shelljs");
+const { spawnSync } = require("child_process");
 // Text processing
 const SEPARATOR = /[ ,.:;?!\/\-\_\$\&\'\"\\|\@=+\t\n\r\f\)\(\[\]\'\`]+/;
 const stopword = require('stopword');
@@ -114,6 +115,27 @@ class SeoIndexer {
       this.log('Failed to run:', cmd);
       throw new Error(`Command failed: **${e.message}**`, e);
     }
+  }
+
+  /**
+   * Run a program with an argument list (no shell), with timeout
+   */
+  execFileCommand(file, args, timeout = 60000) {
+    const { stdout, stderr, error } = spawnSync(file, args, {
+      timeout,
+      encoding: 'utf8',
+      maxBuffer: 20 * 1024 * 1024
+    });
+    if (stdout) {
+      console.log(stdout);
+    }
+    if (stderr && !stderr.includes('Warning')) {
+      this.log('Command stderr:', stderr);
+    }
+    if (error) {
+      this.log('Failed to run:', file, error.message);
+    }
+    return stdout;
   }
 
   /**
@@ -252,7 +274,7 @@ class SeoIndexer {
     };
 
     try {
-      this.execCommand(`${cmd} '${JSON.stringify(args)}'`, 180000);
+      this.execFileCommand(cmd, [JSON.stringify(args)], 180000);
 
       // Wait for file to appear
       let attempts = 0;
