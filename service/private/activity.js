@@ -148,7 +148,8 @@ function mapNotificationRow(r) {
 function bookmarkKey(row) {
   const event = String(row.event || '');
   let category = String(row.category || row.event_type || event || 'unknown');
-  if (['hub_invite', 'contact_refused', 'task_assigned', 'task_mention', 'file_edited', 'file_commented'].includes(category)) {
+  if (['hub_invite', 'contact_refused', 'task_assigned', 'task_mention', 'file_edited', 'file_commented',
+    'hub_invite_accepted', 'hub_invite_declined'].includes(category)) {
     category = 'contact';
   } else if (event.startsWith('media.')) {
     category = 'mfs';
@@ -303,6 +304,42 @@ function flattenFileOwnerActivity(rows) {
   return rows;
 }
 
+// "<invitee> accepted / declined your invitation to <workspace>", addressed to
+// the admin who sent the invitation (service/lib/hub-invite-answer-notify.js).
+// Stamps the category the client renders from -- unstamped, a contact_activity
+// row resolves to 'contact' and reads as a contact request -- and surfaces the
+// workspace and the invited address from the nested `data` JSON. The invitee
+// is the author (the avatar) only when they have an account: an address with
+// none answers as the anonymous sentinel, and is named by its email instead.
+// Same contract and same idempotence as flattenFileOwnerActivity; touches no
+// other event.
+const HUB_INVITE_ANSWER_EVENTS = new Set(['hub_invite_accepted', 'hub_invite_declined']);
+function flattenHubInviteAnswer(rows) {
+  for (const r of rows) {
+    if (!r || !HUB_INVITE_ANSWER_EVENTS.has(r.event)) continue;
+    let meta = r.data;
+    if (typeof meta === 'string') {
+      try { meta = JSON.parse(meta); } catch (e) { meta = null; }
+    }
+    meta = meta || {};
+    if (!r.category) r.category = r.event;
+    if (r.author_id == null && r.uid != null && r.uid !== ANONYMOUS_UID) r.author_id = r.uid;
+    if (r.hub_id == null && meta.hub_id != null) r.hub_id = meta.hub_id;
+    if (r.hub_name == null && meta.hub_name != null) r.hub_name = meta.hub_name;
+    if (r.email == null && meta.email != null) r.email = meta.email;
+    // No account: whatever the feed joined for the sentinel uid is not this
+    // person. Name them by the address they were invited at.
+    if (r.uid === ANONYMOUS_UID && meta.email) {
+      r.fullname = meta.email;
+      r.firstname = null;
+      r.lastname = null;
+      r.author_firstname = null;
+      r.author_lastname = null;
+    }
+  }
+  return rows;
+}
+
 // Shape a hub-invite row (yp.contact_activity 'hub_invite_received') into the
 // same notification item shape as mapNotificationRow. Extracted so both list()
 // and get_feed() build hub-invite items identically (single source of truth).
@@ -393,6 +430,10 @@ const BUCKET_BY_EVENT = {
   // yp.contact_activity event, filed with the other file activity.
   file_edited: BUCKET.files,
   file_commented: BUCKET.files,
+  // "<invitee> accepted / declined your invitation to <workspace>" for the
+  // inviter -- with the workspace invitations, in Other.
+  hub_invite_accepted: BUCKET.other,
+  hub_invite_declined: BUCKET.other,
   // A bare @-mention row (channel.list_notifications, type='mention') carries no
   // category at all; a chat mention belongs to Chat.
   mention: BUCKET.chat,
@@ -754,6 +795,9 @@ const CONTACT_UNREAD_PROCS = [
   // "<X> edited / commented on <your file>" → Files.
   'contact_file_edited_unread',
   'contact_file_commented_unread',
+  // "<X> accepted / declined your invitation to <workspace>" → Other.
+  'contact_hub_invite_accepted_unread',
+  'contact_hub_invite_declined_unread',
 ];
 
 // The contact_activity event behind each CONTACT_UNREAD_PROCS entry. Every one
@@ -773,6 +817,8 @@ const CONTACT_UNREAD_EVENTS = {
   contact_invite_accepted_unread: 'invite_accepted',
   contact_file_edited_unread: 'file_edited',
   contact_file_commented_unread: 'file_commented',
+  contact_hub_invite_accepted_unread: 'hub_invite_accepted',
+  contact_hub_invite_declined_unread: 'hub_invite_declined',
 };
 const CONTACT_UNREAD_PAGE = 50; // = the LIMIT of every CONTACT_UNREAD_PROCS entry
 
@@ -1134,6 +1180,8 @@ class MfsActivity extends Entity {
         'contact_storage_alert_unread',
         'contact_reward_expiry_unread',
         'contact_invite_accepted_unread',
+        'contact_hub_invite_accepted_unread',
+        'contact_hub_invite_declined_unread',
       ],
     };
     if (bucket && lookup(CONTACT_CLEAR, bucket)) {
@@ -1528,6 +1576,7 @@ class MfsActivity extends Entity {
     flattenTaskColumnChange(result);
     flattenMeetingNotice(result);
     flattenFileOwnerActivity(result);
+    flattenHubInviteAnswer(result);
 
     // Stamp the tab on every row, then (only when the caller asked for a tab)
     // narrow to it. Deliberately AFTER every merge above, so a row is judged by
