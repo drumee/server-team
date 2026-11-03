@@ -41,6 +41,7 @@ class __private_task extends Entity {
     this.create = this.create.bind(this);
     this.update = this.update.bind(this);
     this.update_status = this.update_status.bind(this);
+    this.reorder = this.reorder.bind(this);
     this.update_assignee = this.update_assignee.bind(this);
     this.delete = this.delete.bind(this);
     this.link_file = this.link_file.bind(this);
@@ -889,6 +890,25 @@ class __private_task extends Entity {
     // its own column — moving it is the user's call. The response therefore
     // never carries `parent`, and the client's `row.parent` merges stay inert.
     this.output.data(data);
+  }
+
+  /**
+   * Reorder a task WITHIN its Kanban column (drag-and-drop in the same column).
+   * A move into another column is update_status, which lands it on top.
+   * Params: id (required); before_id (optional — the task it now sits directly
+   * above; absent / not in the same column = the bottom of the column).
+   * Returns the column's {id, status, rank} rows in their new order.
+   */
+  async reorder() {
+    const id = this.input.need(Attr.id);
+    const before_id = this.input.use('before_id', null) || null;
+    const data = await this.db.await_proc('task_reorder', id, before_id);
+    const rows = toArray(data);
+    if (!rows.some((r) => r && r.id == id)) {
+      return this.exception.user('TASK_NOT_FOUND');
+    }
+    await this._broadcast('task.reorder', { id, before_id, rows });
+    this.output.list(rows);
   }
 
   /**
