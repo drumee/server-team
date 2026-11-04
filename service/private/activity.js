@@ -3736,7 +3736,9 @@ class MfsActivity extends Entity {
     //   * tasks due TODAY only -- the due_date cell the day view draws. Overdue tasks are
     //     no longer counted (they made the tile read e.g. 41 over an empty day
     //     view), and tasks with no due date never were and still are not;
-    //   * top-level tasks only, not finished per the WORKSPACE column set;
+    //   * top-level tasks only, and only in a To do, In progress or Reopen
+    //     column (lib/day-tasks isDueColumn); To review, Released, Complete
+    //     and other custom columns are not counted;
     //   * a workspace task only when assigned to the caller;
     //   * meetings the caller organizes or attends, not every meeting of
     //     every workspace they belong to;

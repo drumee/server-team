@@ -14,19 +14,30 @@ function isAssignedTo(row, uid) {
   return String(row.assignee_uids).split(",").includes(String(uid));
 }
 
+// The built-in columns whose tasks are still to be worked on, by their
+// literal ids (task.status holds the id): a board that renames them keeps
+// them. 'to_review' and 'complete' are not on the list.
+const DUE_BUILTIN_IDS = ["todo", "in_progress"];
+// "Reopen" is no built-in: boards add it as a CUSTOM column (random id), so
+// it can only be recognised by its name, compared without case, spaces or
+// hyphens ("Reopen", "re-open", "Reopened").
+const DUE_COLUMN_NAMES = ["reopen", "reopened"];
+
 /**
- * Not finished yet, judged by the task's WORKSPACE column (task_list_range's
- * `status_is_done`), never by the status word, because a custom column can be
- * the done one. A board whose columns were never seeded answers NULL, and then
- * the built-in default applies: only 'complete' is done.
+ * Does the task sit in a column the Daily Reminder counts as due (Lexis via
+ * Duy, 2026-11-03): To do, In progress, Reopen. Any other column (To review /
+ * In Test, In Preview, Released, Complete, other custom ones) is not counted.
+ * A column flagged done (`status_is_done`) is never counted, whatever its
+ * name. `status_label` is the column's name from task_list_range, NULL on a
+ * board whose columns were never seeded, where only the built-in id is known.
  */
-function isOpenTask(row) {
+function isDueColumn(row) {
   if (!row) return false;
-  const done = row.status_is_done;
-  if (done === null || done === undefined || done === "") {
-    return String(row.status || "") !== "complete";
-  }
-  return Number(done) === 0;
+  if (Number(row.status_is_done) === 1) return false;
+  const id = String(row.status || "");
+  if (DUE_BUILTIN_IDS.includes(id)) return true;
+  const name = String(row.status_label || "").toLowerCase().replace(/[\s_-]+/g, "");
+  return DUE_COLUMN_NAMES.includes(name);
 }
 
 /**
@@ -46,8 +57,8 @@ function ymdOf(v) {
 }
 
 /**
- * How many of task_list_range's rows for ONE day are the caller's open tasks
- * due on that day.
+ * How many of task_list_range's rows for ONE day are the caller's tasks due
+ * on that day and still to be worked on.
  *
  * task_list_range(day, day) answers every top-level task whose start..due
  * span overlaps the day, but the Calendar draws a task in ONE cell, its
@@ -56,7 +67,8 @@ function ymdOf(v) {
  * tasks with no due date are not counted: the card is about today.
  * A workspace task counts only when it is assigned to the caller (the
  * Calendar's own rule); a personal task is the caller's by construction.
- * Finished tasks are drawn by the Calendar but are not "due", so not counted.
+ * Only tasks in a due column count (isDueColumn): the day view draws every
+ * column, so a task In Test or Released today is drawn but not counted.
  */
 function countDayTasks(rows, uid, personal, day) {
   if (!Array.isArray(rows)) return 0;
@@ -65,7 +77,7 @@ function countDayTasks(rows, uid, personal, day) {
     if (!r || !r.id) continue;
     if (ymdOf(r.due_date) !== String(day || "")) continue;
     if (!personal && !isAssignedTo(r, uid)) continue;
-    if (isOpenTask(r)) n += 1;
+    if (isDueColumn(r)) n += 1;
   }
   return n;
 }
@@ -83,4 +95,4 @@ function takesPartIn(content, uid) {
   return list.some((a) => a && String(a.uid || a) === me);
 }
 
-module.exports = { isAssignedTo, isOpenTask, countDayTasks, takesPartIn, ymdOf };
+module.exports = { isAssignedTo, isDueColumn, countDayTasks, takesPartIn, ymdOf };

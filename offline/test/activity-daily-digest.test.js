@@ -361,6 +361,10 @@ const task = (id, extra) => ({ id, title: id, due_date: '2026-08-27', status: 't
             task('nobody', { assignee_uids: null }),
             // Done by a CUSTOM column, whatever its status word says.
             task('custom_done', { status: 'abcdef0123456789', status_is_done: 1 }),
+            // Not a due column, though not flagged done either.
+            task('released', { status: 'db61e386db61e38b', status_label: 'Released', status_is_done: 0 }),
+            task('in_test', { status: 'to_review', status_label: 'In Test', status_is_done: 0 }),
+            task('reopened', { status: 'da6a788cda6a7893', status_label: 'Reopen', status_is_done: 0 }),
             // An unseeded board: only 'complete' is done.
             task('unseeded_open', { status: 'in_progress', status_is_done: null }),
             task('unseeded_done', { status: 'complete', status_is_done: null }),
@@ -382,8 +386,8 @@ const task = (id, extra) => ({ id, title: id, due_date: '2026-08-27', status: 't
     });
     await h.daily_digest();
     deq(h.exceptions, [], 'no exception');
-    eq(h.sent.due_tasks, 5,
-      'p_open + mine + shared + unseeded_open + as_date: not someone else\'s, not unassigned, not done, not merely spanning today');
+    eq(h.sent.due_tasks, 6,
+      'p_open + mine + shared + unseeded_open + as_date + reopened: not someone else\'s, not unassigned, not outside To do / In progress / Reopen, not merely spanning today');
     eq(h.sent.meetings, 4,
       'organized (personal + workspace) or attended (uid or {uid}); someone else\'s meeting and an organizer-less one are not mine');
     eq(h.sent.unread_messages, 2, 'unread messages still come from hub_daily_counts');
@@ -406,6 +410,25 @@ const task = (id, extra) => ({ id, title: id, due_date: '2026-08-27', status: 't
     eq(countDayTasks([task('x', { due_date: '2026-08-27T00:00:00.000Z' })], 'ME', false, DAY), 1, 'a datetime string reads by its date part');
     eq(countDayTasks([task('x')], 'ME', false, undefined), 0, 'no day, nothing counts — never "every task"');
     eq(countDayTasks([task('x', { assignee_uids: null })], 'ME', true, DAY), 1, 'a personal task needs no assignee');
+    // Only To do, In progress and Reopen count (Duy, 2026-11-03). Shapes
+    // measured on a real PROD board: to_review renamed "In Test", custom
+    // "Reopen", "In Preview" and "Released" (is_done 0) columns.
+    const col = (status, status_label, status_is_done) => [task('x', { status, status_label, status_is_done })];
+    eq(countDayTasks(col('todo', 'To do', 0), 'ME', false, DAY), 1, 'To do counts');
+    eq(countDayTasks(col('in_progress', 'In progress', 0), 'ME', false, DAY), 1, 'In progress counts');
+    eq(countDayTasks(col('todo', 'Backlog', 0), 'ME', false, DAY), 1, 'a RENAMED To do still counts — matched by its built-in id');
+    eq(countDayTasks(col('da6a788cda6a7893', 'Reopen', 0), 'ME', false, DAY), 1, 'a custom "Reopen" column counts');
+    eq(countDayTasks(col('aaaa0000aaaa0001', ' re-open ', 0), 'ME', false, DAY), 1, '"re-open" with case, hyphen and spaces counts');
+    eq(countDayTasks(col('aaaa0000aaaa0002', 'Reopened', 0), 'ME', false, DAY), 1, '"Reopened" counts');
+    eq(countDayTasks(col('aaaa0000aaaa0003', 'reopen 2', 0), 'ME', false, DAY), 0, '"reopen 2" is another column and does not count');
+    eq(countDayTasks(col('da6a788cda6a7893', 'Reopen', 1), 'ME', false, DAY), 0, 'a Reopen column flagged done does not count');
+    eq(countDayTasks(col('to_review', 'To review', 0), 'ME', false, DAY), 0, 'To review does not count');
+    eq(countDayTasks(col('to_review', 'In Test', 0), 'ME', false, DAY), 0, 'To review renamed "In Test" does not count');
+    eq(countDayTasks(col('81a3138d81a31390', 'In Preview', 0), 'ME', false, DAY), 0, 'a custom "In Preview" column does not count');
+    eq(countDayTasks(col('db61e386db61e38b', 'Released', 0), 'ME', false, DAY), 0, 'a custom "Released" column does not count even though it is not flagged done');
+    eq(countDayTasks(col('complete', 'Complete', 1), 'ME', false, DAY), 0, 'Complete does not count');
+    eq(countDayTasks(col('todo', null, null), 'ME', false, DAY), 1, 'an unseeded board: todo counts by id');
+    eq(countDayTasks(col('to_review', null, null), 'ME', false, DAY), 0, 'an unseeded board: to_review does not');
     ok(!takesPartIn(null, 'ME'), 'no content, no participation');
     ok(!takesPartIn({ created_by: 'ME' }, ''), 'no uid, no participation');
     ok(takesPartIn({ created_by: 'ME', attendees: 'garbage' }, 'ME'), 'malformed attendees do not hide the organizer');
