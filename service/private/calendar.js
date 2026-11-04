@@ -17,6 +17,9 @@
 const { toArray } = require("@drumee/server-essentials");
 const { Entity } = require("@drumee/server-core");
 const { privilegeAllows, CAN_WRITE } = require("../lib/member-capability");
+// Shared with activity.daily_digest, so the Daily Reminder counts a task by
+// the same rule this calendar lists it.
+const { isAssignedTo } = require("../lib/day-tasks");
 
 // Hard ceiling on the per-workspace task fan-out. A membership list this long is
 // pathological rather than legitimate, and the alternative to a cap is a request
@@ -25,15 +28,6 @@ const { privilegeAllows, CAN_WRITE } = require("../lib/member-capability");
 const MAX_WORKSPACES = 200;
 
 const YMD = /^\d{4}-\d{2}-\d{2}$/;
-
-/**
- * Is `uid` one of the task's assignees? task_list_range answers them as
- * `assignee_uids`, a GROUP_CONCAT of uids (NULL when the task has none).
- */
-function isAssignedTo(row, uid) {
-  if (!row || !row.assignee_uids) return false;
-  return String(row.assignee_uids).split(",").includes(String(uid));
-}
 
 /**
  * A task's attached files, as task_list_range's `linked_files` JSON array —

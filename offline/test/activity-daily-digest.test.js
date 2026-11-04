@@ -80,8 +80,9 @@ const { countMeetingsInWindow, meetingContent } = new Function(
 // then wide enough to swallow it, the failure surfaced as a quiet "0 meetings"
 // rather than an error. The catch has since been narrowed to the round trip.
 const { sqlString } = require('../../service/lib/sql-literal');
+const { countDayTasks, takesPartIn } = require('../../service/lib/day-tasks');
 const Holder = new Function(
-  'toArray', 'countMeetingsInWindow', 'sqlString',
+  'toArray', 'countMeetingsInWindow', 'sqlString', 'countDayTasks', 'takesPartIn', 'meetingContent',
   `class Holder {
      constructor(opt) {
        opt = opt || {};
@@ -109,7 +110,7 @@ const Holder = new Function(
      ${sliceMethod('daily_digest')}
    }
    return Holder;`,
-)(toArray, countMeetingsInWindow, sqlString);
+)(toArray, countMeetingsInWindow, sqlString, countDayTasks, takesPartIn, meetingContent);
 
 // 2026-08-27 UTC
 const DAY = '2026-08-27';
@@ -118,13 +119,21 @@ const END = START + 86400;
 const at = (y, mo, d, h) => Math.floor(Date.UTC(y, mo - 1, d, h) / 1000);
 
 // room_list_scheduled row shape: metadata is JSON whose `content` is a JSON STRING.
-const room = (stime, recur, until) => ({
+// Organized by the caller ('ME') unless `who` says otherwise.
+const room = (stime, recur, until, who) => ({
   id: 'n' + stime,
   stime,
   metadata: JSON.stringify({
-    content: JSON.stringify({ stime, title: 't', ...(recur ? { recur: { freq: recur, ...(until ? { until } : {}) } } : {}) }),
+    content: JSON.stringify({
+      stime, title: 't', created_by: 'ME', attendees: [],
+      ...(who || {}),
+      ...(recur ? { recur: { freq: recur, ...(until ? { until } : {}) } } : {}),
+    }),
   }),
 });
+// task_list_range row shape. Workspace tasks carry their assignees; a personal
+// task has none.
+const task = (id, extra) => ({ id, title: id, due_date: '2026-08-27', status: 'todo', status_is_done: 0, assignee_uids: 'ME', ...(extra || {}) });
 
 (async () => {
   // ── 1. the double-encoded metadata ───────────────────────────────────────
@@ -231,8 +240,9 @@ const room = (stime, recur, until) => ({
         { hub_id: 'H3', area: 'private' },
       ],
       answers: {
-        H1: { hub_daily_counts: [{ unread_messages: 5, due_tasks: 2 }], room_list_scheduled: [room(at(2026, 8, 27, 9))] },
-        H2: { hub_daily_counts: [{ unread_messages: 30, due_tasks: 3 }], room_list_scheduled: [room(at(2026, 1, 5, 9), 'daily')] },
+        // hub_daily_counts' own due_tasks (overdue + subtasks) is NOT read any more.
+        H1: { hub_daily_counts: [{ unread_messages: 5, due_tasks: 99 }], task_list_range: [task('a'), task('b')], room_list_scheduled: [room(at(2026, 8, 27, 9))] },
+        H2: { hub_daily_counts: [{ unread_messages: 30, due_tasks: 99 }], task_list_range: [task('c'), task('d'), task('e')], room_list_scheduled: [room(at(2026, 1, 5, 9), 'daily')] },
         // H3 answers nothing at all — an unmigrated workspace.
         H3: {},
       },
@@ -240,7 +250,7 @@ const room = (stime, recur, until) => ({
     await h.daily_digest();
     deq(h.exceptions, [], 'no exception');
     eq(h.sent.unread_messages, 35, 'unread messages are summed across workspaces');
-    eq(h.sent.due_tasks, 5, 'due tasks are summed');
+    eq(h.sent.due_tasks, 5, "today's tasks are summed from task_list_range, not hub_daily_counts");
     eq(h.sent.meetings, 2, 'meetings are summed, with the daily series counted once');
     eq(h.sent.workspaces, 3, 'reports how many workspaces were summed');
     eq(h.sent.truncated, 0, 'not truncated');
@@ -250,6 +260,8 @@ const room = (stime, recur, until) => ({
     // uid comes from the session and is passed through, with the validated day.
     const countCall = h.calls.find((c) => c.name === 'hub_daily_counts');
     eq(countCall.args, `'ME','${DAY}'`, 'uid and the validated day are what reach the proc');
+    const taskCall = h.calls.find((c) => c.name === 'task_list_range' && c.hubId === 'H1');
+    eq(taskCall.args, `'${DAY}','${DAY}'`, 'task_list_range is asked for exactly ONE day: the validated one');
     ok(h.calls.some((c) => c.userProc === 'desk_my_workspaces'),
       'workspaces come from desk_my_workspaces — the desk register, which includes JOINED workspaces');
   }
@@ -270,14 +282,14 @@ const room = (stime, recur, until) => ({
         { hub_id: 'N1' },
       ],
       answers: {
-        A1: { hub_daily_counts: [{ unread_messages: 1, due_tasks: 1 }] },
+        A1: { hub_daily_counts: [{ unread_messages: 1, due_tasks: 0 }], task_list_range: [task('a1')] },
         A2: { hub_daily_counts: [{ unread_messages: 2, due_tasks: 0 }] },
-        A3: { hub_daily_counts: [{ unread_messages: 4, due_tasks: 2 }] },
+        A3: { hub_daily_counts: [{ unread_messages: 4, due_tasks: 0 }], task_list_range: [task('a3'), task('a3b')] },
         A4: { hub_daily_counts: [{ unread_messages: 8, due_tasks: 0 }] },
-        D1: { hub_daily_counts: [{ unread_messages: 100, due_tasks: 100 }] },
-        PL: { hub_daily_counts: [{ unread_messages: 100, due_tasks: 100 }] },
-        PE: { hub_daily_counts: [{ unread_messages: 100, due_tasks: 100 }] },
-        N1: { hub_daily_counts: [{ unread_messages: 100, due_tasks: 100 }] },
+        D1: { hub_daily_counts: [{ unread_messages: 100, due_tasks: 100 }], task_list_range: [task('D1')] },
+        PL: { hub_daily_counts: [{ unread_messages: 100, due_tasks: 100 }], task_list_range: [task('PL')] },
+        PE: { hub_daily_counts: [{ unread_messages: 100, due_tasks: 100 }], task_list_range: [task('PE')] },
+        N1: { hub_daily_counts: [{ unread_messages: 100, due_tasks: 100 }], task_list_range: [task('N1')] },
       },
     });
     await h.daily_digest();
@@ -322,6 +334,81 @@ const room = (stime, recur, until) => ({
     eq(h.sent.workspaces, 60, 'the fan-out is capped');
     eq(h.sent.unread_messages, 60, 'only the capped set is summed');
     eq(h.sent.truncated, 1, 'and the client is TOLD the total is a floor rather than being misled');
+  }
+
+  // ── 6b. the card counts what TODAY's day view draws (Lexis, 2026-11-03) ──
+  console.log("\n6b. day-view rules");
+  {
+    const other = { created_by: 'SOMEONE', attendees: [] };
+    const h = new Holder({
+      input: { day: DAY, stime: START, etime: END },
+      workspaces: [{ hub_id: 'W1', area: 'private' }],
+      answers: {
+        // The caller's own database: personal tasks carry no assignee.
+        ME: {
+          task_list_range: [
+            task('p_open', { assignee_uids: null }),
+            task('p_done', { assignee_uids: null, status: 'complete', status_is_done: null }),
+          ],
+          room_list_scheduled: [room(at(2026, 8, 27, 8))],
+        },
+        W1: {
+          hub_daily_counts: [{ unread_messages: 2, due_tasks: 41 }],
+          task_list_range: [
+            task('mine'),
+            task('shared', { assignee_uids: 'OTHER,ME' }),
+            task('not_mine', { assignee_uids: 'OTHER' }),
+            task('nobody', { assignee_uids: null }),
+            // Done by a CUSTOM column, whatever its status word says.
+            task('custom_done', { status: 'abcdef0123456789', status_is_done: 1 }),
+            // An unseeded board: only 'complete' is done.
+            task('unseeded_open', { status: 'in_progress', status_is_done: null }),
+            task('unseeded_done', { status: 'complete', status_is_done: null }),
+            // task_list_range(day, day) also answers a duration task that merely
+            // SPANS today, but the day view draws it only on its due date.
+            task('spans_today', { start_date: '2026-08-25', due_date: '2026-08-29' }),
+            // A DATE that arrives as a Date object (local midnight) still matches.
+            task('as_date', { due_date: new Date(2026, 7, 27) }),
+          ],
+          room_list_scheduled: [
+            room(at(2026, 8, 27, 9)),
+            room(at(2026, 8, 27, 10), null, null, other),
+            room(at(2026, 8, 27, 11), null, null, { created_by: 'SOMEONE', attendees: [{ uid: 'ME' }] }),
+            room(at(2026, 8, 27, 12), null, null, { created_by: 'SOMEONE', attendees: ['ME'] }),
+            room(at(2026, 8, 27, 13), null, null, { created_by: undefined, attendees: [] }),
+          ],
+        },
+      },
+    });
+    await h.daily_digest();
+    deq(h.exceptions, [], 'no exception');
+    eq(h.sent.due_tasks, 5,
+      'p_open + mine + shared + unseeded_open + as_date: not someone else\'s, not unassigned, not done, not merely spanning today');
+    eq(h.sent.meetings, 4,
+      'organized (personal + workspace) or attended (uid or {uid}); someone else\'s meeting and an organizer-less one are not mine');
+    eq(h.sent.unread_messages, 2, 'unread messages still come from hub_daily_counts');
+    eq(h.sent.workspaces, 1, 'the personal database is not reported as a workspace');
+    const mineCalls = h.calls.filter((c) => c.hubId === 'ME');
+    deq(mineCalls.map((c) => c.name).sort(), ['room_list_scheduled', 'task_list_range'],
+      'the personal database is read for tasks and meetings, never for team chat');
+  }
+
+  // ── 6c. the per-row rules, directly ──────────────────────────────────────
+  console.log('\n6c. lib/day-tasks');
+  {
+    eq(countDayTasks(null, 'ME', false, DAY), 0, 'no rows');
+    eq(countDayTasks([null, {}, task('x')], 'ME', false, DAY), 1, 'a row without an id is skipped');
+    eq(countDayTasks([task('x', { assignee_uids: 'MEX' })], 'ME', false, DAY), 0, 'assignee match is exact, not a substring');
+    eq(countDayTasks([task('x', { status_is_done: '0' })], 'ME', false, DAY), 1, "status_is_done arriving as a string '0' is open");
+    eq(countDayTasks([task('x', { status_is_done: '1' })], 'ME', false, DAY), 0, "...and '1' is done");
+    eq(countDayTasks([task('x', { due_date: '2026-08-20' })], 'ME', false, DAY), 0, 'an OVERDUE task is not counted');
+    eq(countDayTasks([task('x', { due_date: null })], 'ME', false, DAY), 0, 'a task with NO due date is not counted');
+    eq(countDayTasks([task('x', { due_date: '2026-08-27T00:00:00.000Z' })], 'ME', false, DAY), 1, 'a datetime string reads by its date part');
+    eq(countDayTasks([task('x')], 'ME', false, undefined), 0, 'no day, nothing counts — never "every task"');
+    eq(countDayTasks([task('x', { assignee_uids: null })], 'ME', true, DAY), 1, 'a personal task needs no assignee');
+    ok(!takesPartIn(null, 'ME'), 'no content, no participation');
+    ok(!takesPartIn({ created_by: 'ME' }, ''), 'no uid, no participation');
+    ok(takesPartIn({ created_by: 'ME', attendees: 'garbage' }, 'ME'), 'malformed attendees do not hide the organizer');
   }
 
   // ── 7. the ACL contract ──────────────────────────────────────────────────

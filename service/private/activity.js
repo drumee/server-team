@@ -7,6 +7,7 @@ const { createHash } = require('node:crypto');
 const { resolveHubInviteName } = require('../lib/hub-invite-name');
 const { hubInviteStatus } = require('../lib/hub-invite-status');
 const { sqlString } = require('../lib/sql-literal');
+const { countDayTasks, takesPartIn } = require('../lib/day-tasks');
 const CONTACT_ACTIVITY_CATEGORIES = new Set([
   'contact_refused',
   'hub_invite',
@@ -3729,28 +3730,65 @@ class MfsActivity extends Entity {
     let due_tasks = 0;
     let meetings = 0;
 
-    for (const w of capped) {
+    // TASKS AND MEETINGS ARE COUNTED BY THE PERSONAL CALENDAR'S DAY-VIEW RULES
+    // (Lexis, 2026-11-03): every part of the card opens today's day view, so
+    // the number on a tile is the number of items that view draws. Concretely:
+    //   * tasks due TODAY only -- the due_date cell the day view draws. Overdue tasks are
+    //     no longer counted (they made the tile read e.g. 41 over an empty day
+    //     view), and tasks with no due date never were and still are not;
+    //   * top-level tasks only, not finished per the WORKSPACE column set;
+    //   * a workspace task only when assigned to the caller;
+    //   * meetings the caller organizes or attends, not every meeting of
+    //     every workspace they belong to;
+    //   * plus the caller's OWN database: personal tasks and meetings booked
+    //     from the personal hub are on the calendar too.
+    // The task rows come from task_list_range, the proc calendar.list reads,
+    // and the per-row rules live in lib/day-tasks, which calendar.js shares.
+    // hub_daily_counts is still the source of unread messages; its due_tasks
+    // column (overdue included, subtasks included) is no longer read.
+    const sources = [{ hub_id: this.uid, personal: true }, ...capped];
+
+    for (const w of sources) {
       const hubId = w && w.hub_id;
       if (!hubId) continue;
+      const personal = w.personal === true;
 
-      // Counts. await_proc does not throw -- it logs, ends the connection and
-      // returns undefined -- so an unmigrated workspace simply contributes
-      // nothing instead of failing the whole card.
-      let row = null;
+      // Unread messages. await_proc does not throw -- it logs, ends the
+      // connection and returns undefined -- so an unmigrated workspace simply
+      // contributes nothing instead of failing the whole card. The personal
+      // database has no team chat.
+      if (!personal) {
+        let row = null;
+        try {
+          row = toArray(
+            await this.yp.await_proc(
+              'forward_proc', hubId, 'hub_daily_counts', `${sqlString(this.uid)},${sqlString(day)}`
+            )
+          )[0];
+        } catch (e) {
+          this.debug('[ACTIVITY] hub_daily_counts failed', hubId, e && e.message);
+          row = null;
+        }
+        if (row) {
+          unread_messages += Number(row.unread_messages) || 0;
+        }
+      }
+
+      // Today's tasks: a one-day window, so the proc already drops overdue
+      // and undated tasks and subtasks; countDayTasks keeps the ones DUE
+      // today, the only cell the Calendar draws a task in.
+      let tasks = [];
       try {
-        row = toArray(
+        tasks = toArray(
           await this.yp.await_proc(
-            'forward_proc', hubId, 'hub_daily_counts', `${sqlString(this.uid)},${sqlString(day)}`
+            'forward_proc', hubId, 'task_list_range', `${sqlString(day)},${sqlString(day)}`
           )
-        )[0];
+        );
       } catch (e) {
-        this.debug('[ACTIVITY] hub_daily_counts failed', hubId, e && e.message);
-        row = null;
+        this.debug('[ACTIVITY] task_list_range failed', hubId, e && e.message);
+        tasks = [];
       }
-      if (row) {
-        unread_messages += Number(row.unread_messages) || 0;
-        due_tasks += Number(row.due_tasks) || 0;
-      }
+      due_tasks += countDayTasks(tasks, this.uid, personal, day);
 
       // Meetings. room_list_scheduled already exists per hub, so this needs no
       // SQL of its own -- but it returns EVERY recurring meeting regardless of
@@ -3769,7 +3807,8 @@ class MfsActivity extends Entity {
         this.debug('[ACTIVITY] room_list_scheduled failed', hubId, e && e.message);
         rooms = [];
       }
-      meetings += countMeetingsInWindow(rooms, dayStart, dayEnd);
+      const mine = rooms.filter((m) => m && takesPartIn(meetingContent(m), this.uid));
+      meetings += countMeetingsInWindow(mine, dayStart, dayEnd);
     }
 
     this.output.data({
