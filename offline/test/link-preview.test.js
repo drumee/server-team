@@ -148,22 +148,55 @@ test('public folder with entries: the card URL draws its name + entries (1200×6
   }
 });
 
-test('folder card SVG: real names, escaped, cut, nothing when no entry', () => {
+test('folder card SVG: list-view rows, escaped, cut, nothing when no entry', () => {
   const FC = require('../../service/lib/link-preview-folder-card');
-  assert.strictEqual(FC.folderCardSvg({ title: 'abc', items: [] }), null);
+  assert.strictEqual(FC.folderCardSvg({ title: 'abc', entries: [] }), null);
   assert.strictEqual(FC.folderCardSvg(null), null);
-  const svg = FC.folderCardSvg({ title: 'a<b>&"c"', items: ['</text><script>x</script>', 'ok.pdf', 'b', 'fourth'] });
+  const svg = FC.folderCardSvg({
+    title: 'a<b>&"c"',
+    entries: [
+      { name: '</text><script>x</script>', ext: 'pdf', size: 1234 },
+      { name: 'Photos', folder: true },
+      { name: 'ok', ext: 'PNG', size: 98765432 },
+      { name: 'b', ext: '', size: 0 },
+      { name: 'fifth', ext: 'txt', size: 1 },
+    ],
+  });
   assert.ok(svg.startsWith('<svg') && svg.endsWith('</svg>'));
   assert.ok(!svg.includes('<script>') && svg.includes('&lt;/text&gt;&lt;script&gt;'));
   assert.ok(svg.includes('a&lt;b&gt;&amp;&quot;c&quot;'));
-  assert.ok(svg.includes('>ok.pdf</text>') && !svg.includes('fourth'), 'at most 3 rows');
+  assert.ok(svg.includes('>Name</text>') && svg.includes('>Size</text>') && svg.includes('>Type</text>'));
+  assert.ok(svg.includes('>1.23 kB</text>') && svg.includes('>98.77 MB</text>') && svg.includes('>png</text>'));
+  assert.ok(svg.includes('>--</text>') && svg.includes('>folder</text>'), 'a folder: size --, type folder');
+  assert.ok(!svg.includes('fifth'), `at most ${FC.ROWS} rows`);
+  // fewer rows → a shorter card, still inside the image
+  const one = FC.folderCardSvg({ title: 't', entries: [{ name: 'x', ext: 'a', size: 1 }] });
+  const h = (v) => Number(/<rect x="61" y="(\d+)" width="1078" height="(\d+)"/.exec(v)[2]);
+  assert.ok(h(one) < h(svg));
   // XML-forbidden characters and lone surrogates are dropped
-  assert.ok(!/[\u0001\ud800]/.test(FC.xml('a\u0001b\ud800c')));
   assert.strictEqual(FC.xml('a\u0001b\ud800c'), 'abc');
   assert.strictEqual(FC.fit('short', 10), 'short');
   assert.strictEqual(FC.fit('abcdefghijkl', 10), 'abcdefghij…');
   assert.strictEqual(FC.fit('日本語日本語', 6), '日本語…');
   assert.strictEqual(FC.fit('😀😀😀', 4), '😀😀…');
+  assert.deepStrictEqual([0, 512, 1234, 1234567, 98765432, 5e9, 'x'].map(FC.humanSize),
+    ['0 B', '512 B', '1.23 kB', '1.23 MB', '98.77 MB', '5 GB', '']);
+});
+
+test('folder rows (entries) only when asked — never in the chat card facts', async () => {
+  const rows = [
+    { filename: 'Q4', ext: 'pdf', filetype: 'document', filesize: 1234 },
+    { filename: 'Photos', ext: '', filetype: 'folder', filesize: 0 },
+  ];
+  const mk = () => fakeYp({ info: [OK], node: [{ id: NID, filename: 'abc', filetype: 'folder' }], rows });
+  const plain = await LP.sharePreview(mk(), TOKEN, { guestId: 'g1' });
+  assert.strictEqual(plain.entries, undefined);
+  const withRows = await LP.sharePreview(mk(), TOKEN, { guestId: 'g1', entries: true });
+  assert.deepStrictEqual(withRows.entries, [
+    { name: 'Q4', ext: 'pdf', size: 1234, folder: false },
+    { name: 'Photos', ext: '', size: 0, folder: true },
+  ]);
+  assert.deepStrictEqual(withRows.items, ['Q4.pdf', 'Photos']);
 });
 
 test('content card never for a secure / unavailable / bad token', async () => {

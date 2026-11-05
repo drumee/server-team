@@ -17,10 +17,11 @@
 
 /**
  * Preview image (1200×630) of a PUBLIC shared folder: the build's public.png
- * card (ui-team assets/link-preview, drawn from the share e-mail) with the
- * placeholder bars replaced by the folder's real name and its first entries —
- * the same names the og:description already lists. Pure: SVG text in, the
- * caller rasterises it (sharp).
+ * card (ui-team assets/link-preview, drawn from the share e-mail) holding the
+ * folder's real name and its first entries laid out like the desk's list view
+ * (window/skeleton/content/row: Name · Size · Type; a folder's size is "--",
+ * its type "folder"). The card's height follows the number of rows so it stays
+ * centred. Pure: SVG text out, the caller rasterises it (sharp).
  */
 
 // The new Drumee logo (ui-team src/drumee/assets/drumee-logo.svg, 120.723×24),
@@ -38,13 +39,30 @@ const LOGO_PATHS = [
 const SIZE = { width: 1200, height: 630 };
 const PURPLE = "#433cc5";
 const PINK = "#ffa8dc";
+const INK = "#0b0a21";
+const TEXT = "#363246";
+const MUTED = "#6e6b7b";
+const LINE = "rgba(71,69,84,0.12)";
 const FONT = "Manrope, Lato, 'DejaVu Sans', 'Droid Sans Fallback', sans-serif";
 const FOLDER_PATH =
   "M33.5743 1.5H15C8.37258 1.5 3 6.87258 3 13.5V69C3 75.6274 8.37258 81 15 81H90C96.6274 81 102 75.6274 102 69L102 28.2C102 21.5726 96.6274 16.2 90 16.2H58.8349C55.8072 16.2 52.8913 15.0555 50.672 12.9959L41.7372 4.70411C39.5179 2.64453 36.6021 1.5 33.5743 1.5Z";
+// A sheet with a folded corner, 24×30.
+const FILE_PATH = "M3 0H15L24 9V27A3 3 0 0 1 21 30H3A3 3 0 0 1 0 27V3A3 3 0 0 1 3 0Z";
 // Widths in "narrow character" units; a wide (CJK, emoji…) one counts 2.
 const TITLE_UNITS = 40;
-const ROW_UNITS = 48;
-const ROWS = 3;
+const NAME_UNITS = 38;
+const TYPE_UNITS = 9;
+const ROWS = 4;
+
+// Card geometry (px of the 1200×630 image).
+const CARD = { x: 60, width: 1080, pad: 44, padBottom: 28 };
+const LEFT = CARD.x + CARD.pad; // 104
+const RIGHT = CARD.x + CARD.width - CARD.pad; // 1096
+const TITLE_H = 56;
+const GAP = 16;
+const HEAD_H = 44;
+const ROW_H = 60;
+const COL = { name: LEFT + 48, size: 880, type: 940 };
 
 /**
  * XML text escape; drops characters XML 1.0 forbids (an SVG with one fails).
@@ -53,7 +71,7 @@ const ROWS = 3;
  */
 function xml(v) {
   return String(v == null ? "" : v)
-    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f￾￿]/g, "")
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\ufffe\uffff]/g, "")
     .replace(/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g, "")
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
@@ -68,7 +86,7 @@ function xml(v) {
  */
 function width(ch) {
   const c = ch.codePointAt(0);
-  return c >= 0x1100 && /[ᄀ-ᅟ⺀-꓏가-힣豈-﫿︰-﹏＀-｠￠-￦]|[\u{1f000}-\u{1faff}\u{20000}-\u{3fffd}]/u.test(ch)
+  return c >= 0x1100 && /[\u1100-\u115f\u2e80-\ua4cf\uac00-\ud7a3\uf900-\ufaff\ufe30-\ufe4f\uff00-\uff60\uffe0-\uffe6]|[\u{1f000}-\u{1faff}\u{20000}-\u{3fffd}]/u.test(ch)
     ? 2
     : 1;
 }
@@ -91,47 +109,89 @@ function fit(text, max) {
 }
 
 /**
- * @param {{title:string, items:string[]}} folder
+ * Size as the desk's list shows it (ui-team `filesize` defaults: base 1000,
+ * up to 2 decimals): 0 B, 512 B, 1.23 kB, 98.77 MB, 5 GB.
+ * @param {*} bytes
+ * @returns {string}
+ */
+function humanSize(bytes) {
+  let n = Number(bytes);
+  if (!Number.isFinite(n) || n < 0) return "";
+  const units = ["B", "kB", "MB", "GB", "TB", "PB"];
+  let u = 0;
+  while (n >= 1000 && u < units.length - 1) {
+    n /= 1000;
+    u++;
+  }
+  return `${u ? Number(n.toFixed(2)) : Math.round(n)} ${units[u]}`;
+}
+
+/**
+ * @param {{name:string, ext?:string, size?:number, folder?:boolean}} e
+ * @param {number} top
+ * @param {boolean} last no divider under the last row
+ * @returns {string}
+ */
+function row(e, top, last) {
+  const mid = top + ROW_H / 2;
+  const icon = e.folder
+    ? `<g transform="translate(${LEFT} ${mid - 13}) scale(0.305)" fill="${PINK}"><path d="${FOLDER_PATH}"/></g>`
+    : `<g transform="translate(${LEFT + 4} ${mid - 15})" fill="${PINK}"><path d="${FILE_PATH}"/></g>`;
+  const size = e.folder ? "--" : humanSize(e.size);
+  const type = e.folder ? "folder" : fit(String(e.ext || "").toLowerCase(), TYPE_UNITS);
+  const base = mid + 9;
+  return (
+    icon +
+    `<text x="${COL.name}" y="${base}" font-size="26" font-weight="600" fill="${TEXT}">${xml(fit(e.name, NAME_UNITS))}</text>` +
+    (size ? `<text x="${COL.size}" y="${base}" font-size="24" fill="${MUTED}" text-anchor="end">${xml(size)}</text>` : "") +
+    (type ? `<text x="${COL.type}" y="${base}" font-size="24" fill="${MUTED}">${xml(type)}</text>` : "") +
+    (last ? "" : `<rect x="${LEFT}" y="${top + ROW_H - 2}" width="${RIGHT - LEFT}" height="2" fill="${LINE}"/>`)
+  );
+}
+
+/**
+ * @param {{title:string, entries:{name:string, ext?:string, size?:number, folder?:boolean}[]}} folder
  * @returns {string|null} SVG, or null when there is nothing real to show
  */
 function folderCardSvg(folder) {
-  const items = (folder && Array.isArray(folder.items) ? folder.items : [])
-    .map((v) => fit(v, ROW_UNITS))
-    .filter(Boolean)
+  const entries = (folder && Array.isArray(folder.entries) ? folder.entries : [])
+    .filter((e) => e && fit(e.name, NAME_UNITS))
     .slice(0, ROWS);
-  if (!items.length) return null;
+  if (!entries.length) return null;
   const title = fit(folder.title, TITLE_UNITS);
 
-  // Geometry of the build's public.png card.
+  // The card's height follows the rows; it is centred under the header.
+  const height = CARD.pad + TITLE_H + GAP + HEAD_H + entries.length * ROW_H + CARD.padBottom;
+  const y = Math.round(150 + (SIZE.height - 150 - height) / 2);
+  const titleMid = y + CARD.pad + TITLE_H / 2;
+  const headTop = y + CARD.pad + TITLE_H + GAP;
+  const rowsTop = headTop + HEAD_H;
+
   const logoScale = 300 / 120.723;
   const logo = LOGO_PATHS.map(
     ([eo, d]) => `<path${eo ? ' fill-rule="evenodd" clip-rule="evenodd"' : ""} d="${d}"/>`
   ).join("");
-  const rows = items
-    .map((name, i) => {
-      const top = 309 + 66 * i;
-      return (
-        `<rect x="128" y="${top + 18}" width="28" height="28" rx="6" fill="${PINK}"/>` +
-        `<text x="180" y="${top + 42}" font-size="28" font-weight="600" fill="#363246">${xml(name)}</text>` +
-        `<rect x="128" y="${top + 64}" width="944" height="2" fill="rgba(71,69,84,0.1)"/>`
-      );
-    })
-    .join("");
 
   return (
     `<svg xmlns="http://www.w3.org/2000/svg" width="${SIZE.width}" height="${SIZE.height}" viewBox="0 0 ${SIZE.width} ${SIZE.height}">` +
     `<rect width="${SIZE.width}" height="${SIZE.height}" fill="#ffffff"/>` +
     `<rect width="${SIZE.width}" height="150" fill="${PURPLE}"/>` +
     `<g fill="#ffffff" transform="translate(450 ${(75 - (24 * logoScale) / 2).toFixed(2)}) scale(${logoScale.toFixed(5)})">${logo}</g>` +
-    `<rect x="81" y="199" width="1038" height="382" rx="15" fill="#f2f2f7" stroke="rgba(71,69,84,0.1)" stroke-width="2"/>` +
-    `<g transform="translate(128 238) scale(0.495)" fill="${PINK}"><path d="${FOLDER_PATH}"/></g>` +
+    `<rect x="${CARD.x + 1}" y="${y + 1}" width="${CARD.width - 2}" height="${height - 2}" rx="15" fill="#f2f2f7" stroke="${LINE}" stroke-width="2"/>` +
+    `<g transform="translate(${LEFT} ${titleMid - 19}) scale(0.44)" fill="${PINK}"><path d="${FOLDER_PATH}"/></g>` +
+    `<g fill="rgba(20,17,35,0.4)"><circle cx="${RIGHT - 51}" cy="${titleMid}" r="7"/><circle cx="${RIGHT - 29}" cy="${titleMid}" r="7"/><circle cx="${RIGHT - 7}" cy="${titleMid}" r="7"/></g>` +
     `<g font-family="${xml(FONT)}">` +
-    (title ? `<text x="200" y="270" font-size="30" font-weight="700" fill="#0b0a21">${xml(title)}</text>` : "") +
-    rows +
+    (title ? `<text x="${LEFT + 64}" y="${titleMid + 11}" font-size="32" font-weight="700" fill="${INK}">${xml(title)}</text>` : "") +
+    `<g font-size="20" font-weight="600" fill="${MUTED}">` +
+    `<text x="${COL.name}" y="${headTop + 28}">Name</text>` +
+    `<text x="${COL.size}" y="${headTop + 28}" text-anchor="end">Size</text>` +
+    `<text x="${COL.type}" y="${headTop + 28}">Type</text>` +
     `</g>` +
-    `<g fill="rgba(20,17,35,0.4)"><circle cx="1021" cy="260" r="7"/><circle cx="1043" cy="260" r="7"/><circle cx="1065" cy="260" r="7"/></g>` +
+    `<rect x="${LEFT}" y="${headTop + HEAD_H - 2}" width="${RIGHT - LEFT}" height="2" fill="${LINE}"/>` +
+    entries.map((e, i) => row(e, rowsTop + i * ROW_H, i === entries.length - 1)).join("") +
+    `</g>` +
     `</svg>`
   );
 }
 
-module.exports = { SIZE, folderCardSvg, fit, xml };
+module.exports = { SIZE, ROWS, folderCardSvg, fit, xml, humanSize };

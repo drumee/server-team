@@ -32,7 +32,7 @@
  */
 const { toArray } = require("@drumee/server-essentials");
 const { sqlString } = require("./sql-literal");
-const { SIZE: FOLDER_CARD_SIZE } = require("./link-preview-folder-card");
+const { SIZE: FOLDER_CARD_SIZE, ROWS: FOLDER_ROWS } = require("./link-preview-folder-card");
 
 /** Secure share tokens are 21–22 url-safe characters; accept a safe margin. */
 const TOKEN_RE = /^[A-Za-z0-9_-]{8,80}$/;
@@ -179,13 +179,24 @@ async function folderNames(yp, info, node, guestId) {
     return null;
   }
   const names = [];
+  const entries = [];
   for (const r of rows) {
     if (!r || !r.filename || /^\./.test(r.filename)) continue;
-    const ext = r.ext && !FOLDER_TYPES.test(r.filetype || r.ftype || "") ? `.${r.ext}` : "";
+    const folder = FOLDER_TYPES.test(r.filetype || r.ftype || "");
+    const ext = r.ext && !folder ? `.${r.ext}` : "";
     names.push(clean(`${r.filename}${ext}`));
+    // The preview image's rows, as the desk's list view shows them.
+    if (entries.length < FOLDER_ROWS) {
+      entries.push({
+        name: clean(r.filename),
+        ext: folder ? "" : clean(r.ext),
+        size: Number(r.filesize) || 0,
+        folder,
+      });
+    }
   }
   if (!names.length) return null;
-  return { items: names.slice(0, FOLDER_NAMES), more: names.length > FOLDER_NAMES };
+  return { items: names.slice(0, FOLDER_NAMES), more: names.length > FOLDER_NAMES, entries };
 }
 
 /**
@@ -193,9 +204,10 @@ async function folderNames(yp, info, node, guestId) {
  * Never throws: any failure answers `unavailable`.
  * @param {*} yp
  * @param {string} token
- * @param {{guestId?:string}} [opt] guestId: list a public folder's first names
+ * @param {{guestId?:string, entries?:boolean}} [opt] guestId: list a public folder's
+ *        first names; entries: also its first rows (name, ext, size, folder)
  * @returns {Promise<{state:string, filename?:string, filetype?:string, sender?:string,
- *          card?:boolean, items?:string[], more?:boolean}>}
+ *          card?:boolean, items?:string[], more?:boolean, entries?:Object[]}>}
  */
 async function sharePreview(yp, token, opt = {}) {
   const { state, info, node } = await resolveShare(yp, token);
@@ -211,7 +223,12 @@ async function sharePreview(yp, token, opt = {}) {
     if (CARD_TYPES.test(node.filetype || "")) res.card = true;
     if (FOLDER_TYPES.test(node.filetype || "") && opt.guestId) {
       const list = await folderNames(yp, info, node, opt.guestId);
-      if (list) Object.assign(res, list);
+      if (list) {
+        res.items = list.items;
+        res.more = list.more;
+        // Only for the preview image (link_preview.card); never sent to clients.
+        if (opt.entries) res.entries = list.entries;
+      }
     }
   }
   if (!res.filename) res.filename = clean(info.title);

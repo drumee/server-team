@@ -104,9 +104,9 @@ class __link_preview extends Mfs {
    */
   async folderCard(token) {
     try {
-      const p = await sharePreview(this.yp, token, { guestId: guestId() });
-      if (!p || p.state !== "public" || !Array.isArray(p.items) || !p.items.length) return null;
-      const svg = folderCardSvg({ title: p.filename, items: p.items });
+      const p = await sharePreview(this.yp, token, { guestId: guestId(), entries: true });
+      if (!p || p.state !== "public" || !Array.isArray(p.entries) || !p.entries.length) return null;
+      const svg = folderCardSvg({ title: p.filename, entries: p.entries });
       if (!svg) return null;
       const hit = FOLDER_PNG.get(svg);
       if (hit && hit.at > Date.now() - FOLDER_PNG_TTL) return hit.png;
