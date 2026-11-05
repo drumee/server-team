@@ -45,9 +45,10 @@ class __link_preview extends Mfs {
 
   /**
    * Content card of a public shared file, or the name + first entries of a
-   * public shared folder. Anything else — a gated, revoked or expired link,
-   * an empty folder, a file without a poster — gets the build's generic public
-   * card image instead (a fixed address, never taken from the request).
+   * public shared folder (a file without a content card: itself as one row).
+   * Anything else — a gated, revoked or expired link, an empty folder — gets
+   * the build's generic public card image instead (a fixed address, never
+   * taken from the request).
    * @returns {Promise<void>}
    */
   async card() {
@@ -81,12 +82,13 @@ class __link_preview extends Mfs {
       } catch (e) {
         this.warn("[link_preview.card] falling back:", e && e.message);
       }
-    } else {
-      const png = await this.folderCard(token);
-      if (png) {
-        this.output.write(png, "image/png", 200);
-        return;
-      }
+    }
+    // A folder, a file without its own content card, or one whose card could
+    // not be made: the list image the share page looks like.
+    const png = await this.folderCard(token);
+    if (png) {
+      this.output.write(png, "image/png", 200);
+      return;
     }
     const dir = fallbackDir();
     if (dir) {
@@ -97,8 +99,9 @@ class __link_preview extends Mfs {
   }
 
   /**
-   * PNG of a public folder's preview card, or null (not a public folder, no
-   * listable entry, render failure). The same names og:description lists.
+   * PNG of a public folder's preview card (its first entries — the same names
+   * og:description lists), or of a public single file as a one-row list; null
+   * when there is nothing to list or the render fails.
    * @param {string} token
    * @returns {Promise<Buffer|null>}
    */
@@ -111,7 +114,7 @@ class __link_preview extends Mfs {
         e.thumbData = await thumbData(e.thumb);
         delete e.thumb;
       }
-      const svg = folderCardSvg({ title: p.filename, entries: p.entries });
+      const svg = folderCardSvg({ title: p.filename, entries: p.entries, single: !!p.single });
       if (!svg) return null;
       const hit = FOLDER_PNG.get(svg);
       if (hit && hit.at > Date.now() - FOLDER_PNG_TTL) return hit.png;

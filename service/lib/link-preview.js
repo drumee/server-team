@@ -155,6 +155,36 @@ async function resolveShare(yp, token) {
 }
 
 /**
+ * One row of a preview image, as the desk's list view shows it: name, ext,
+ * size, and the desk's icon — or, for a picture / video, where its vignette
+ * would be on disk (the caller reads it only if it exists).
+ * @param {Object} r media row (folder listing or mfs_node_attr)
+ * @param {Object} node the shared node (its mfs_root holds the files)
+ * @param {boolean} folder
+ * @returns {{name:string, ext:string, size:number, folder:boolean, icon?:string, thumb?:string, video?:boolean}}
+ */
+function listRow(r, node, folder) {
+  const e = {
+    name: clean(r.filename),
+    ext: folder ? "" : clean(r.ext),
+    size: Number(r.filesize) || 0,
+    folder,
+  };
+  if (folder) return e;
+  e.icon = iconFor(r);
+  // Pictures and videos show their own vignette on the desk (media core
+  // iconType "vignette").
+  const id = r.nid || r.id;
+  const type = r.filetype || r.ftype || "";
+  if (THUMB_TYPES.test(type) && typeof node.mfs_root === "string" && node.mfs_root &&
+    typeof id === "string" && /^[A-Za-z0-9]{1,64}$/.test(id)) {
+    e.thumb = join(node.mfs_root, id, "vignette.png");
+    e.video = type === "video";
+  }
+  return e;
+}
+
+/**
  * Names of the first entries of a shared folder, for a PUBLIC share — the
  * same listing (and the same anonymous guest identity) the share page itself
  * shows to anyone holding the link (dmz.list_by_token).
@@ -189,29 +219,7 @@ async function folderNames(yp, info, node, guestId) {
     const ext = r.ext && !folder ? `.${r.ext}` : "";
     names.push(clean(`${r.filename}${ext}`));
     // The preview image's rows, as the desk's list view shows them.
-    if (entries.length < FOLDER_ROWS) {
-      const e = {
-        name: clean(r.filename),
-        ext: folder ? "" : clean(r.ext),
-        size: Number(r.filesize) || 0,
-        folder,
-      };
-      if (!folder) {
-        e.icon = iconFor(r);
-        // Pictures and videos show their own vignette on the desk (media core
-        // iconType "vignette"); where it
-        // would be on disk (same workspace as the shared folder). The caller
-        // reads it only if it exists.
-        const id = r.nid || r.id;
-        const type = r.filetype || r.ftype || "";
-        if (THUMB_TYPES.test(type) && typeof node.mfs_root === "string" && node.mfs_root &&
-          typeof id === "string" && /^[A-Za-z0-9]{1,64}$/.test(id)) {
-          e.thumb = join(node.mfs_root, id, "vignette.png");
-          e.video = type === "video";
-        }
-      }
-      entries.push(e);
-    }
+    if (entries.length < FOLDER_ROWS) entries.push(listRow(r, node, folder));
   }
   if (!names.length) return null;
   return { items: names.slice(0, FOLDER_NAMES), more: names.length > FOLDER_NAMES, entries };
@@ -239,6 +247,13 @@ async function sharePreview(yp, token, opt = {}) {
       ? clean(info.title)
       : clean(node.filename);
     if (CARD_TYPES.test(node.filetype || "")) res.card = true;
+    // A single file without its own content card (text, Casual doc, music,
+    // archive…) — or whose card cannot be made — is drawn as the share page
+    // shows it: a one-row list. Only for the preview image; never sent to clients.
+    if (opt.entries && !FOLDER_TYPES.test(node.filetype || "") && node.filename) {
+      res.entries = [listRow(node, node, false)];
+      res.single = true;
+    }
     if (FOLDER_TYPES.test(node.filetype || "") && opt.guestId) {
       const list = await folderNames(yp, info, node, opt.guestId);
       if (list) {
@@ -327,7 +342,9 @@ function cardText(p) {
     }
     // folderCard: the preview image draws the folder name and those entries
     // (link_preview.card, lib/link-preview-folder-card).
-    return { title, description, image: "public", card: !!p.card, folderCard: listed };
+    // A single file without a content card gets the same list image, one row.
+    const plainFile = what === "File" && !!p.filetype && !p.card;
+    return { title, description, image: "public", card: !!p.card, folderCard: listed || plainFile };
   }
   if (state === STATE.secure) {
     return {

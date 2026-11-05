@@ -166,7 +166,8 @@ function row(e, top, last) {
 }
 
 /**
- * @param {{title:string, entries:{name:string, ext?:string, size?:number, folder?:boolean}[]}} folder
+ * @param {{title:string, single?:boolean, entries:{name:string, ext?:string, size?:number, folder?:boolean}[]}} folder
+ *        single: a shared file listed as its only row (its icon by the title)
  * @returns {string|null} SVG, or null when there is nothing real to show
  */
 function folderCardSvg(folder) {
@@ -175,6 +176,7 @@ function folderCardSvg(folder) {
     .slice(0, ROWS);
   if (!entries.length) return null;
   const title = fit(folder.title, TITLE_UNITS);
+  const single = !!folder.single && !entries[0].folder;
 
   // The card's height follows the rows; it is centred under the header.
   const height = CARD.pad + TITLE_H + GAP + HEAD_H + entries.length * ROW_H + CARD.padBottom;
@@ -194,7 +196,10 @@ function folderCardSvg(folder) {
     `<rect width="${SIZE.width}" height="150" fill="${PURPLE}"/>` +
     `<g fill="#ffffff" transform="translate(450 ${(75 - (24 * logoScale) / 2).toFixed(2)}) scale(${logoScale.toFixed(5)})">${logo}</g>` +
     `<rect x="${CARD.x + 1}" y="${y + 1}" width="${CARD.width - 2}" height="${height - 2}" rx="15" fill="#f2f2f7" stroke="${LINE}" stroke-width="2"/>` +
-    `<g transform="translate(${LEFT} ${titleMid - 19}) scale(0.44)" fill="${PINK}"><path d="${FOLDER_PATH}"/></g>` +
+    // A single shared file: its own icon by its name; a folder: the pink folder.
+    (single
+      ? iconSvg(entries[0].icon, LEFT, titleMid - 24, 48)
+      : `<g transform="translate(${LEFT} ${titleMid - 19}) scale(0.44)" fill="${PINK}"><path d="${FOLDER_PATH}"/></g>`) +
     `<g fill="rgba(20,17,35,0.4)"><circle cx="${RIGHT - 51}" cy="${titleMid}" r="7"/><circle cx="${RIGHT - 29}" cy="${titleMid}" r="7"/><circle cx="${RIGHT - 7}" cy="${titleMid}" r="7"/></g>` +
     `<g font-family="${xml(FONT)}">` +
     (title ? `<text x="${LEFT + 64}" y="${titleMid + 11}" font-size="32" font-weight="700" fill="${INK}">${xml(title)}</text>` : "") +

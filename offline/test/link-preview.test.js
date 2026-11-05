@@ -231,6 +231,33 @@ test('folder rows: the desk icon of each file, its own colours; thumbnail path o
   assert.ok(!svg.includes('/etc/passwd'));
 });
 
+test('public single file without a content card: itself as a one-row list image', async () => {
+  const node = { id: NID, filename: 'Untitled document', ext: 'udoc', filetype: 'text', filesize: 2048,
+    metadata: '{"dataType":"doc.casual"}', mfs_root: '/data/mfs/x/' };
+  // chat card facts unchanged: no rows, no flag
+  const plain = await LP.sharePreview(fakeYp({ info: [OK], node: [node] }), TOKEN, { guestId: 'g1' });
+  assert.deepStrictEqual(plain, { state: 'public', sender: 'Lexis Tran', filetype: 'text', filename: 'Untitled document' });
+  // the preview image: the file as its only row, with the desk icon
+  const p = await LP.sharePreview(fakeYp({ info: [OK], node: [node] }), TOKEN, { guestId: 'g1', entries: true });
+  assert.deepStrictEqual(p.entries, [{ name: 'Untitled document', ext: 'udoc', size: 2048, folder: false, icon: 'documents_udoc' }]);
+  assert.strictEqual(p.single, true);
+  const card = LP.cardText(plain);
+  assert.strictEqual(card.card, false);
+  assert.strictEqual(card.folderCard, true);
+  const html = LP.ogTags(card, { imageBase: 'https://h/-/app/link-preview/', cardUrl: 'https://h/c' });
+  assert.ok(html.includes('<meta property="og:image" content="https://h/c">'));
+  assert.ok(html.includes('<meta property="og:image:width" content="1200">'));
+  // a file with its own content card keeps it; an unknown node keeps the build image
+  assert.strictEqual(LP.cardText({ state: 'public', filetype: 'document', card: true }).folderCard, false);
+  assert.strictEqual(LP.cardText({ state: 'public', filename: 'x' }).folderCard, false);
+  // the SVG: the file's own icon by the title, not the pink folder
+  const FC = require('../../service/lib/link-preview-folder-card');
+  const svg = FC.folderCardSvg({ title: 'Untitled document', entries: p.entries, single: true });
+  const folderSvg = FC.folderCardSvg({ title: 'Untitled document', entries: p.entries });
+  assert.strictEqual(svg.split('<svg').length, folderSvg.split('<svg').length + 1, 'one more desk icon');
+  assert.ok(!svg.includes('scale(0.44)') && folderSvg.includes('scale(0.44)'), 'no folder glyph');
+});
+
 test('folder rows (entries) only when asked — never in the chat card facts', async () => {
   const rows = [
     { filename: 'Q4', ext: 'pdf', filetype: 'document', filesize: 1234 },
