@@ -21,8 +21,11 @@
  * folder's real name and its first entries laid out like the desk's list view
  * (window/skeleton/content/row: Name · Size · Type; a folder's size is "--",
  * its type "folder"). The card's height follows the number of rows so it stays
- * centred. Pure: SVG text out, the caller rasterises it (sharp).
+ * centred. A file shows the desk's own icon (lib/link-preview-file-icons) or,
+ * for a picture / video, its thumbnail (`thumbData`, read by the caller).
+ * Pure: SVG text out, the caller rasterises it (sharp).
  */
+const { iconSvg } = require("./link-preview-file-icons");
 
 // The new Drumee logo (ui-team src/drumee/assets/drumee-logo.svg, 120.723×24),
 // drawn white like the build's cards: [evenodd, path].
@@ -46,8 +49,8 @@ const LINE = "rgba(71,69,84,0.12)";
 const FONT = "Manrope, Lato, 'DejaVu Sans', 'Droid Sans Fallback', sans-serif";
 const FOLDER_PATH =
   "M33.5743 1.5H15C8.37258 1.5 3 6.87258 3 13.5V69C3 75.6274 8.37258 81 15 81H90C96.6274 81 102 75.6274 102 69L102 28.2C102 21.5726 96.6274 16.2 90 16.2H58.8349C55.8072 16.2 52.8913 15.0555 50.672 12.9959L41.7372 4.70411C39.5179 2.64453 36.6021 1.5 33.5743 1.5Z";
-// A sheet with a folded corner, 24×30.
-const FILE_PATH = "M3 0H15L24 9V27A3 3 0 0 1 21 30H3A3 3 0 0 1 0 27V3A3 3 0 0 1 3 0Z";
+// Box of a row's icon / thumbnail.
+const ICON = 36;
 // Widths in "narrow character" units; a wide (CJK, emoji…) one counts 2.
 const TITLE_UNITS = 40;
 const NAME_UNITS = 38;
@@ -134,9 +137,22 @@ function humanSize(bytes) {
  */
 function row(e, top, last) {
   const mid = top + ROW_H / 2;
-  const icon = e.folder
-    ? `<g transform="translate(${LEFT} ${mid - 13}) scale(0.305)" fill="${PINK}"><path d="${FOLDER_PATH}"/></g>`
-    : `<g transform="translate(${LEFT + 4} ${mid - 15})" fill="${PINK}"><path d="${FILE_PATH}"/></g>`;
+  let icon;
+  if (e.folder) {
+    // A folder of an external (shared) workspace is pink on the desk.
+    icon = `<g transform="translate(${LEFT} ${mid - 13}) scale(0.305)" fill="${PINK}"><path d="${FOLDER_PATH}"/></g>`;
+  } else if (typeof e.thumbData === "string" && /^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(e.thumbData)) {
+    // The file's own thumbnail, cropped square, like the desk's list row.
+    const t = ICON - 4;
+    const x = LEFT;
+    const yy = mid - t / 2;
+    icon =
+      `<clipPath id="t${top}"><rect x="${x}" y="${yy}" width="${t}" height="${t}" rx="5"/></clipPath>` +
+      `<image x="${x}" y="${yy}" width="${t}" height="${t}" preserveAspectRatio="xMidYMid slice" clip-path="url(#t${top})" href="${e.thumbData}"/>` +
+      (e.video ? iconSvg("video", x + t / 2 - 8, mid - 8, 16) : "");
+  } else {
+    icon = iconSvg(e.icon, LEFT, mid - ICON / 2, ICON);
+  }
   const size = e.folder ? "--" : humanSize(e.size);
   const type = e.folder ? "folder" : fit(String(e.ext || "").toLowerCase(), TYPE_UNITS);
   const base = mid + 9;

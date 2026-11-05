@@ -106,6 +106,11 @@ class __link_preview extends Mfs {
     try {
       const p = await sharePreview(this.yp, token, { guestId: guestId(), entries: true });
       if (!p || p.state !== "public" || !Array.isArray(p.entries) || !p.entries.length) return null;
+      for (const e of p.entries) {
+        if (!e.thumb) continue;
+        e.thumbData = await thumbData(e.thumb);
+        delete e.thumb;
+      }
       const svg = folderCardSvg({ title: p.filename, entries: p.entries });
       if (!svg) return null;
       const hit = FOLDER_PNG.get(svg);
@@ -128,6 +133,23 @@ class __link_preview extends Mfs {
 const FOLDER_PNG = new Map();
 const FOLDER_PNG_MAX = 50;
 const FOLDER_PNG_TTL = 10 * 60 * 1000;
+
+/**
+ * A file's existing thumbnail, shrunk to a small PNG data URI; null when there
+ * is none (never generated here) or it cannot be read.
+ * @param {string} file
+ * @returns {Promise<string|null>}
+ */
+async function thumbData(file) {
+  try {
+    if (!existsSync(file)) return null;
+    const sharp = require("sharp");
+    const png = await sharp(file).resize(96, 96, { fit: "cover" }).png().toBuffer();
+    return `data:image/png;base64,${png.toString("base64")}`;
+  } catch (e) {
+    return null;
+  }
+}
 
 /**
  * @returns {string|undefined} the system guest the share page lists as

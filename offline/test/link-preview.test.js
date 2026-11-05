@@ -183,6 +183,54 @@ test('folder card SVG: list-view rows, escaped, cut, nothing when no entry', () 
     ['0 B', '512 B', '1.23 kB', '1.23 MB', '98.77 MB', '5 GB', '']);
 });
 
+test('folder rows: the desk icon of each file, its own colours; thumbnail path only for pictures / videos', async () => {
+  const I = require('../../service/lib/link-preview-file-icons');
+  const cases = [
+    [{ filetype: 'document', ext: 'PDF' }, 'documents_pdf'],
+    [{ filetype: 'document', ext: 'docx' }, 'documents_word'],
+    [{ filetype: 'document', ext: 'xlsx' }, 'documents_excel'],
+    [{ filetype: 'document', ext: 'pptx' }, 'documents_powerpoint'],
+    [{ filetype: 'document', ext: 'json', metadata: '{"dataType":"sheet.univer"}' }, 'documents_usheet'],
+    [{ filetype: 'document', ext: 'udoc' }, 'documents_udoc'],
+    [{ filetype: 'video', mimetype: 'audio/mpeg' }, 'music'],
+    [{ filetype: 'audio' }, 'music'],
+    [{ filetype: 'document', ext: 'txt' }, 'documents_different'],
+    [{ filetype: 'other', ext: 'zip' }, 'documents_different'],
+    [{ filetype: 'document', ext: 'json', metadata: '{bad' }, 'json'],
+  ];
+  for (const [row, icon] of cases) assert.strictEqual(I.iconFor(row), icon, JSON.stringify(row));
+  for (const name of Object.keys(I.ICONS)) {
+    const svg = I.iconSvg(name, 1, 2, 36);
+    assert.ok(svg.startsWith('<svg x="1" y="2" width="36" height="36"') && svg.endsWith('</svg>'), name);
+  }
+  // Ids are unique across icons (gradients never collide in one image).
+  const ids = Object.values(I.ICONS).flatMap((i) => [...i.body.matchAll(/ id="([^"]+)"/g)].map((m) => m[1]));
+  assert.strictEqual(new Set(ids).size, ids.length);
+
+  const rows = [
+    { nid: 'aa11', filename: 'pic', ext: 'png', filetype: 'image', filesize: 10 },
+    { nid: 'bb22', filename: 'clip', ext: 'mp4', filetype: 'video', filesize: 10 },
+    { nid: '../x', filename: 'evil', ext: 'png', filetype: 'image', filesize: 10 },
+    { nid: 'cc33', filename: 'doc', ext: 'pdf', filetype: 'document', filesize: 10 },
+  ];
+  const yp = fakeYp({ info: [OK], node: [{ id: NID, filename: 'abc', filetype: 'folder', mfs_root: '/data/mfs/x' }], rows });
+  const p = await LP.sharePreview(yp, TOKEN, { guestId: 'g1', entries: true });
+  assert.strictEqual(p.entries[0].thumb, '/data/mfs/x/aa11/thumb.png');
+  assert.strictEqual(p.entries[1].thumb, '/data/mfs/x/bb22/thumb.png');
+  assert.strictEqual(p.entries[1].video, true);
+  assert.strictEqual(p.entries[2].thumb, undefined, 'unsafe id → no path');
+  assert.strictEqual(p.entries[3].thumb, undefined, 'documents keep their icon');
+
+  // In the SVG: the thumbnail only as a PNG data URI, never a path.
+  const FC = require('../../service/lib/link-preview-folder-card');
+  const svg = FC.folderCardSvg({ title: 't', entries: [
+    { name: 'a', ext: 'png', size: 1, icon: 'documents_different', thumbData: 'data:image/png;base64,AAAA' },
+    { name: 'b', ext: 'png', size: 1, icon: 'documents_different', thumbData: '/etc/passwd' },
+  ] });
+  assert.ok(svg.includes('href="data:image/png;base64,AAAA"'));
+  assert.ok(!svg.includes('/etc/passwd'));
+});
+
 test('folder rows (entries) only when asked — never in the chat card facts', async () => {
   const rows = [
     { filename: 'Q4', ext: 'pdf', filetype: 'document', filesize: 1234 },
@@ -193,7 +241,7 @@ test('folder rows (entries) only when asked — never in the chat card facts', a
   assert.strictEqual(plain.entries, undefined);
   const withRows = await LP.sharePreview(mk(), TOKEN, { guestId: 'g1', entries: true });
   assert.deepStrictEqual(withRows.entries, [
-    { name: 'Q4', ext: 'pdf', size: 1234, folder: false },
+    { name: 'Q4', ext: 'pdf', size: 1234, folder: false, icon: 'documents_pdf' },
     { name: 'Photos', ext: '', size: 0, folder: true },
   ]);
   assert.deepStrictEqual(withRows.items, ['Q4.pdf', 'Photos']);

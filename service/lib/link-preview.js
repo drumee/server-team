@@ -33,6 +33,8 @@
 const { toArray } = require("@drumee/server-essentials");
 const { sqlString } = require("./sql-literal");
 const { SIZE: FOLDER_CARD_SIZE, ROWS: FOLDER_ROWS } = require("./link-preview-folder-card");
+const { iconFor } = require("./link-preview-file-icons");
+const { join } = require("path");
 
 /** Secure share tokens are 21–22 url-safe characters; accept a safe margin. */
 const TOKEN_RE = /^[A-Za-z0-9_-]{8,80}$/;
@@ -107,6 +109,7 @@ const CARD_SIZE = { width: 460, height: 260 };
 
 /** How many names of a shared folder's contents a preview may list. */
 const FOLDER_NAMES = 3;
+const THUMB_TYPES = /^(image|video)$/;
 
 /**
  * A Secure share token, resolved: its state, and for a PUBLIC share the share
@@ -187,12 +190,26 @@ async function folderNames(yp, info, node, guestId) {
     names.push(clean(`${r.filename}${ext}`));
     // The preview image's rows, as the desk's list view shows them.
     if (entries.length < FOLDER_ROWS) {
-      entries.push({
+      const e = {
         name: clean(r.filename),
         ext: folder ? "" : clean(r.ext),
         size: Number(r.filesize) || 0,
         folder,
-      });
+      };
+      if (!folder) {
+        e.icon = iconFor(r);
+        // Pictures and videos show their own thumbnail on the desk; where it
+        // would be on disk (same workspace as the shared folder). The caller
+        // reads it only if it exists.
+        const id = r.nid || r.id;
+        const type = r.filetype || r.ftype || "";
+        if (THUMB_TYPES.test(type) && typeof node.mfs_root === "string" && node.mfs_root &&
+          typeof id === "string" && /^[A-Za-z0-9]{1,64}$/.test(id)) {
+          e.thumb = join(node.mfs_root, id, "thumb.png");
+          e.video = type === "video";
+        }
+      }
+      entries.push(e);
     }
   }
   if (!names.length) return null;
