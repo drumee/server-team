@@ -133,6 +133,39 @@ test('public file: its own content card is the preview image', async () => {
   assert.ok(folder.includes('public.png') && !folder.includes('https://h/c'));
 });
 
+test('public folder with entries: the card URL draws its name + entries (1200×630)', () => {
+  const card = LP.cardText({ state: 'public', filename: 'abc', filetype: 'folder', items: ['cba', 'cbc'], more: false });
+  assert.strictEqual(card.folderCard, true);
+  const html = LP.ogTags(card, { imageBase: 'https://h/-/app/link-preview/', cardUrl: 'https://h/c' });
+  assert.ok(html.includes('<meta property="og:image" content="https://h/c">'));
+  assert.ok(html.includes('<meta property="og:image:width" content="1200">'));
+  assert.ok(html.includes('<meta property="og:image:height" content="630">'));
+  // no card URL (no token) → the build's image
+  assert.ok(LP.ogTags(card, { imageBase: 'https://h/-/app/link-preview/' }).includes('public.png'));
+  // secure / unavailable / no-state never get a folder card
+  for (const p of [{ state: 'secure', items: ['x'] }, { state: 'unavailable', items: ['x'] }, null]) {
+    assert.ok(!LP.cardText(p).folderCard);
+  }
+});
+
+test('folder card SVG: real names, escaped, cut, nothing when no entry', () => {
+  const FC = require('../../service/lib/link-preview-folder-card');
+  assert.strictEqual(FC.folderCardSvg({ title: 'abc', items: [] }), null);
+  assert.strictEqual(FC.folderCardSvg(null), null);
+  const svg = FC.folderCardSvg({ title: 'a<b>&"c"', items: ['</text><script>x</script>', 'ok.pdf', 'b', 'fourth'] });
+  assert.ok(svg.startsWith('<svg') && svg.endsWith('</svg>'));
+  assert.ok(!svg.includes('<script>') && svg.includes('&lt;/text&gt;&lt;script&gt;'));
+  assert.ok(svg.includes('a&lt;b&gt;&amp;&quot;c&quot;'));
+  assert.ok(svg.includes('>ok.pdf</text>') && !svg.includes('fourth'), 'at most 3 rows');
+  // XML-forbidden characters and lone surrogates are dropped
+  assert.ok(!/[\u0001\ud800]/.test(FC.xml('a\u0001b\ud800c')));
+  assert.strictEqual(FC.xml('a\u0001b\ud800c'), 'abc');
+  assert.strictEqual(FC.fit('short', 10), 'short');
+  assert.strictEqual(FC.fit('abcdefghijkl', 10), 'abcdefghij…');
+  assert.strictEqual(FC.fit('日本語日本語', 6), '日本語…');
+  assert.strictEqual(FC.fit('😀😀😀', 4), '😀😀…');
+});
+
 test('content card never for a secure / unavailable / bad token', async () => {
   for (const yp of [
     fakeYp({ info: [{ ...OK, require_password: 1 }], node: [{ id: NID, filetype: 'image' }] }),

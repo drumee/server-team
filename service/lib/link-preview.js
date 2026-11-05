@@ -32,6 +32,7 @@
  */
 const { toArray } = require("@drumee/server-essentials");
 const { sqlString } = require("./sql-literal");
+const { SIZE: FOLDER_CARD_SIZE } = require("./link-preview-folder-card");
 
 /** Secure share tokens are 21–22 url-safe characters; accept a safe margin. */
 const TOKEN_RE = /^[A-Za-z0-9_-]{8,80}$/;
@@ -285,10 +286,13 @@ function cardText(p) {
       : `${what} shared via Drumee`;
     // A public folder previews its first entries — anyone holding the link
     // sees them on the share page anyway.
-    if (Array.isArray(p.items) && p.items.length) {
+    const listed = Array.isArray(p.items) && p.items.length > 0;
+    if (listed) {
       description += ` · ${p.items.join(", ")}${p.more ? ", …" : ""}`;
     }
-    return { title, description, image: "public", card: !!p.card };
+    // folderCard: the preview image draws the folder name and those entries
+    // (link_preview.card, lib/link-preview-folder-card).
+    return { title, description, image: "public", card: !!p.card, folderCard: listed };
   }
   if (state === STATE.secure) {
     return {
@@ -351,13 +355,14 @@ function ogTags(card, where = {}) {
     ["og:description", card.description],
   ];
   if (where.url) tags.push(["og:url", where.url]);
-  // A public file shows its own content card; everything else a card image
-  // of the build.
-  const image = card.card && where.cardUrl ? where.cardUrl : null;
+  // A public file shows its own content card, a public folder its name and
+  // first entries; everything else a card image of the build.
+  const image = (card.card || card.folderCard) && where.cardUrl ? where.cardUrl : null;
   if (image) {
+    const size = card.card ? CARD_SIZE : FOLDER_CARD_SIZE;
     tags.push(["og:image", image]);
-    tags.push(["og:image:width", String(CARD_SIZE.width)]);
-    tags.push(["og:image:height", String(CARD_SIZE.height)]);
+    tags.push(["og:image:width", String(size.width)]);
+    tags.push(["og:image:height", String(size.height)]);
   } else if (where.imageBase) {
     tags.push(["og:image", `${where.imageBase}${card.image}.png`]);
     tags.push(["og:image:width", "1200"]);
