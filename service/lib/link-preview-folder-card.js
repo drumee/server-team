@@ -65,8 +65,9 @@ const TITLE_H = 56;
 const GAP = 16;
 const HEAD_H = 44;
 const ROW_H = 60;
-// Names line up with the title text; Size and Type end on the right edge of
-// the three dots (both right-aligned).
+// Names line up with the title text (the Name header with the icons, on the
+// left edge); Size and Type end on the right edge of the three dots (both
+// right-aligned).
 const COL = { name: LEFT + 64, size: RIGHT - 150, type: RIGHT };
 
 /**
@@ -206,7 +207,7 @@ function folderCardSvg(folder) {
     `<g font-family="${xml(FONT)}">` +
     (title ? `<text x="${COL.name}" y="${titleMid + 11}" font-size="32" font-weight="700" fill="${INK}">${xml(title)}</text>` : "") +
     `<g font-size="20" font-weight="600" fill="${MUTED}">` +
-    `<text x="${COL.name}" y="${headTop + 28}">Name</text>` +
+    `<text x="${LEFT}" y="${headTop + 28}">Name</text>` +
     `<text x="${COL.size}" y="${headTop + 28}" text-anchor="end">Size</text>` +
     `<text x="${COL.type}" y="${headTop + 28}" text-anchor="end">Type</text>` +
     `</g>` +
