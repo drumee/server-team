@@ -215,8 +215,8 @@ test('folder rows: the desk icon of each file, its own colours; thumbnail path o
   ];
   const yp = fakeYp({ info: [OK], node: [{ id: NID, filename: 'abc', filetype: 'folder', mfs_root: '/data/mfs/x' }], rows });
   const p = await LP.sharePreview(yp, TOKEN, { guestId: 'g1', entries: true });
-  assert.strictEqual(p.entries[0].thumb, '/data/mfs/x/aa11/thumb.png');
-  assert.strictEqual(p.entries[1].thumb, '/data/mfs/x/bb22/thumb.png');
+  assert.strictEqual(p.entries[0].thumb, '/data/mfs/x/aa11/vignette.png');
+  assert.strictEqual(p.entries[1].thumb, '/data/mfs/x/bb22/vignette.png');
   assert.strictEqual(p.entries[1].video, true);
   assert.strictEqual(p.entries[2].thumb, undefined, 'unsafe id → no path');
   assert.strictEqual(p.entries[3].thumb, undefined, 'documents keep their icon');

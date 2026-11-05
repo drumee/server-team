@@ -198,14 +198,15 @@ async function folderNames(yp, info, node, guestId) {
       };
       if (!folder) {
         e.icon = iconFor(r);
-        // Pictures and videos show their own thumbnail on the desk; where it
+        // Pictures and videos show their own vignette on the desk (media core
+        // iconType "vignette"); where it
         // would be on disk (same workspace as the shared folder). The caller
         // reads it only if it exists.
         const id = r.nid || r.id;
         const type = r.filetype || r.ftype || "";
         if (THUMB_TYPES.test(type) && typeof node.mfs_root === "string" && node.mfs_root &&
           typeof id === "string" && /^[A-Za-z0-9]{1,64}$/.test(id)) {
-          e.thumb = join(node.mfs_root, id, "thumb.png");
+          e.thumb = join(node.mfs_root, id, "vignette.png");
           e.video = type === "video";
         }
       }
