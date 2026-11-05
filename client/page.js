@@ -168,21 +168,27 @@ class MainPage extends RuntimeEnv {
     const endpointPath = data.endpointPath || endpoint_path || "/-/";
     const pathname = this.input.pathname() || "";
     const token = LP.shortShareToken(pathname, endpointPath);
-    const preview = token ? await LP.sharePreview(this.yp, token) : null;
+    let guestId;
+    try {
+      guestId = DrumeeCache.getSysConf("guest_id");
+    } catch (e) {
+      guestId = undefined;
+    }
+    const preview = token ? await LP.sharePreview(this.yp, token, { guestId }) : null;
     const card = LP.cardText(preview);
     const proto = String(data.protocol || "https").replace(/[:\s/]+/g, "") || "https";
     const host = this.input.host();
     const origin = host ? `${proto}://${host}` : "";
     // Card images ship with the UI build (<app>/link-preview/*.png), next to
     // the bundles this page loads — so every endpoint points at its own build.
-    const manifest = data.app && data.app.manifest;
-    const main = manifest && manifest["main.js"];
-    let imageBase;
-    if (origin && typeof main === "string" && /^\/[^\s"'<>]*$/.test(main)) {
-      imageBase = `${origin}${main.replace(/[^/]*$/, "")}link-preview/`;
-    }
+    const dir = LP.imageDir(data.app && data.app.manifest);
+    const imageBase = origin && dir ? `${origin}${dir}` : undefined;
     const url = token && origin ? `${origin}${pathname}` : undefined;
-    let head = LP.ogTags(card, { url, imageBase });
+    // A public file's own content card, served by link_preview.card.
+    const cardUrl = token && origin
+      ? `${origin}${endpointPath.replace(/\/+$/, "")}/svc/link_preview.card?token=${token}`
+      : undefined;
+    let head = LP.ogTags(card, { url, imageBase, cardUrl });
     if (token) head = `${LP.rewriteScript(endpointPath, token)}\n    ${head}`;
     return head;
   }

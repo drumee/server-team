@@ -1,7 +1,7 @@
 {
   "services": {
     "share": {
-      "doc": "Public-safe preview facts for an External link (Secure share) token, used to draw the link card in chat. A public share (no email or password gate) returns its file name, filetype and sender; a gated share returns only state secure; a revoked, expired or unknown token returns state unavailable. Never returns hub ids, node ids, emails or gate details.",
+      "doc": "Public-safe preview facts for an External link (Secure share) token, used to draw the link card in chat. A public share (no email or password gate) returns its file name, filetype and sender, whether it has a content card, and for a folder the names of its first entries; a gated share returns only state secure; a revoked, expired or unknown token returns state unavailable. Never returns hub ids, node ids, emails or gate details.",
       "scope": "hub",
       "permission": {
         "src": "anonymous",
@@ -30,6 +30,40 @@
         "sender": {
           "type": "string",
           "doc": "Full name of the person who created the link. public only"
+        },
+        "card": {
+          "type": "boolean",
+          "doc": "The shared file has a content card (link_preview.card). public only"
+        },
+        "items": {
+          "type": "array",
+          "doc": "First entry names of a shared folder. public folder only"
+        },
+        "more": {
+          "type": "boolean",
+          "doc": "The folder has more entries than items. public folder only"
+        }
+      },
+      "errors": []
+    },
+    "card": {
+      "doc": "Preview image of an External link (Secure share) for link-preview crawlers: the 460x260 content card of a PUBLIC shared image, video or document. Any other token (gated, revoked, expired, unknown, a folder, a file without a card) is redirected to the generic public card image of the UI build.",
+      "scope": "hub",
+      "permission": {
+        "src": "anonymous",
+        "fast_check": "public-api"
+      },
+      "params": {
+        "token": {
+          "type": "string",
+          "required": true,
+          "doc": "Secure share token, the last segment of the External link"
+        }
+      },
+      "returns": {
+        "image": {
+          "type": "binary",
+          "doc": "PNG content card, or a 302 to the generic card image"
         }
       },
       "errors": []

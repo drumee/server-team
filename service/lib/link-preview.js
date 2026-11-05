@@ -19,8 +19,10 @@
  * ── What a preview may reveal ───────────────────────────────────────────────
  *
  * A crawler is anonymous, and so is everyone the link is forwarded to:
- *   - Public share (no email / password gate)  → file name + sender. Anyone
- *     holding the link can open it anyway.
+ *   - Public share (no email / password gate)  → file name + sender; a file's
+ *     own content card (image / video / document poster) as the image; a
+ *     folder's first entry names. Anyone holding the link sees all of it on
+ *     the share page anyway.
  *   - Secure share (email and/or password, locked) → a neutral "Secure link"
  *     card. NO file name, NO sender.
  *   - Revoked / expired / unknown token        → "Link unavailable".
@@ -89,14 +91,22 @@ function shareHashPath(endpointPath, token) {
   return `${endpointPath.replace(/\/+$/, "")}/#/dmz/share/${token}`;
 }
 
+/** Filetypes whose content card (a 460×260 poster) can stand as the preview image. */
+const CARD_TYPES = /^(image|video|document)$/;
+const CARD_SIZE = { width: 460, height: 260 };
+
+/** How many names of a shared folder's contents a preview may list. */
+const FOLDER_NAMES = 3;
+
 /**
- * Public-safe facts about a Secure share token.
- * Never throws: any failure answers `unavailable`.
+ * A Secure share token, resolved: its state, and for a PUBLIC share the share
+ * row and the shared node. Gated, revoked, expired or unknown tokens never
+ * reach the node. Never throws.
  * @param {*} yp
  * @param {string} token
- * @returns {Promise<{state:string, filename?:string, filetype?:string, sender?:string}>}
+ * @returns {Promise<{state:string, info?:Object, node?:Object}>}
  */
-async function sharePreview(yp, token) {
+async function resolveShare(yp, token) {
   if (!isShareToken(token)) return { state: STATE.unavailable };
   let info;
   try {
@@ -114,29 +124,114 @@ async function sharePreview(yp, token) {
     !!info.domain_restriction;
   if (gated) return { state: STATE.secure };
 
-  const res = { state: STATE.public, sender: clean(info.sender || info.name) };
+  let node;
   const nid = info.node_id || info.nid;
   // A SQL error on the page server stops the whole page session (mariadb
   // _handleError → ERROR → index.js stops the session), so only reach into the
   // workspace DB when secure_share_info resolved it.
   if (nid && info.db_name) {
     try {
-      const node = toArray(
+      node = toArray(
         await yp.await_proc("forward_proc", info.hub_id, "mfs_node_attr", `${sqlString(nid)}`)
       )[0];
-      if (node) {
-        res.filetype = clean(node.filetype);
-        // The workspace root is named by the workspace, not by "/".
-        res.filename = /^(root|hub)$/.test(node.filetype || "")
-          ? clean(info.title)
-          : clean(node.filename);
-      }
     } catch (e) {
-      /* name unknown → generic public card */
+      node = undefined; /* name unknown → generic public card */
+    }
+  }
+  return { state: STATE.public, info, node };
+}
+
+/**
+ * Names of the first entries of a shared folder, for a PUBLIC share — the
+ * same listing (and the same anonymous guest identity) the share page itself
+ * shows to anyone holding the link (dmz.list_by_token).
+ * @param {*} yp
+ * @param {Object} info secure_share_info row
+ * @param {Object} node the shared folder
+ * @param {string} guestId sysconf guest_id
+ * @returns {Promise<{items:string[], more:boolean}|null>}
+ */
+async function folderNames(yp, info, node, guestId) {
+  const nid = node && (node.id || node.nid);
+  if (!nid || !guestId || !info.db_name) return null;
+  const params = JSON.stringify({ sort_by: "rank", order: "asc", page: 1, type: "all" });
+  let rows;
+  try {
+    rows = toArray(
+      await yp.await_proc(
+        "forward_proc",
+        info.hub_id,
+        "mfs_show_node_by",
+        `${sqlString(nid)}, ${sqlString(guestId)}, ${sqlString(params)}`
+      )
+    );
+  } catch (e) {
+    return null;
+  }
+  const names = [];
+  for (const r of rows) {
+    if (!r || !r.filename || /^\./.test(r.filename)) continue;
+    const ext = r.ext && !FOLDER_TYPES.test(r.filetype || r.ftype || "") ? `.${r.ext}` : "";
+    names.push(clean(`${r.filename}${ext}`));
+  }
+  if (!names.length) return null;
+  return { items: names.slice(0, FOLDER_NAMES), more: names.length > FOLDER_NAMES };
+}
+
+/**
+ * Public-safe facts about a Secure share token.
+ * Never throws: any failure answers `unavailable`.
+ * @param {*} yp
+ * @param {string} token
+ * @param {{guestId?:string}} [opt] guestId: list a public folder's first names
+ * @returns {Promise<{state:string, filename?:string, filetype?:string, sender?:string,
+ *          card?:boolean, items?:string[], more?:boolean}>}
+ */
+async function sharePreview(yp, token, opt = {}) {
+  const { state, info, node } = await resolveShare(yp, token);
+  if (state !== STATE.public) return { state };
+
+  const res = { state: STATE.public, sender: clean(info.sender || info.name) };
+  if (node) {
+    res.filetype = clean(node.filetype);
+    // The workspace root is named by the workspace, not by "/".
+    res.filename = /^(root|hub)$/.test(node.filetype || "")
+      ? clean(info.title)
+      : clean(node.filename);
+    if (CARD_TYPES.test(node.filetype || "")) res.card = true;
+    if (FOLDER_TYPES.test(node.filetype || "") && opt.guestId) {
+      const list = await folderNames(yp, info, node, opt.guestId);
+      if (list) Object.assign(res, list);
     }
   }
   if (!res.filename) res.filename = clean(info.title);
   return res;
+}
+
+/**
+ * The shared node of a PUBLIC share whose content card may be the preview
+ * image (image, video, document), or null. Gated / revoked / expired / unknown
+ * tokens and folders → null.
+ * @param {*} yp
+ * @param {string} token
+ * @returns {Promise<Object|null>}
+ */
+async function shareCardNode(yp, token) {
+  const { state, node } = await resolveShare(yp, token);
+  if (state !== STATE.public || !node) return null;
+  return CARD_TYPES.test(node.filetype || "") ? node : null;
+}
+
+/**
+ * Folder holding the card images of the UI build (`<app>/link-preview/`),
+ * next to the bundles the page loads, from the UI manifest.
+ * @param {Object} manifest UI manifest.json
+ * @returns {string|null} absolute path, e.g. /-/app/link-preview/
+ */
+function imageDir(manifest) {
+  const main = manifest && manifest["main.js"];
+  if (typeof main !== "string" || !/^\/[^\s"'<>]*$/.test(main)) return null;
+  return `${main.replace(/[^/]*$/, "")}link-preview/`;
 }
 
 /**
@@ -169,17 +264,22 @@ const FOLDER_TYPES = /^(folder|root|hub)$/;
  * Card text for a preview state.
  * @param {{state?:string, filename?:string, filetype?:string, sender?:string}} p
  *        `undefined` / no state → the neutral Drumee card.
- * @returns {{title:string, description:string, image:string}}
+ * @returns {{title:string, description:string, image:string, card?:boolean}}
  */
 function cardText(p) {
   const state = p && p.state;
   if (state === STATE.public) {
     const what = FOLDER_TYPES.test(p.filetype || "") ? "Folder" : "File";
     const title = p.filename || `Shared ${what.toLowerCase()}`;
-    const description = p.sender
+    let description = p.sender
       ? `${what} shared by ${p.sender} via Drumee`
       : `${what} shared via Drumee`;
-    return { title, description, image: "public" };
+    // A public folder previews its first entries — anyone holding the link
+    // sees them on the share page anyway.
+    if (Array.isArray(p.items) && p.items.length) {
+      description += ` · ${p.items.join(", ")}${p.more ? ", …" : ""}`;
+    }
+    return { title, description, image: "public", card: !!p.card };
   }
   if (state === STATE.secure) {
     return {
@@ -205,9 +305,11 @@ function cardText(p) {
 /**
  * Open Graph + Twitter card tags, already escaped.
  * @param {{title:string, description:string, image:string}} card
- * @param {{url?:string, imageBase?:string}} where
+ * @param {{url?:string, imageBase?:string, cardUrl?:string}} where
  *        imageBase: absolute URL of the folder holding the card images
  *        (`<app>/link-preview/`); omitted → no image tags.
+ *        cardUrl: absolute URL of link_preview.card for this token, used when
+ *        the card is a public file (card.card).
  * @returns {string}
  */
 function ogTags(card, where = {}) {
@@ -218,13 +320,20 @@ function ogTags(card, where = {}) {
     ["og:description", card.description],
   ];
   if (where.url) tags.push(["og:url", where.url]);
-  if (where.imageBase) {
+  // A public file shows its own content card; everything else a card image
+  // of the build.
+  const image = card.card && where.cardUrl ? where.cardUrl : null;
+  if (image) {
+    tags.push(["og:image", image]);
+    tags.push(["og:image:width", String(CARD_SIZE.width)]);
+    tags.push(["og:image:height", String(CARD_SIZE.height)]);
+  } else if (where.imageBase) {
     tags.push(["og:image", `${where.imageBase}${card.image}.png`]);
     tags.push(["og:image:width", "1200"]);
     tags.push(["og:image:height", "630"]);
   }
   const html = tags.map(([k, v]) => `<meta property="${esc(k)}" content="${esc(v)}">`);
-  html.push(`<meta name="twitter:card" content="${where.imageBase ? "summary_large_image" : "summary"}">`);
+  html.push(`<meta name="twitter:card" content="${image || where.imageBase ? "summary_large_image" : "summary"}">`);
   html.push(`<meta name="twitter:title" content="${esc(card.title)}">`);
   html.push(`<meta name="twitter:description" content="${esc(card.description)}">`);
   return html.join("\n    ");
@@ -255,6 +364,8 @@ module.exports = {
   shortShareToken,
   shareHashPath,
   sharePreview,
+  shareCardNode,
+  imageDir,
   cardText,
   ogTags,
   rewriteScript,

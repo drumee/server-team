@@ -28,7 +28,7 @@ const TOKEN = 'lUIljceM1Z2uDJ0NBl1mw';
 const HUB = 'ad43ec7aad43ec80';
 const NID = 'add21922add2192d';
 
-function fakeYp({ info, node, failInfo = false } = {}) {
+function fakeYp({ info, node, rows, failInfo = false } = {}) {
   const calls = [];
   return {
     calls,
@@ -37,6 +37,10 @@ function fakeYp({ info, node, failInfo = false } = {}) {
       if (name === 'secure_share_info') {
         if (failInfo) throw new Error('boom');
         return info;
+      }
+      if (name === 'forward_proc' && args[1] === 'mfs_show_node_by') {
+        if (rows instanceof Error) throw rows;
+        return rows;
       }
       if (name === 'forward_proc') return node;
       throw new Error(`unexpected proc ${name}`);
@@ -99,13 +103,87 @@ test('rewrite script restores the historic address, query before the hash', () =
 test('public share: file name + sender', async () => {
   const yp = fakeYp({ info: [OK], node: [{ filename: 'Q4 report.pdf', filetype: 'document' }] });
   const p = await LP.sharePreview(yp, TOKEN);
-  assert.deepStrictEqual(p, { state: 'public', sender: 'Lexis Tran', filetype: 'document', filename: 'Q4 report.pdf' });
+  assert.deepStrictEqual(p, { state: 'public', sender: 'Lexis Tran', filetype: 'document', filename: 'Q4 report.pdf', card: true });
   assert.strictEqual(yp.calls[1].args[0], HUB);
   assert.strictEqual(yp.calls[1].args[2], `'${NID}'`);
   const card = LP.cardText(p);
   assert.strictEqual(card.title, 'Q4 report.pdf');
   assert.strictEqual(card.description, 'File shared by Lexis Tran via Drumee');
   assert.strictEqual(card.image, 'public');
+});
+
+test('public file: its own content card is the preview image', async () => {
+  for (const filetype of ['image', 'video', 'document']) {
+    const yp = fakeYp({ info: [OK], node: [{ id: NID, filename: 'a', filetype }] });
+    assert.strictEqual((await LP.sharePreview(yp, TOKEN)).card, true, filetype);
+    assert.strictEqual((await LP.shareCardNode(fakeYp({ info: [OK], node: [{ id: NID, filetype }] }), TOKEN)).id, NID);
+  }
+  for (const filetype of ['folder', 'root', 'hub', 'other', 'audio']) {
+    const yp = fakeYp({ info: [OK], node: [{ filename: 'a', filetype }] });
+    assert.strictEqual((await LP.sharePreview(yp, TOKEN)).card, undefined, filetype);
+    assert.strictEqual(await LP.shareCardNode(fakeYp({ info: [OK], node: [{ filetype }] }), TOKEN), null, filetype);
+  }
+  const card = LP.cardText({ state: 'public', filename: 'a', filetype: 'image', card: true });
+  const html = LP.ogTags(card, { imageBase: 'https://h/-/app/link-preview/', cardUrl: 'https://h/-/svc/link_preview.card?token=x' });
+  assert.ok(html.includes('<meta property="og:image" content="https://h/-/svc/link_preview.card?token=x">'));
+  assert.ok(html.includes('<meta property="og:image:width" content="460">'));
+  assert.ok(!html.includes('public.png'));
+  // no card → the build's image, even when a card URL is offered
+  const folder = LP.ogTags(LP.cardText({ state: 'public', filetype: 'folder' }), { imageBase: 'https://h/-/app/link-preview/', cardUrl: 'https://h/c' });
+  assert.ok(folder.includes('public.png') && !folder.includes('https://h/c'));
+});
+
+test('content card never for a secure / unavailable / bad token', async () => {
+  for (const yp of [
+    fakeYp({ info: [{ ...OK, require_password: 1 }], node: [{ id: NID, filetype: 'image' }] }),
+    fakeYp({ info: [{ ...OK, recipient_email: 'a@b.c' }], node: [{ id: NID, filetype: 'image' }] }),
+    fakeYp({ info: [{ ...OK, validity: 'TICKET_EXPIRED' }], node: [{ id: NID, filetype: 'image' }] }),
+    fakeYp({ failInfo: true }),
+  ]) {
+    assert.strictEqual(await LP.shareCardNode(yp, TOKEN), null);
+    assert.ok(!yp.calls.some((c) => c.name === 'forward_proc'), 'workspace never read');
+  }
+  assert.strictEqual(await LP.shareCardNode(fakeYp({ info: [OK] }), '../x'), null);
+});
+
+test('public folder: first entry names, as the share page lists them', async () => {
+  const rows = [
+    { filename: 'Q4', ext: 'pdf', filetype: 'document' },
+    { filename: '.hidden', ext: '', filetype: 'other' },
+    { filename: 'Photos', ext: '', filetype: 'folder' },
+    { filename: 'logo', ext: 'png', filetype: 'image' },
+    { filename: 'notes', ext: 'txt', filetype: 'text' },
+  ];
+  const yp = fakeYp({ info: [OK], node: [{ id: NID, filename: 'abc', filetype: 'folder' }], rows });
+  const p = await LP.sharePreview(yp, TOKEN, { guestId: 'g1' });
+  assert.deepStrictEqual([p.items, p.more], [['Q4.pdf', 'Photos', 'logo.png'], true]);
+  const list = yp.calls.find((c) => c.args[1] === 'mfs_show_node_by');
+  assert.strictEqual(list.args[0], HUB);
+  assert.ok(list.args[2].startsWith(`'${NID}', 'g1', '`));
+  assert.strictEqual(LP.cardText(p).description, 'Folder shared by Lexis Tran via Drumee · Q4.pdf, Photos, logo.png, …');
+  // no guest id, or the listing fails → plain folder card
+  const p2 = await LP.sharePreview(fakeYp({ info: [OK], node: [{ id: NID, filename: 'abc', filetype: 'folder' }], rows }), TOKEN);
+  assert.strictEqual(p2.items, undefined);
+  const p3 = await LP.sharePreview(fakeYp({ info: [OK], node: [{ id: NID, filename: 'abc', filetype: 'folder' }], rows: new Error('x') }), TOKEN, { guestId: 'g1' });
+  assert.deepStrictEqual(LP.cardText(p3).description, 'Folder shared by Lexis Tran via Drumee');
+  // a file is never listed
+  const yf = fakeYp({ info: [OK], node: [{ id: NID, filename: 'a', filetype: 'image' }], rows });
+  await LP.sharePreview(yf, TOKEN, { guestId: 'g1' });
+  assert.ok(!yf.calls.some((c) => c.args[1] === 'mfs_show_node_by'));
+});
+
+test('folder names in the description are escaped in the tags', async () => {
+  const rows = [{ filename: '"><script>x</script>', ext: '', filetype: 'folder' }];
+  const p = await LP.sharePreview(fakeYp({ info: [OK], node: [{ id: NID, filename: 'f', filetype: 'folder' }], rows }), TOKEN, { guestId: 'g' });
+  const html = LP.ogTags(LP.cardText(p), {});
+  assert.ok(!html.includes('<script>'));
+});
+
+test('imageDir: next to main.js, only for a plain absolute path', () => {
+  assert.strictEqual(LP.imageDir({ 'main.js': '/-/app/main.abc.js' }), '/-/app/link-preview/');
+  assert.strictEqual(LP.imageDir({ 'main.js': 'https://evil/x.js' }), null);
+  assert.strictEqual(LP.imageDir({ 'main.js': '/-/a"b/m.js' }), null);
+  assert.strictEqual(LP.imageDir(undefined), null);
 });
 
 test('public share of a workspace root is named by the workspace', async () => {
