@@ -211,7 +211,12 @@ async function offerFinalize(ctx, session) {
   const rid = Math.trunc(Number(md.mkt_redemption_id)) || 0;
   const refuse = async (status) => {
     try { await ctx.yp.await_proc('mkt_offer_release', rid); } catch (e) { /* the hold ages out by TTL anyway */ }
-    return { status, payment_status: 'unpaid', offer_code: md.mkt_code || null };
+    // plan / period ride back so the result modal can reopen the SAME
+    // checkout (another card, or the regular price) instead of a bare page.
+    return {
+      status, payment_status: 'unpaid', offer_code: md.mkt_code || null,
+      plan: md.plan || null, period: md.period || null,
+    };
   };
   const offer = await offerCheck(ctx, md.mkt_code, email, md.period, { exclude_id: rid, fingerprint });
   if (offer.error) return refuse(offer.error);

@@ -20,6 +20,14 @@
  * nothing, while an upgrade (or any plan change) re-arms every threshold
  * against the new limits on the next desk load.
  *
+ * Quiet period: nobody who has just paid should be upsold the next tier on
+ * the same screen as their receipt. When the lib detects a plan change it
+ * stamps $.upgrade_nudge.plan_changed_at, and nothing is granted for
+ * QUIET_AFTER_PLAN_CHANGE after that stamp. An organisation is also quiet
+ * for the same span after its creation (entity.ctime — org_provision resets
+ * it when it claims a pool hub), because an org only exists once somebody
+ * paid for it: a fresh Team checkout never sees "upgrade to Business".
+ *
  * Candidate policy: within a family only the HIGHEST currently-true
  * threshold competes (nobody should see the 70% popup after the 90% one),
  * and families rank storage > seats > age. The first candidate the gate
@@ -53,6 +61,36 @@ const AGE_STEPS = [
 // not a threshold popup). A downgraded ORG on the free row has no personal
 // tier to go to, so it is sent to Team. Business gets no nudges at all.
 const TARGET_PLAN = { free: "pro", pro: "team", team: "business" };
+
+// No nudge for this long after a plan change (or an org's creation).
+const QUIET_AFTER_PLAN_CHANGE = 7 * 24 * 3600;
+
+/**
+ * True while a fresh plan change (or a freshly created org, `bornSec`) keeps
+ * the nudges quiet. A missing/zero timestamp never makes anything quiet.
+ */
+function _inQuietPeriod(block, bornSec, nowSec) {
+  const changed = Number((block && block.plan_changed_at) || 0);
+  if (changed && nowSec - changed < QUIET_AFTER_PLAN_CHANGE) return true;
+  const born = Number(bornSec || 0);
+  if (born && nowSec - born < QUIET_AFTER_PLAN_CHANGE) return true;
+  return false;
+}
+
+/**
+ * After the reset proc wiped a block armed against another plan, leave the
+ * moment of the change behind so _inQuietPeriod can see it. The mark procs
+ * deep-merge into the block, so the stamp survives later grants; the nudge
+ * lab's reset removes the whole block, stamp included.
+ */
+async function _stampPlanChange(yp, table, col, id) {
+  await yp.await_query(
+    `UPDATE ${table} SET ${col} = JSON_SET(
+       IF(${col} IS NULL OR ${col} = '' OR NOT JSON_VALID(${col}), '{}', ${col}),
+       '$.upgrade_nudge', JSON_OBJECT('plan_changed_at', UNIX_TIMESTAMP()))
+      WHERE id = ?`, id
+  );
+}
 const ORG_TARGET_PLAN = { free: "team", pro: "team", team: "business" };
 
 function enabled() {
@@ -193,11 +231,13 @@ async function grant(yp, domainId, uid) {
     } catch (e) { block = null; }
     if (block && block.plan && block.plan !== limits.plan) {
       await yp.await_proc("org_upgrade_nudge_reset", org.id);
-      block = null;
+      await _stampPlanChange(yp, "organisation", "metadata", org.id);
+      return null; // the plan just changed — quiet period starts now
     }
 
     const target = ORG_TARGET_PLAN[limits.plan];
     if (!target) return null; // top tier — nowhere to nudge to
+    if (_inQuietPeriod(block, org.ctime, Math.floor(Date.now() / 1000))) return null;
 
     // ---- live numbers (same sources as over-limit.js) ----
     const usage = firstRow(await yp.await_query(
@@ -286,11 +326,15 @@ async function _grantPersonal(yp, uid) {
   } catch (e) { block = null; }
   if (block && block.plan && block.plan !== limits.plan) {
     await yp.await_proc("drumate_upgrade_nudge_reset", uid);
-    block = null;
+    await _stampPlanChange(yp, "drumate", "profile", uid);
+    return null; // the plan just changed — quiet period starts now
   }
 
   const target = TARGET_PLAN[limits.plan];
   if (!target) return null;
+  // Personal accounts: only a plan change makes them quiet, not their age —
+  // a new Free account is not a fresh payer.
+  if (_inQuietPeriod(block, 0, Math.floor(Date.now() / 1000))) return null;
 
   let diskUsed = 0;
   try { diskUsed = Number(await yp.await_func("disk_usage", uid)) || 0; } catch (e) { /* 0 */ }
@@ -344,6 +388,8 @@ module.exports = {
   _storageCandidates,
   _seatCandidates,
   _ageCandidates,
+  _inQuietPeriod,
+  QUIET_AFTER_PLAN_CHANGE,
   TARGET_PLAN,
   ORG_TARGET_PLAN,
 };
