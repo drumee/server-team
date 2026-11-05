@@ -39,6 +39,15 @@ const TOKEN_RE = /^[A-Za-z0-9_-]{8,80}$/;
 /** Path segment of the short share link: `<endpoint>/s/<token>`. */
 const SHORT_SEGMENT = "s";
 
+/**
+ * Query marker on an Internal link copied from an EXTERNAL workspace
+ * (`…/-/?ext=1#/desk/wm/o/…`). Crawlers never get the fragment, so this is
+ * the only way the page can tell them the link belongs to an external
+ * workspace and draw its card in that workspace's pink. Mirrored in ui-team
+ * libs/drumee-link-card.js (EXTERNAL_MARK).
+ */
+const EXTERNAL_MARK = { key: "ext", value: "1" };
+
 const STATE = {
   public: "public",
   secure: "secure",
@@ -298,8 +307,30 @@ function cardText(p) {
   return {
     title: "Drumee",
     description: "Secure workspace for files, chat and meetings. Sign in to open this link.",
-    image: "neutral",
+    // An external workspace's Internal link: the same restricted card in the
+    // external workspace's pink — the secure.png image is exactly that card.
+    image: p && p.external ? "secure" : "neutral",
   };
+}
+
+/**
+ * The external-workspace marker is on this page address.
+ * @param {*} value  the `ext` query value
+ * @returns {boolean}
+ */
+function isExternalMark(value) {
+  return value === EXTERNAL_MARK.value;
+}
+
+/**
+ * Inline script removing `ext=1` from the address before the app boots: the
+ * marker is for link-preview crawlers only, so the app never sees it and a URL
+ * copied later from the address bar never carries it to another item.
+ * @returns {string}
+ */
+function stripMarkScript() {
+  const mark = JSON.stringify(`${EXTERNAL_MARK.key}=${EXTERNAL_MARK.value}`);
+  return `<script>(function(){try{var s=location.search.replace(/^\\?/,"").split("&").filter(function(p){return p!==${mark}}).join("&");history.replaceState(history.state,"",location.pathname+(s?"?"+s:"")+location.hash)}catch(e){}})()</script>`;
 }
 
 /**
@@ -359,6 +390,9 @@ function rewriteScript(endpointPath, token) {
 module.exports = {
   STATE,
   SHORT_SEGMENT,
+  EXTERNAL_MARK,
+  isExternalMark,
+  stripMarkScript,
   isShareToken,
   shortShareLink,
   shortShareToken,

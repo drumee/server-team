@@ -277,3 +277,35 @@ test('page.js never lets a preview failure break the page', () => {
   // The rewrite must run before the bootstrap script loads any bundle.
   assert.ok(tpl.indexOf('link_preview_head %>') < tpl.indexOf("bootstrap.js.tpl"));
 });
+
+// ── Internal link of an external workspace (?ext=1) ──────────────────────────
+
+test('external-workspace Internal link: pink card, nothing else changes', () => {
+  assert.strictEqual(LP.cardText({ external: true }).image, 'secure');
+  assert.strictEqual(LP.cardText({ external: true }).title, 'Drumee');
+  assert.strictEqual(LP.cardText(null).image, 'neutral');
+  // a share token always wins over the marker
+  assert.strictEqual(LP.cardText({ state: 'unavailable', external: true }).image, 'neutral');
+  assert.ok(LP.isExternalMark('1'));
+  for (const v of [undefined, '', '0', 'true', '1 ', ['1']]) assert.ok(!LP.isExternalMark(v), String(v));
+});
+
+test('the marker is stripped from the address before the app boots, and only it', () => {
+  const html = LP.stripMarkScript();
+  const js = html.replace(/^<script>/, '').replace(/<\/script>$/, '');
+  for (const [search, want] of [
+    ['?ext=1', ''],
+    ['?r=4&ext=1', '?r=4'],
+    ['?ext=1&lang=fr', '?lang=fr'],
+    ['?ext=10', '?ext=10'],
+  ]) {
+    let got;
+    const location = { search, pathname: '/-/', hash: '#/desk/wm/o/1/ad43/folder' };
+    const history = { state: null, replaceState: (s, t, u) => { got = u; } };
+    new Function('location', 'history', js)(location, history);
+    assert.strictEqual(got, `/-/${want}#/desk/wm/o/1/ad43/folder`, search);
+  }
+  const src = fs.readFileSync(path.join(__dirname, '../../client/page.js'), 'utf8');
+  assert.match(src, /const external = !token && LP\.isExternalMark\(this\.input\.get\(LP\.EXTERNAL_MARK\.key\)\);/);
+  assert.match(src, /else if \(external\) head = `\$\{LP\.stripMarkScript\(\)\}/);
+});

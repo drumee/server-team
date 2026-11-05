@@ -175,7 +175,10 @@ class MainPage extends RuntimeEnv {
       guestId = undefined;
     }
     const preview = token ? await LP.sharePreview(this.yp, token, { guestId }) : null;
-    const card = LP.cardText(preview);
+    // Internal link copied from an external workspace (`?ext=1`, see
+    // EXTERNAL_MARK): same neutral card, in the external workspace's pink.
+    const external = !token && LP.isExternalMark(this.input.get(LP.EXTERNAL_MARK.key));
+    const card = LP.cardText(preview || (external ? { external: true } : null));
     const proto = String(data.protocol || "https").replace(/[:\s/]+/g, "") || "https";
     const host = this.input.host();
     const origin = host ? `${proto}://${host}` : "";
@@ -190,6 +193,7 @@ class MainPage extends RuntimeEnv {
       : undefined;
     let head = LP.ogTags(card, { url, imageBase, cardUrl });
     if (token) head = `${LP.rewriteScript(endpointPath, token)}\n    ${head}`;
+    else if (external) head = `${LP.stripMarkScript()}\n    ${head}`;
     return head;
   }
 
