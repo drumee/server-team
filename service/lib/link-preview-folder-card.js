@@ -65,7 +65,9 @@ const TITLE_H = 56;
 const GAP = 16;
 const HEAD_H = 44;
 const ROW_H = 60;
-const COL = { name: LEFT + 48, size: 880, type: 940 };
+// Names line up with the title text; Size and Type end on the right edge of
+// the three dots (both right-aligned).
+const COL = { name: LEFT + 64, size: RIGHT - 150, type: RIGHT };
 
 /**
  * XML text escape; drops characters XML 1.0 forbids (an SVG with one fails).
@@ -160,7 +162,7 @@ function row(e, top, last) {
     icon +
     `<text x="${COL.name}" y="${base}" font-size="26" font-weight="600" fill="${TEXT}">${xml(fit(e.name, NAME_UNITS))}</text>` +
     (size ? `<text x="${COL.size}" y="${base}" font-size="24" fill="${MUTED}" text-anchor="end">${xml(size)}</text>` : "") +
-    (type ? `<text x="${COL.type}" y="${base}" font-size="24" fill="${MUTED}">${xml(type)}</text>` : "") +
+    (type ? `<text x="${COL.type}" y="${base}" font-size="24" fill="${MUTED}" text-anchor="end">${xml(type)}</text>` : "") +
     (last ? "" : `<rect x="${LEFT}" y="${top + ROW_H - 2}" width="${RIGHT - LEFT}" height="2" fill="${LINE}"/>`)
   );
 }
@@ -202,11 +204,11 @@ function folderCardSvg(folder) {
       : `<g transform="translate(${LEFT} ${titleMid - 19}) scale(0.44)" fill="${PINK}"><path d="${FOLDER_PATH}"/></g>`) +
     `<g fill="rgba(20,17,35,0.4)"><circle cx="${RIGHT - 51}" cy="${titleMid}" r="7"/><circle cx="${RIGHT - 29}" cy="${titleMid}" r="7"/><circle cx="${RIGHT - 7}" cy="${titleMid}" r="7"/></g>` +
     `<g font-family="${xml(FONT)}">` +
-    (title ? `<text x="${LEFT + 64}" y="${titleMid + 11}" font-size="32" font-weight="700" fill="${INK}">${xml(title)}</text>` : "") +
+    (title ? `<text x="${COL.name}" y="${titleMid + 11}" font-size="32" font-weight="700" fill="${INK}">${xml(title)}</text>` : "") +
     `<g font-size="20" font-weight="600" fill="${MUTED}">` +
     `<text x="${COL.name}" y="${headTop + 28}">Name</text>` +
     `<text x="${COL.size}" y="${headTop + 28}" text-anchor="end">Size</text>` +
-    `<text x="${COL.type}" y="${headTop + 28}">Type</text>` +
+    `<text x="${COL.type}" y="${headTop + 28}" text-anchor="end">Type</text>` +
     `</g>` +
     `<rect x="${LEFT}" y="${headTop + HEAD_H - 2}" width="${RIGHT - LEFT}" height="2" fill="${LINE}"/>` +
     entries.map((e, i) => row(e, rowsTop + i * ROW_H, i === entries.length - 1)).join("") +
