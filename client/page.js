@@ -157,6 +157,37 @@ class MainPage extends RuntimeEnv {
   }
 
   /**
+   * Head tags for link-preview crawlers — see service/lib/link-preview.js.
+   * On the short share path (<endpoint>/s/<token>) also a script that puts the
+   * historic `#/dmz/share/<token>` address back before the app boots.
+   * @param {Object} data page data (endpointPath, protocol, app.manifest)
+   * @returns {Promise<String>}
+   */
+  async linkPreviewHead(data) {
+    const LP = require("../service/lib/link-preview");
+    const endpointPath = data.endpointPath || endpoint_path || "/-/";
+    const pathname = this.input.pathname() || "";
+    const token = LP.shortShareToken(pathname, endpointPath);
+    const preview = token ? await LP.sharePreview(this.yp, token) : null;
+    const card = LP.cardText(preview);
+    const proto = String(data.protocol || "https").replace(/[:\s/]+/g, "") || "https";
+    const host = this.input.host();
+    const origin = host ? `${proto}://${host}` : "";
+    // Card images ship with the UI build (<app>/link-preview/*.png), next to
+    // the bundles this page loads — so every endpoint points at its own build.
+    const manifest = data.app && data.app.manifest;
+    const main = manifest && manifest["main.js"];
+    let imageBase;
+    if (origin && typeof main === "string" && /^\/[^\s"'<>]*$/.test(main)) {
+      imageBase = `${origin}${main.replace(/[^/]*$/, "")}link-preview/`;
+    }
+    const url = token && origin ? `${origin}${pathname}` : undefined;
+    let head = LP.ogTags(card, { url, imageBase });
+    if (token) head = `${LP.rewriteScript(endpointPath, token)}\n    ${head}`;
+    return head;
+  }
+
+  /**
    *
    */
   async start(opt) {
@@ -185,6 +216,14 @@ class MainPage extends RuntimeEnv {
     data.fonts_links = await this.yp.await_proc(`${db}.get_fonts_links`);
     data.fonts_faces = await this.yp.await_proc(`${db}.get_fonts_faces`);
     data.description = data.description || data.title;
+    // Link previews (Open Graph) + the short External link /s/<token>. Never
+    // allowed to break the page: on any failure the page renders as before.
+    try {
+      data.link_preview_head = await this.linkPreviewHead(data);
+    } catch (e) {
+      this.warn("[page] link preview skipped:", e && e.message);
+      data.link_preview_head = "";
+    }
     this.output.set_header(
       "Cache-Control",
       "no-cache, no-store, must-revalidate"

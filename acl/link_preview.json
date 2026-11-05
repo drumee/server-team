@@ -1,0 +1,42 @@
+{
+  "services": {
+    "share": {
+      "doc": "Public-safe preview facts for an External link (Secure share) token, used to draw the link card in chat. A public share (no email or password gate) returns its file name, filetype and sender; a gated share returns only state secure; a revoked, expired or unknown token returns state unavailable. Never returns hub ids, node ids, emails or gate details.",
+      "scope": "hub",
+      "permission": {
+        "src": "anonymous",
+        "fast_check": "public-api"
+      },
+      "params": {
+        "token": {
+          "type": "string",
+          "required": true,
+          "doc": "Secure share token, the last segment of the External link"
+        }
+      },
+      "returns": {
+        "state": {
+          "type": "string",
+          "doc": "public, secure or unavailable"
+        },
+        "filename": {
+          "type": "string",
+          "doc": "Shared file or folder name. public only"
+        },
+        "filetype": {
+          "type": "string",
+          "doc": "Shared node filetype. public only"
+        },
+        "sender": {
+          "type": "string",
+          "doc": "Full name of the person who created the link. public only"
+        }
+      },
+      "errors": []
+    }
+  },
+  "modules": {
+    "private": "service/link_preview",
+    "public": "service/link_preview"
+  }
+}
