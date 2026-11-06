@@ -1243,6 +1243,8 @@ class __private_payment extends Entity {
       seats_used: res.seats_used,
       seat_limit: res.seat_limit,
       plan: res.plan,
+      owner_id: res.owner_id,
+      owner_email: res.owner_email || '',
     });
   }
 

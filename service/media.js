@@ -2994,7 +2994,33 @@ class __media extends Mfs {
       }
     }
     if (this.input.get('modifier')) node = await this._withModifier(node);
+    node = await this._withDomain(node);
     this.output.data(node);
+  }
+
+  /**
+   * The organisation (domain) the node's workspace belongs to — yp.entity
+   * dom_id of its hub, one primary-key read. The over-limit banner shows only
+   * on workspaces of the org that is over its limits; the hub's vhost cannot
+   * tell (hand-made and legacy names break the `<name>-<org link>` pattern,
+   * 17 of 349 org hubs on stage). Best-effort: a failed read leaves the node
+   * as it was and the UI falls back to showing the banner.
+   * @param {Object} node granted node
+   * @returns {Promise<Object>} the node, with dom_id when known
+   */
+  async _withDomain(node) {
+    try {
+      const hub_id = node && (node.hub_id || node.actual_hub_id);
+      if (!hub_id || node.dom_id != null) return node;
+      let row = await this.yp.await_query(
+        `SELECT dom_id FROM entity WHERE id = ? LIMIT 1`, hub_id
+      );
+      if (Array.isArray(row)) row = row[0];
+      if (!row || row.dom_id == null) return node;
+      return { ...node, dom_id: ~~row.dom_id };
+    } catch (e) {
+      return node;
+    }
   }
 
   /**

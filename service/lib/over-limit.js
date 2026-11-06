@@ -188,9 +188,20 @@ async function evaluate(yp, domainId, opts = {}) {
       diskUsed, limits.disk, seatsUsed, seatCap == null ? 0 : seatCap, limits.plan
     ));
 
+    // Who non-owners are told to contact (popup + banner). Best-effort: a
+    // failed read leaves it empty and the UI falls back to "the owner".
+    let ownerEmail = "";
+    try {
+      const o = firstRow(await yp.await_query(
+        `SELECT email FROM drumate WHERE id = ? LIMIT 1`, org.owner_id
+      ));
+      ownerEmail = (o && o.email) || "";
+    } catch (e) { /* keep empty */ }
+
     out = {
       org_id: org.id,
       owner_id: org.owner_id,
+      owner_email: ownerEmail,
       domain_id: dom,
       prev_state: res && res.prev_state,
       state: (res && res.state) || "ok",
@@ -254,6 +265,8 @@ async function notifyDomain(yp, RedisStore, state) {
         seats_used: state.seats_used,
         seat_limit: state.seat_limit,
         plan: state.plan,
+        owner_id: state.owner_id,
+        owner_email: state.owner_email || "",
         timestamp: Date.now(),
       },
       options: { service: "payment.plan_state_changed", keys: "*" },

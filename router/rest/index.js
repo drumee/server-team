@@ -114,6 +114,16 @@ const OVER_LIMIT_MUTATING_ALLOWLIST = new Set([
   "chat.chat_rooms", "chat.contact_rooms", "chat.share_rooms",
   "chat.chat_room_info", "chat.tag_chat_count", "chat.count_all",
   "chat.messages",
+  // 🚨 BOOT READS declared src:'owner' — owner of one's OWN desk, a scope, not
+  // a write. Clamped, a locked org booted broken:
+  //   desk.get_env    Wm's boot fetch (desk/wm: home_id, wicket_id, disk,
+  //                   _e.ready, bindWsEvents) — none of it ran, and the 401
+  //                   reached the UI's refusal tap as a "workspace is
+  //                   read-only" Butler modal on EVERY load, before any
+  //                   window existed (measured on stage huan, 2026-11-05).
+  //                   HARD_LOCK_SURVIVAL already lists it; this list missed it.
+  //   reward.get_state / survey.get_state  eligibility reads; SELECTs only.
+  "desk.get_env", "reward.get_state", "survey.get_state",
 ]);
 // Once hard-locked, NON-admin members are denied entirely — not even read
 // (Owner/Admin keep view + resolution access). The FE still needs enough to
