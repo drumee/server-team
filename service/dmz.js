@@ -306,8 +306,20 @@ class __dmz extends Mfs {
       } else {
         res.status = 'TICKET_OK';
       }
-    } else if (res.require_password) {
-      res.status = 'REQUIRED_PASSWORD';
+    } else {
+      // A plain link's email gate (dmz_set_email_gate — a meeting's guest
+      // link): asked before the password, as a secure share's is, until this
+      // session has passed it. Its allow-list never leaves the server.
+      delete res.allowed_emails;
+      let emailOk = false;
+      if (res.require_email) {
+        try { emailOk = await this._isShareEmailOk(token); } catch (e) { emailOk = false; }
+      }
+      if (res.require_email && !emailOk) {
+        res.status = 'REQUIRED_EMAIL';
+      } else if (res.require_password) {
+        res.status = 'REQUIRED_PASSWORD';
+      }
     }
     const guest_id = Cache.getSysConf("guest_id");
     res.guest_id = guest_id;
@@ -1021,6 +1033,35 @@ class __dmz extends Mfs {
   }
 
   /**
+   * The same per token + session marker for a plain link's EMAIL gate
+   * (dmz_set_email_gate): set once this session gave an accepted email to
+   * dmz.login, read by info / login / _shareByToken. Fails closed like the
+   * password marker — no Redis, no marker, the email is asked again.
+   */
+  _shareEmailKey(token) {
+    const sid = this.input.sid();
+    if (!token || !sid) return null;
+    return `ss:emailok:${token}:${sid}`;
+  }
+
+  async _markShareEmailOk(token) {
+    const key = this._shareEmailKey(token);
+    if (!key) return;
+    const client = RedisStore.getClient();
+    if (!client) return;
+    await client.set(key, '1', { EX: 12 * 3600 });
+  }
+
+  async _isShareEmailOk(token) {
+    const key = this._shareEmailKey(token);
+    if (!key) return false;
+    const client = RedisStore.getClient();
+    if (!client) return false;
+    const v = await client.get(key);
+    return v === '1';
+  }
+
+  /**
    *
    */
   async login() {
@@ -1070,6 +1111,38 @@ class __dmz extends Mfs {
       info.dmz_expiry = rows[0].dmz_expiry;
     }
     info.require_pwd = info.require_password;
+
+    // EMAIL GATE (dmz_set_email_gate — "Require email to view" / "Restrict
+    // access to specific emails or domains" on a meeting's guest link). Before
+    // the password, as on a secure share, and through the same matcher
+    // (_emailMatchesAllowed: exact address or "@domain"; no list = any email).
+    // The identity bound below stays the link's own guest (info.uid), so the
+    // meeting join is unchanged. The allow-list itself never leaves the server.
+    // Soft for an anonymous viewer, exactly like a secure share's: a typed
+    // address, format-checked and matched, not proven.
+    if (info.require_email && info.validity == 'TICKET_OK') {
+      const isOwner = !!user.id && String(user.id) === String(info.sender_id);
+      let emailOk = isOwner;
+      if (!emailOk) {
+        try { emailOk = await this._isShareEmailOk(token); } catch (e) { emailOk = false; }
+      }
+      if (!emailOk) {
+        const signedIn = !!user.id && ![ID_NOBODY, guest_id].includes(user.id);
+        const typed = String(this.input.get(Attr.email) || '').toLowerCase().trim();
+        const email = typed || (signedIn ? String(user.email || '').toLowerCase().trim() : '');
+        if (!email) {
+          const gate = { ...info, status: 'REQUIRED_EMAIL' };
+          delete gate.allowed_emails;
+          return this.output.data(gate);
+        }
+        if (!email.isEmail() || !_emailMatchesAllowed(email, info)) {
+          return this.output.data({ status: 'EMAIL_MISMATCH', require_email: 1 });
+        }
+        try { await this._markShareEmailOk(token); } catch (e) { /* the gate asks again */ }
+      }
+    }
+    delete info.allowed_emails;
+
     // Past the gate only once THIS session gave this link's password. Not the
     // session's access to the node: a public link grants the node to the one
     // shared public identity when it is created, so a session that had opened
@@ -1421,7 +1494,16 @@ class __dmz extends Mfs {
       }
       if (!passed) return { status: 'REQUIRED_PASSWORD' };
     }
-    if (info.require_email) return { status: 'REQUIRED_EMAIL' };
+    if (info.require_email) {
+      // A plain link (dmz_set_email_gate) passes once this session gave an
+      // accepted email to dmz.login; a secure share is the gate's business.
+      let passed = false;
+      if (!info.is_secure) {
+        try { passed = await this._isShareEmailOk(token); } catch (e) { passed = false; }
+      }
+      if (!passed) return { status: 'REQUIRED_EMAIL' };
+    }
+    delete info.allowed_emails;
     return { info, viewerUid, legacyPrivilege };
   }
 

@@ -39,6 +39,7 @@ const {
   CAN_CHAT, CHAT_UPLOAD_GRANT, privilegeAllows
 } = require("../lib/member-capability");
 const { hubWildcardPermission, holdsHubOwner } = require("../lib/hub-owner");
+const { notifyInviter } = require("../lib/hub-invite-answer-notify");
 const { MfsTools } = require("@drumee/server-core");
 const { remove_dir } = MfsTools;
 const { toArray } = utils;
@@ -2041,6 +2042,7 @@ class __private_hub extends Hub {
       // already a member, and their bell would keep offering them buttons.
       // Access itself is deliberately untouched here — see the note above.
       await this._closeInvitation(hub_id, tokenRow.email, { accepted: 1 });
+      await this._notifyInviter(tokenRow, hub_id, 'accepted');
       return this.output.data({ hub_id, already_member: 1 });
     }
 
@@ -2141,6 +2143,7 @@ class __private_hub extends Hub {
     const org = await joinOrgOnWorkspaceJoin(this, this.uid, hub_id);
     await this.yp.await_proc('token_hub_invite_set_status', secret, 'accepted', keep_meta);
     await this._closeInvitation(hub_id, tokenRow.email, { accepted: 1 });
+    await this._notifyInviter(tokenRow, hub_id, 'accepted');
     await writeAudit(this, {
       db: db_name,
       uid: this.uid,
@@ -2232,6 +2235,26 @@ class __private_hub extends Hub {
   }
 
   /**
+   * "<invitee> accepted / declined your invitation to <workspace>" for the
+   * admin who sent it (tokenRow.inviter_id). After _closeInvitation, so the
+   * inviter's Access panel already reads the answer when the bell lands.
+   * Never throws (lib/hub-invite-answer-notify).
+   */
+  async _notifyInviter(tokenRow, hub_id, answer) {
+    await notifyInviter(this, {
+      answer,
+      hub_id,
+      inviter_id: tokenRow && tokenRow.inviter_id,
+      email: tokenRow && tokenRow.email,
+      // Accepting joins the SIGNED-IN account, so that is who accepted. A
+      // decline needs no session and changes nobody's membership: it is
+      // attributed to the invited address (its account, if any), never to
+      // whoever happens to be signed in where the email link was opened.
+      actor: answer === 'accepted' ? this.uid : null,
+    });
+  }
+
+  /**
    * Turn down a workspace invitation.
    *
    * 🚨 NO SESSION IS REQUIRED, and that is deliberate rather than an oversight.
@@ -2257,6 +2280,13 @@ class __private_hub extends Hub {
    */
   async decline_invite() {
     const secret = this.input.need('token');
+    // Whether THIS call is the one that declines: the proc below returns the
+    // row whether or not it changed it, and only the first refusal of a live
+    // invitation tells the inviter -- a second press, or a stale link, must not
+    // notify again.
+    const found = await this.yp.await_proc('token_get_next', secret);
+    const before = isArray(found) ? found[0] : found;
+    const wasActive = !!(before && before.status === 'active');
     const rows = await this.yp.await_proc('token_hub_invite_decline', secret);
     const tokenRow = isArray(rows) ? rows[0] : rows;
     // No row at all: not a hub-invite token, or one already swept away by the
@@ -2272,6 +2302,9 @@ class __private_hub extends Hub {
       return this.output.data({ status: 'already_used', hub_id });
     }
     await this._closeInvitation(hub_id, tokenRow.email, { accepted: false });
+    if (wasActive && tokenRow.status === 'declined') {
+      await this._notifyInviter(tokenRow, hub_id, 'declined');
+    }
     // Audited on the WORKSPACE, so its administrators can see that an
     // invitation they sent was turned down — the Pending Invitations list shows
     // the state, this records the moment. Best-effort: the refusal is already

@@ -282,7 +282,7 @@
       ]
     },
     "update_status": {
-      "doc": "Move a task to a different Kanban column. The task is placed at the bottom of the destination column. When the moved task is a subtask and this move leaves every sibling in a done column, the PARENT is auto-completed and returned as `parent` on the response.",
+      "doc": "Move a task to a different Kanban column. The task is placed at the top of the destination column. When the moved task is a subtask and this move leaves every sibling in a done column, the PARENT is auto-completed and returned as `parent` on the response.",
       "scope": "hub",
       "permission": {
         "src": "write"
@@ -313,6 +313,36 @@
           "code": "INVALID_STATUS",
           "message": "status is neither a built-in column nor an existing custom column id",
           "http_status": 400
+        }
+      ]
+    },
+    "reorder": {
+      "doc": "Reorder a task within its own Kanban column (same-column drag-and-drop). The column is renumbered so the task sits directly above before_id, or at the bottom when before_id is absent. A move to another column is update_status.",
+      "scope": "hub",
+      "permission": {
+        "src": "write"
+      },
+      "params": {
+        "id": {
+          "type": "string",
+          "required": true,
+          "doc": "Task ID to move"
+        },
+        "before_id": {
+          "type": "string",
+          "required": false,
+          "doc": "Task the moved task now sits directly above. Absent, empty, or a task in another column = bottom of the column."
+        }
+      },
+      "returns": {
+        "type": "array",
+        "doc": "Every task in the column as {id, status, rank}, in the new order"
+      },
+      "errors": [
+        {
+          "code": "TASK_NOT_FOUND",
+          "message": "No task found with the given ID",
+          "http_status": 404
         }
       ]
     },

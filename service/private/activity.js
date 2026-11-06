@@ -7,6 +7,7 @@ const { createHash } = require('node:crypto');
 const { resolveHubInviteName } = require('../lib/hub-invite-name');
 const { hubInviteStatus } = require('../lib/hub-invite-status');
 const { sqlString } = require('../lib/sql-literal');
+const { countDayTasks, takesPartIn } = require('../lib/day-tasks');
 const CONTACT_ACTIVITY_CATEGORIES = new Set([
   'contact_refused',
   'hub_invite',
@@ -148,7 +149,8 @@ function mapNotificationRow(r) {
 function bookmarkKey(row) {
   const event = String(row.event || '');
   let category = String(row.category || row.event_type || event || 'unknown');
-  if (['hub_invite', 'contact_refused', 'task_assigned', 'task_mention', 'file_edited', 'file_commented'].includes(category)) {
+  if (['hub_invite', 'contact_refused', 'task_assigned', 'task_mention', 'file_edited', 'file_commented',
+    'hub_invite_accepted', 'hub_invite_declined'].includes(category)) {
     category = 'contact';
   } else if (event.startsWith('media.')) {
     category = 'mfs';
@@ -303,6 +305,42 @@ function flattenFileOwnerActivity(rows) {
   return rows;
 }
 
+// "<invitee> accepted / declined your invitation to <workspace>", addressed to
+// the admin who sent the invitation (service/lib/hub-invite-answer-notify.js).
+// Stamps the category the client renders from -- unstamped, a contact_activity
+// row resolves to 'contact' and reads as a contact request -- and surfaces the
+// workspace and the invited address from the nested `data` JSON. The invitee
+// is the author (the avatar) only when they have an account: an address with
+// none answers as the anonymous sentinel, and is named by its email instead.
+// Same contract and same idempotence as flattenFileOwnerActivity; touches no
+// other event.
+const HUB_INVITE_ANSWER_EVENTS = new Set(['hub_invite_accepted', 'hub_invite_declined']);
+function flattenHubInviteAnswer(rows) {
+  for (const r of rows) {
+    if (!r || !HUB_INVITE_ANSWER_EVENTS.has(r.event)) continue;
+    let meta = r.data;
+    if (typeof meta === 'string') {
+      try { meta = JSON.parse(meta); } catch (e) { meta = null; }
+    }
+    meta = meta || {};
+    if (!r.category) r.category = r.event;
+    if (r.author_id == null && r.uid != null && r.uid !== ANONYMOUS_UID) r.author_id = r.uid;
+    if (r.hub_id == null && meta.hub_id != null) r.hub_id = meta.hub_id;
+    if (r.hub_name == null && meta.hub_name != null) r.hub_name = meta.hub_name;
+    if (r.email == null && meta.email != null) r.email = meta.email;
+    // No account: whatever the feed joined for the sentinel uid is not this
+    // person. Name them by the address they were invited at.
+    if (r.uid === ANONYMOUS_UID && meta.email) {
+      r.fullname = meta.email;
+      r.firstname = null;
+      r.lastname = null;
+      r.author_firstname = null;
+      r.author_lastname = null;
+    }
+  }
+  return rows;
+}
+
 // Shape a hub-invite row (yp.contact_activity 'hub_invite_received') into the
 // same notification item shape as mapNotificationRow. Extracted so both list()
 // and get_feed() build hub-invite items identically (single source of truth).
@@ -393,6 +431,10 @@ const BUCKET_BY_EVENT = {
   // yp.contact_activity event, filed with the other file activity.
   file_edited: BUCKET.files,
   file_commented: BUCKET.files,
+  // "<invitee> accepted / declined your invitation to <workspace>" for the
+  // inviter -- with the workspace invitations, in Other.
+  hub_invite_accepted: BUCKET.other,
+  hub_invite_declined: BUCKET.other,
   // A bare @-mention row (channel.list_notifications, type='mention') carries no
   // category at all; a chat mention belongs to Chat.
   mention: BUCKET.chat,
@@ -754,6 +796,9 @@ const CONTACT_UNREAD_PROCS = [
   // "<X> edited / commented on <your file>" → Files.
   'contact_file_edited_unread',
   'contact_file_commented_unread',
+  // "<X> accepted / declined your invitation to <workspace>" → Other.
+  'contact_hub_invite_accepted_unread',
+  'contact_hub_invite_declined_unread',
 ];
 
 // The contact_activity event behind each CONTACT_UNREAD_PROCS entry. Every one
@@ -773,6 +818,8 @@ const CONTACT_UNREAD_EVENTS = {
   contact_invite_accepted_unread: 'invite_accepted',
   contact_file_edited_unread: 'file_edited',
   contact_file_commented_unread: 'file_commented',
+  contact_hub_invite_accepted_unread: 'hub_invite_accepted',
+  contact_hub_invite_declined_unread: 'hub_invite_declined',
 };
 const CONTACT_UNREAD_PAGE = 50; // = the LIMIT of every CONTACT_UNREAD_PROCS entry
 
@@ -1134,6 +1181,8 @@ class MfsActivity extends Entity {
         'contact_storage_alert_unread',
         'contact_reward_expiry_unread',
         'contact_invite_accepted_unread',
+        'contact_hub_invite_accepted_unread',
+        'contact_hub_invite_declined_unread',
       ],
     };
     if (bucket && lookup(CONTACT_CLEAR, bucket)) {
@@ -1528,6 +1577,7 @@ class MfsActivity extends Entity {
     flattenTaskColumnChange(result);
     flattenMeetingNotice(result);
     flattenFileOwnerActivity(result);
+    flattenHubInviteAnswer(result);
 
     // Stamp the tab on every row, then (only when the caller asked for a tab)
     // narrow to it. Deliberately AFTER every merge above, so a row is judged by
@@ -3680,28 +3730,67 @@ class MfsActivity extends Entity {
     let due_tasks = 0;
     let meetings = 0;
 
-    for (const w of capped) {
+    // TASKS AND MEETINGS ARE COUNTED BY THE PERSONAL CALENDAR'S DAY-VIEW RULES
+    // (Lexis, 2026-11-03): every part of the card opens today's day view, so
+    // the number on a tile is the number of items that view draws. Concretely:
+    //   * tasks due TODAY only -- the due_date cell the day view draws. Overdue tasks are
+    //     no longer counted (they made the tile read e.g. 41 over an empty day
+    //     view), and tasks with no due date never were and still are not;
+    //   * top-level tasks only, and only in a To do, In progress or Reopen
+    //     column (lib/day-tasks isDueColumn); To review, Released, Complete
+    //     and other custom columns are not counted;
+    //   * a workspace task only when assigned to the caller;
+    //   * meetings the caller organizes or attends, not every meeting of
+    //     every workspace they belong to;
+    //   * plus the caller's OWN database: personal tasks and meetings booked
+    //     from the personal hub are on the calendar too.
+    // The task rows come from task_list_range, the proc calendar.list reads,
+    // and the per-row rules live in lib/day-tasks, which calendar.js shares.
+    // hub_daily_counts is still the source of unread messages; its due_tasks
+    // column (overdue included, subtasks included) is no longer read.
+    const sources = [{ hub_id: this.uid, personal: true }, ...capped];
+
+    for (const w of sources) {
       const hubId = w && w.hub_id;
       if (!hubId) continue;
+      const personal = w.personal === true;
 
-      // Counts. await_proc does not throw -- it logs, ends the connection and
-      // returns undefined -- so an unmigrated workspace simply contributes
-      // nothing instead of failing the whole card.
-      let row = null;
+      // Unread messages. await_proc does not throw -- it logs, ends the
+      // connection and returns undefined -- so an unmigrated workspace simply
+      // contributes nothing instead of failing the whole card. The personal
+      // database has no team chat.
+      if (!personal) {
+        let row = null;
+        try {
+          row = toArray(
+            await this.yp.await_proc(
+              'forward_proc', hubId, 'hub_daily_counts', `${sqlString(this.uid)},${sqlString(day)}`
+            )
+          )[0];
+        } catch (e) {
+          this.debug('[ACTIVITY] hub_daily_counts failed', hubId, e && e.message);
+          row = null;
+        }
+        if (row) {
+          unread_messages += Number(row.unread_messages) || 0;
+        }
+      }
+
+      // Today's tasks: a one-day window, so the proc already drops overdue
+      // and undated tasks and subtasks; countDayTasks keeps the ones DUE
+      // today, the only cell the Calendar draws a task in.
+      let tasks = [];
       try {
-        row = toArray(
+        tasks = toArray(
           await this.yp.await_proc(
-            'forward_proc', hubId, 'hub_daily_counts', `${sqlString(this.uid)},${sqlString(day)}`
+            'forward_proc', hubId, 'task_list_range', `${sqlString(day)},${sqlString(day)}`
           )
-        )[0];
+        );
       } catch (e) {
-        this.debug('[ACTIVITY] hub_daily_counts failed', hubId, e && e.message);
-        row = null;
+        this.debug('[ACTIVITY] task_list_range failed', hubId, e && e.message);
+        tasks = [];
       }
-      if (row) {
-        unread_messages += Number(row.unread_messages) || 0;
-        due_tasks += Number(row.due_tasks) || 0;
-      }
+      due_tasks += countDayTasks(tasks, this.uid, personal, day);
 
       // Meetings. room_list_scheduled already exists per hub, so this needs no
       // SQL of its own -- but it returns EVERY recurring meeting regardless of
@@ -3720,7 +3809,8 @@ class MfsActivity extends Entity {
         this.debug('[ACTIVITY] room_list_scheduled failed', hubId, e && e.message);
         rooms = [];
       }
-      meetings += countMeetingsInWindow(rooms, dayStart, dayEnd);
+      const mine = rooms.filter((m) => m && takesPartIn(meetingContent(m), this.uid));
+      meetings += countMeetingsInWindow(mine, dayStart, dayEnd);
     }
 
     this.output.data({

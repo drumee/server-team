@@ -17,6 +17,9 @@
 const { toArray } = require("@drumee/server-essentials");
 const { Entity } = require("@drumee/server-core");
 const { privilegeAllows, CAN_WRITE } = require("../lib/member-capability");
+// Shared with activity.daily_digest, so the Daily Reminder counts a task by
+// the same rule this calendar lists it.
+const { isAssignedTo } = require("../lib/day-tasks");
 
 // Hard ceiling on the per-workspace task fan-out. A membership list this long is
 // pathological rather than legitimate, and the alternative to a cap is a request
@@ -27,12 +30,23 @@ const MAX_WORKSPACES = 200;
 const YMD = /^\d{4}-\d{2}-\d{2}$/;
 
 /**
- * Is `uid` one of the task's assignees? task_list_range answers them as
- * `assignee_uids`, a GROUP_CONCAT of uids (NULL when the task has none).
+ * A task's attached files, as task_list_range's `linked_files` JSON array —
+ * a string on some paths, already parsed on others. A file whose media row
+ * is gone has no name and is dropped; anything unreadable reads as none.
  */
-function isAssignedTo(row, uid) {
-  if (!row || !row.assignee_uids) return false;
-  return String(row.assignee_uids).split(",").includes(String(uid));
+function taskFiles(raw) {
+  let list = raw;
+  if (typeof list === "string") {
+    try {
+      list = JSON.parse(list);
+    } catch (e) {
+      return [];
+    }
+  }
+  if (!Array.isArray(list)) return [];
+  return list
+    .filter((f) => f && f.filename)
+    .map((f) => ({ nid: f.nid, filename: f.filename, extension: f.extension || null }));
 }
 
 /**
@@ -187,6 +201,11 @@ class __private_calendar extends Entity {
           status_label: r.status_label || null,
           status_theme: r.status_theme || null,
           priority: r.priority || "medium",
+          // What the Day-view card draws under the description. An instance
+          // whose task_list_range predates these columns answers 0 / 0 / [].
+          subtask_total: Number(r.subtask_total) || 0,
+          subtask_done: Number(r.subtask_done) || 0,
+          linked_files: taskFiles(r.linked_files),
           // Personal tasks are the caller's own. A workspace task answers the
           // caller's role in that workspace (_canWrite), so the Calendar
           // offers an edit only to someone the task ACL would let through.

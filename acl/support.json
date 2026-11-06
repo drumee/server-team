@@ -102,6 +102,44 @@
       "errors": []
     },
 
+    "report_content": {
+      "doc": "Report objectionable content from the apps: one chat message, or a person. Mails the report to the operations mailbox (operation@drumee.org) so someone acts on it; nothing is stored. The reporter is always the signed-in caller; the target fields come from the client and are only quoted in the mail, escaped and cut to length. Answers sent 1 only once the mail transport accepted the mail, so a client never thanks somebody for a report nobody received.",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "params": {
+        "kind": {
+          "type": "string",
+          "required": true,
+          "description": "What is reported: message or contact."
+        },
+        "target": {
+          "type": "object",
+          "required": true,
+          "description": "The reported item as the client sees it. For a message: message_id, author_id, scope and excerpt. For a contact: contact_id and uid. Quoted in the mail, never trusted."
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "sent: 1 when the operations mailbox was mailed."
+      },
+      "errors": [
+        {
+          "code": "NOT_SIGNED_IN",
+          "message": "A guest has no account to report from"
+        },
+        {
+          "code": "INVALID_REPORT",
+          "message": "kind is neither message nor contact, or target is missing"
+        },
+        {
+          "code": "REPORT_NOT_SENT",
+          "message": "The mail transport did not accept the report"
+        }
+      ]
+    },
+
     "list_feedback": {
       "doc": "List all submitted feedback with sorting and pagination. Requires special_access preproc with remit level 1. Calls support_list_feedback stored procedure with column, order, and page parameters.",
       "scope": "hub",
