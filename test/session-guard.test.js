@@ -55,3 +55,17 @@ test('sign-out and boot services are exempt', () => {
 test('uid comparison ignores case', () => {
   assert.equal(sessionMismatch(A.toUpperCase(), A, 'media.attributes', GUEST), false);
 });
+
+// ── wiring: router/rest run() asks the guard before resolving the service ──
+test('router run() refuses a mismatch with 412 before Acl.getModule', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const src = fs.readFileSync(path.join(__dirname, '../router/rest/index.js'), 'utf8');
+  const run = src.slice(src.indexOf('static run(session)'));
+  const guard = run.indexOf('sessionMismatch(');
+  const acl = run.indexOf('Acl.getModule(');
+  assert.ok(guard > 0, 'run() calls sessionMismatch');
+  assert.ok(guard < acl, 'the guard runs before Acl.getModule');
+  assert.match(run.slice(guard, acl), /x-drumee-uid/);
+  assert.match(run.slice(guard, acl), /precondition\(\s*["']SESSION_CHANGED["']\s*\)/);
+});

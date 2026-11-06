@@ -10,6 +10,7 @@ const {
   GRANTED,
 } = Events;
 const { isFunction, isString, isArray } = require("lodash");
+const SessionGuard = require("./session-guard");
 const { resolve, join, dirname } = require("path");
 const { readFileSync } = require("jsonfile");
 const { existsSync, statSync } = require("fs");
@@ -356,6 +357,30 @@ class Acl {
     }
 
     if (service == null) service = "page.index";
+
+    // SESSION-CHANGE GUARD (router/rest/session-guard.js): a tab that still
+    // believes in another account than the session it carries — a sign-in or
+    // sign-out in another tab of the same origin swapped the cookie under it —
+    // is refused before anything runs. Inert without a real x-drumee-uid.
+    try {
+      if (SessionGuard.enabled()) {
+        let guestId = null;
+        try {
+          guestId = require("@drumee/server-essentials").Cache.getSysConf("guest_id");
+        } catch (e) { guestId = null; }
+        if (SessionGuard.sessionMismatch(
+          session.request.headers["x-drumee-uid"], session.uid(), service, guestId
+        )) {
+          console.info(`[session-guard] SESSION_CHANGED ${service}`
+            + ` claimed=${session.request.headers["x-drumee-uid"]} actual=${session.uid()}`);
+          session.exception.precondition("SESSION_CHANGED");
+          return;
+        }
+      }
+    } catch (e) {
+      // Fail-OPEN: a guard error must never block a request.
+      console.warn("[session-guard] check failed (fail-open):", e && e.message);
+    }
 
     const { path, permission, method, error, reason, logService } =
       Acl.getModule(service, session.isAnonymous());
