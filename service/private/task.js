@@ -1249,6 +1249,24 @@ class __private_task extends Entity {
     const data = await this.db.await_proc('task_comment_mark_read', task_id, this.uid);
     const row = toArray(data)[0] || { task_id, read_ts: null };
     this.output.data(row);
+    // The caller's OTHER tabs/devices drop the badge live. Own sockets only —
+    // a read mark is private, peers have nothing to update.
+    await this._pushToSelf('task.comment_mark_read', row);
+  }
+
+  /**
+   * Push to the caller's own sockets in this hub, minus the one that made the
+   * request (it already has the answer). Same envelope as _broadcast.
+   */
+  async _pushToSelf(service, data) {
+    const hub_id = this.hub && this.hub.get(Attr.id);
+    if (!hub_id) return;
+    const socket_id = this.input.get(Attr.socket_id);
+    const dest = toArray(await this.yp.await_proc('entity_sockets', hub_id)).filter(
+      (e) => e && e.uid == this.uid && (!socket_id || e.socket_id != socket_id),
+    );
+    if (isEmpty(dest)) return;
+    await RedisStore.sendData(this.payload(data, { service, hub_id }), dest);
   }
 
   /**
