@@ -1224,6 +1224,34 @@ class __private_task extends Entity {
   }
 
   /**
+   * Unread comment counts for the subtasks of `parent_id`, as seen by the
+   * caller (task_comment_unread_counts). Only children with unread > 0 are
+   * listed. A DB without the proc answers empty — the UI then shows no badges.
+   * Params: parent_id (required)
+   */
+  async comment_unread() {
+    const parent_id = this.input.need('parent_id');
+    const data = await this.db.await_proc('task_comment_unread_counts', parent_id, this.uid);
+    const rows = toArray(data)
+      .filter((r) => r && r.task_id)
+      .map((r) => ({ task_id: r.task_id, unread: Number(r.unread) || 0 }));
+    this.output.list(rows);
+  }
+
+  /**
+   * Every comment on `task_id` now counts as read for the caller. Sent when the
+   * caller opens the task's detail. Personal state: no activity log and no
+   * broadcast. src:read, so a view-only member can mark too.
+   * Params: task_id (required)
+   */
+  async comment_mark_read() {
+    const task_id = this.input.need('task_id');
+    const data = await this.db.await_proc('task_comment_mark_read', task_id, this.uid);
+    const row = toArray(data)[0] || { task_id, read_ts: null };
+    this.output.data(row);
+  }
+
+  /**
    * Add a comment to a task. Body is marker form ("[@Name](user:uid) ...").
    * Params: task_id (required), body (required), mention_uids (optional).
    */

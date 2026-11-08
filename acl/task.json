@@ -782,6 +782,64 @@
         }
       }
     },
+    "comment_unread": {
+      "doc": "Unread comment counts for the subtasks of a task, as seen by the caller. Unread = written by someone else after the caller's read mark (task.comment_mark_read); comments that predate the feature count as read.",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "params": {
+        "parent_id": {
+          "type": "string",
+          "required": true,
+          "doc": "Parent task ID whose subtasks are counted"
+        }
+      },
+      "returns": {
+        "type": "array",
+        "doc": "Only subtasks with unread > 0",
+        "items": {
+          "type": "object",
+          "properties": {
+            "task_id": {
+              "type": "string",
+              "doc": "Subtask ID"
+            },
+            "unread": {
+              "type": "number",
+              "doc": "Unread comment count"
+            }
+          }
+        }
+      }
+    },
+    "comment_mark_read": {
+      "doc": "Mark every comment on a task as read for the caller. Personal state: not logged, not broadcast. Read permission suffices.",
+      "scope": "hub",
+      "permission": {
+        "src": "read"
+      },
+      "params": {
+        "task_id": {
+          "type": "string",
+          "required": true,
+          "doc": "Task ID whose comments are now read"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "doc": "Task ID"
+          },
+          "read_ts": {
+            "type": "number",
+            "doc": "Unix timestamp of the read mark"
+          }
+        }
+      }
+    },
     "comment_create": {
       "doc": "Add a comment to a task. @-mentioned members are notified.",
       "scope": "hub",
