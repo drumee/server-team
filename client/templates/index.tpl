@@ -23,6 +23,9 @@
     <title>
       <%= title %>
     </title>
+    <% if (typeof(link_preview_head) !== "undefined" && link_preview_head) { %>
+    <%= link_preview_head %>
+    <% } %>
     <link rel="icon" href="<%= icon %>?v=3" type="image/svg+xml">
     <link rel="stylesheet" href="/-/static/styles/loader.css?v=1.0.3">
     <link rel="stylesheet" href="/-/static/fonts/Armin-Grotesk/stylesheet.css">

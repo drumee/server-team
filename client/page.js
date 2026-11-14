@@ -157,6 +157,47 @@ class MainPage extends RuntimeEnv {
   }
 
   /**
+   * Head tags for link-preview crawlers — see service/lib/link-preview.js.
+   * On the short share path (<endpoint>/s/<token>) also a script that puts the
+   * historic `#/dmz/share/<token>` address back before the app boots.
+   * @param {Object} data page data (endpointPath, protocol, app.manifest)
+   * @returns {Promise<String>}
+   */
+  async linkPreviewHead(data) {
+    const LP = require("../service/lib/link-preview");
+    const endpointPath = data.endpointPath || endpoint_path || "/-/";
+    const pathname = this.input.pathname() || "";
+    const token = LP.shortShareToken(pathname, endpointPath);
+    let guestId;
+    try {
+      guestId = DrumeeCache.getSysConf("guest_id");
+    } catch (e) {
+      guestId = undefined;
+    }
+    const preview = token ? await LP.sharePreview(this.yp, token, { guestId }) : null;
+    // Internal link copied from an external workspace (`?ext=1`, see
+    // EXTERNAL_MARK): same neutral card, in the external workspace's pink.
+    const external = !token && LP.isExternalMark(this.input.get(LP.EXTERNAL_MARK.key));
+    const card = LP.cardText(preview || (external ? { external: true } : null));
+    const proto = String(data.protocol || "https").replace(/[:\s/]+/g, "") || "https";
+    const host = this.input.host();
+    const origin = host ? `${proto}://${host}` : "";
+    // Card images ship with the UI build (<app>/link-preview/*.png), next to
+    // the bundles this page loads — so every endpoint points at its own build.
+    const dir = LP.imageDir(data.app && data.app.manifest);
+    const imageBase = origin && dir ? `${origin}${dir}` : undefined;
+    const url = token && origin ? `${origin}${pathname}` : undefined;
+    // A public file's own content card, served by link_preview.card.
+    const cardUrl = token && origin
+      ? `${origin}${endpointPath.replace(/\/+$/, "")}/svc/link_preview.card?token=${token}`
+      : undefined;
+    let head = LP.ogTags(card, { url, imageBase, cardUrl });
+    if (token) head = `${LP.rewriteScript(endpointPath, token)}\n    ${head}`;
+    else if (external) head = `${LP.stripMarkScript()}\n    ${head}`;
+    return head;
+  }
+
+  /**
    *
    */
   async start(opt) {
@@ -185,6 +226,14 @@ class MainPage extends RuntimeEnv {
     data.fonts_links = await this.yp.await_proc(`${db}.get_fonts_links`);
     data.fonts_faces = await this.yp.await_proc(`${db}.get_fonts_faces`);
     data.description = data.description || data.title;
+    // Link previews (Open Graph) + the short External link /s/<token>. Never
+    // allowed to break the page: on any failure the page renders as before.
+    try {
+      data.link_preview_head = await this.linkPreviewHead(data);
+    } catch (e) {
+      this.warn("[page] link preview skipped:", e && e.message);
+      data.link_preview_head = "";
+    }
     this.output.set_header(
       "Cache-Control",
       "no-cache, no-store, must-revalidate"

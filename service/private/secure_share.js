@@ -24,6 +24,7 @@ const { hashPassword } = require('../lib/secure-share-password');
 const { memberCan, CAN_WRITE } = require('../lib/member-capability');
 const { sqlString } = require('../lib/sql-literal');
 const { sendMail } = require("../lib/send-mail");
+const { shortShareLink } = require('../lib/link-preview');
 
 class __secure_share extends Mfs {
 
@@ -125,7 +126,7 @@ class __secure_share extends Mfs {
       return this.output.data({ status: 'CREATE_FAILED' });
     }
 
-    const link = `${this._shareLinkBase()}#/dmz/share/${token}`;
+    const link = shortShareLink(this._shareLinkBase(), token);
 
     // Send invitation email only when sharing with exactly one named recipient (not domain, not public)
     const singleEmail = allowedEmails && allowedEmails.length === 1
@@ -188,7 +189,7 @@ class __secure_share extends Mfs {
     const hub_id = this.hub.get(Attr.id);
     const rows   = toArray(await this.yp.await_proc('secure_share_list', hub_id, nid, this.uid));
     const base   = this._shareLinkBase();
-    this.output.list(rows.map(r => ({ ...r, link: `${base}#/dmz/share/${r.id}` })));
+    this.output.list(rows.map(r => ({ ...r, link: shortShareLink(base, r.id) })));
   }
 
   /**
@@ -435,7 +436,7 @@ class __secure_share extends Mfs {
     const hub_id = this.hub.get(Attr.id);
     const rows   = toArray(await this.yp.await_proc('secure_share_list', hub_id, nid, this.uid));
     const base   = this._shareLinkBase();
-    this.output.list(rows.map(r => ({ ...r, link: `${base}#/dmz/share/${r.id}` })));
+    this.output.list(rows.map(r => ({ ...r, link: shortShareLink(base, r.id) })));
   }
 
   /**
